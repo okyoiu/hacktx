@@ -145,8 +145,8 @@ kbd {
 .transcript .who { font-size: 12.5px; font-weight: 650; color: var(--ink-2); }
 .transcript .said { color: var(--ink-2); }
 .transcript:empty::before { content: "Nothing has been said yet."; color: var(--ink-2); }
-.transcript::-webkit-scrollbar { width: 6px; }
-.transcript::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.22); border-radius: 3px; }
+:is(.transcript, .answer)::-webkit-scrollbar { width: 6px; }
+:is(.transcript, .answer)::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.22); border-radius: 3px; }
 
 /* AI response */
 .response .panel-title { margin-right: 6px; }
@@ -182,7 +182,10 @@ kbd {
   animation: shimmer 2.2s linear infinite;
 }
 
-.answer { display: grid; gap: 8px; color: var(--ink-2); text-wrap: pretty; }
+.answer {
+  display: grid; gap: 8px; color: var(--ink-2); text-wrap: pretty;
+  max-height: 360px; overflow-y: auto; overscroll-behavior: contain; margin-right: -8px; padding-right: 8px;
+}
 .answer:empty { display: none; }
 .answer p { animation: rise 0.45s var(--ease) backwards; }
 .response[data-state="error"] .answer p:first-child { color: var(--ink); font-weight: 650; }

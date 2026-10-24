@@ -19,6 +19,7 @@ const IDLE_OPACITY = 0.3
 
 const windows = {}
 const shownBeforeHide = new Set()
+const closing = new Set() // windows fading out to hidden; idle fades and Show/Hide must not stop that
 let allHidden = false
 let closedResponse = null // the answer the user closed; its late events must not reopen the panel
 let lastInsights = null
@@ -81,6 +82,7 @@ function fade(win, to, ms, done) {
 
 function reveal(win) {
   if (allHidden) return shownBeforeHide.add(win)
+  closing.delete(win)
   if (!win.isVisible()) {
     win.setOpacity(0)
     win.showInactive()
@@ -90,13 +92,18 @@ function reveal(win) {
 
 function conceal(win) {
   shownBeforeHide.delete(win)
-  if (win.isVisible()) fade(win, 0, 160, () => win.hide())
+  if (!win.isVisible()) return
+  closing.add(win)
+  fade(win, 0, 160, () => {
+    closing.delete(win)
+    win.hide()
+  })
 }
 
 function toggleAll() {
   allHidden = !allHidden
   for (const win of Object.values(windows)) {
-    if (allHidden && win.isVisible()) {
+    if (allHidden && win.isVisible() && !closing.has(win)) {
       conceal(win)
       shownBeforeHide.add(win)
     } else if (!allHidden && shownBeforeHide.delete(win)) reveal(win)
@@ -172,28 +179,38 @@ function demoApi(route, body) {
 
 // ---------- calls from the panels ----------
 
+// Resolves to the service's JSON, or to { error } with a sentence the panel can show as is.
 ipcMain.handle('api', async (_e, route, body) => {
-  if (!ROUTES.test(route)) throw new Error(`Not a memory API call the overlay makes: ${route}`)
+  if (!ROUTES.test(route)) return { error: 'The overlay never makes that call.' }
   if (MOCK) return demoApi(route, body)
-  const res = await fetch(MEMORY_URL + route, {
-    method: 'POST',
-    headers: body ? { 'content-type': 'application/json' } : {},
-    body: body ? JSON.stringify(body) : undefined,
-  })
-  if (!res.ok) throw new Error(`Memory service answered ${res.status}`)
-  return res.json()
+  try {
+    const res = await fetch(MEMORY_URL + route, {
+      method: 'POST',
+      headers: body ? { 'content-type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    })
+    const data = await res.json().catch(() => ({}))
+    if (res.ok) return data
+    // the service explains refusals in `detail`, such as an action left over from before a restart
+    return { error: typeof data.detail === 'string' ? data.detail : `Hello Again answered ${res.status}. Try again.` }
+  } catch {
+    return { error: "Couldn't reach Hello Again. Check it's running, then try again." }
+  }
 })
 
-// Panels grow and shrink with their content, so the blur never shows past the glass.
+// Panels grow and shrink with their content, so the blur never shows past the glass, and stop at the screen's edge.
 ipcMain.on('fit', (e, height) => {
   const win = BrowserWindow.fromWebContents(e.sender)
   const bounds = win?.getBounds()
-  if (bounds && height > 0 && bounds.height !== height) win.setBounds({ ...bounds, height })
+  if (!bounds || !(height > 0)) return
+  const { workArea } = screen.getDisplayMatching(bounds)
+  const fitted = Math.min(Math.ceil(height), workArea.y + workArea.height - bounds.y)
+  if (bounds.height !== fitted) win.setBounds({ ...bounds, height: fitted })
 })
 
 ipcMain.on('panel-idle', (e, idle) => {
   const win = BrowserWindow.fromWebContents(e.sender)
-  if (win?.isVisible() && !allHidden) fade(win, idle ? IDLE_OPACITY : 1, idle ? 800 : 200)
+  if (win?.isVisible() && !allHidden && !closing.has(win)) fade(win, idle ? IDLE_OPACITY : 1, idle ? 800 : 200)
 })
 
 ipcMain.on('copy', (_e, text) => clipboard.writeText(String(text)))
@@ -239,5 +256,7 @@ app.whenReady().then(async () => {
   } else connect()
 })
 
+// Clicking the Dock icon brings a hidden overlay back, in case another app owns ⌘\.
+app.on('activate', () => allHidden && toggleAll())
 app.on('will-quit', () => globalShortcut.unregisterAll())
 app.on('window-all-closed', () => app.quit())

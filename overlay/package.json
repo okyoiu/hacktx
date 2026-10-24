@@ -2,7 +2,7 @@
   "name": "hello-again-overlay",
   "version": "0.1.0",
   "private": true,
-  "description": "Glass overlay: name cards beside faces and a Top picks dock fed by Muse transcripts",
+  "description": "Glass overlay: name cards beside faces, a control bar, and Live insights and AI response panels",
   "main": "main.js",
   "scripts": {
     "start": "electron .",

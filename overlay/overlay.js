@@ -22,7 +22,8 @@ function el(tag, className, text) {
   return node
 }
 
-const api = (route, body) => (window.overlay ? window.overlay.api(route, body) : Promise.reject(new Error('No overlay bridge')))
+// resolves to the service's answer, or to { error } with a sentence to show (see main.js)
+const api = (route, body) => (window.overlay ? window.overlay.api(route, body) : Promise.resolve({ error: 'Open the overlay app to send this.' }))
 
 function handle(e) {
   if (shows('cards')) {
@@ -108,7 +109,8 @@ function icon(id, className) {
 }
 
 function verb(list) {
-  const span = el('span', 'verb shimmer', list.split(',')[verbIndex % 4] + '…')
+  const verbs = list.split(',')
+  const span = el('span', 'verb shimmer', verbs[verbIndex % verbs.length] + '…')
   span.dataset.verbs = list
   return span
 }
@@ -146,8 +148,10 @@ function renderBar() {
   else drawWave(live ? 'icon' : 'flat')
 }
 
+let notSentUntil = 0 // a failed pause shows "Not sent" in the timer's place for a few seconds
+
 function tick() {
-  $('timer').textContent = connected ? elapsed(listening.startedAt, Date.now()) : 'Offline'
+  $('timer').textContent = Date.now() < notSentUntil ? 'Not sent' : connected ? elapsed(listening.startedAt, Date.now()) : 'Offline'
 }
 
 const BARS = [...$('wave').children]
@@ -186,13 +190,11 @@ if (shows('bar')) {
   })
   $('pause').addEventListener('click', async () => {
     $('pause').disabled = true
-    try {
-      await api('/listening', { on: !listening.on }) // the bar updates when the `listening` event comes back
-    } catch {
-      $('timer').textContent = 'Not sent'
-    } finally {
-      $('pause').disabled = !connected
-    }
+    const { error } = await api('/listening', { on: !listening.on }) // the bar updates when the `listening` event comes back
+    $('pause').disabled = !connected
+    $('timer').title = error || ''
+    if (error) notSentUntil = Date.now() + 3000
+    tick()
   })
   $('askBtn').addEventListener('click', () => window.overlay?.ask())
   $('hideBtn').addEventListener('click', () => window.overlay?.toggleAll())
@@ -235,14 +237,9 @@ function actionRow({ id, kind, label }) {
   button.firstChild.setAttribute('aria-hidden', 'true')
   button.addEventListener('click', async () => {
     button.disabled = true
-    $('actionsNote').textContent = ''
-    try {
-      await api('/actions/' + encodeURIComponent(id)) // the answer arrives as `response` events
-    } catch {
-      $('actionsNote').textContent = "Couldn't reach Hello Again. Check it's running, then try again."
-    } finally {
-      button.disabled = false
-    }
+    const { error } = await api('/actions/' + encodeURIComponent(id)) // the answer arrives as `response` events
+    $('actionsNote').textContent = error || ''
+    button.disabled = false
   })
   item.append(button)
   return item
@@ -254,9 +251,8 @@ function addCaption({ speaker, text, final }) {
   wakePanel()
   const list = $('transcript')
   const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 24
-  const last = list.lastElementChild
-  // a partial line keeps growing until its final version arrives
-  const line = last?.classList.contains('partial') && last.dataset.speaker === speaker ? last : list.appendChild(el('li'))
+  // a speaker's partial line keeps growing in place until its final version arrives
+  const line = [...list.querySelectorAll('li.partial')].find((li) => li.dataset.speaker === speaker) || list.appendChild(el('li'))
   line.dataset.speaker = speaker
   line.className = final ? '' : 'partial'
   line.replaceChildren(el('span', 'who', speaker), el('span', 'said', text))
@@ -374,15 +370,14 @@ if (shows('response')) {
     const question = $('question').value.trim()
     if (!question) return
     $('question').disabled = true
-    try {
-      const { id } = await api('/ask', { question })
-      response = { state: 'sent' }
-      showResponse({ id, query: question, status: 'thinking' })
-    } catch {
-      $('askNote').textContent = "Couldn't reach Hello Again. Check it's running, then try again."
-    } finally {
-      $('question').disabled = false
-    }
+    response = { state: 'sent' } // the answer's events may arrive before its id does; let them in
+    const { id, error } = await api('/ask', { question })
+    $('question').disabled = false
+    if (error) {
+      response = { state: 'ask' }
+      renderResponse()
+      $('askNote').textContent = error
+    } else if (response.id !== id) showResponse({ id, query: question, status: 'thinking' })
   })
 }
 
