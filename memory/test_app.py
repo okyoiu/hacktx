@@ -1,16 +1,20 @@
 """Insights, pause and AI responses through the real endpoints, with fake Muse Spark and SerpApi: no keys or database."""
 import json
+import threading
 import time
 from datetime import date, datetime
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from memory import app as server
 from memory import notes, picks, serp, store
 
 JORDAN = {"id": "p_jordan", "name": "Jordan Lee", "line": "", "met": "Met Sep 24"}
+LAPTOP = ("127.0.0.1", 50000)  # capture, the overlay and curl run on the laptop with the server
+WIFI = ("192.168.1.23", 50000)  # any other device on the venue Wi-Fi
 
 
 class FakeMuse:
@@ -40,7 +44,7 @@ def fake_serpapi(url, params, timeout):
 @pytest.fixture
 def http(monkeypatch, tmp_path):
     """A fresh server: no call, transcript, insights or faces, and listening."""
-    state = {"call": None, "history": [], "fresh": [], "actions": {}, "latest_insights": None, "tracks": {},
+    state = {"call": None, "history": [], "fresh": [], "actions": {}, "latest_insights": None, "tracks": {}, "unknown": {},
              "speakers": {}, "clients": set(), "listening": {"type": "listening", "on": True, "startedAt": "2026-10-24T20:00:00Z"}}
     for name, value in state.items():
         monkeypatch.setattr(server, name, value)
@@ -49,7 +53,7 @@ def http(monkeypatch, tmp_path):
     monkeypatch.setattr(store, "notes_for", lambda pids, per_person=5: {})
     serp._lookup.cache_clear()
     serp._search.cache_clear()
-    with TestClient(server.app) as client:
+    with TestClient(server.app, client=LAPTOP) as client:
         yield client
 
 
@@ -120,6 +124,144 @@ def test_next_call_does_not_see_the_last_calls_insights_or_transcript(http, even
     assert "Last call's private line" not in muse.prompts[1]
 
 
+def test_wifi_devices_may_only_enroll_or_delete_themselves(http, monkeypatch):
+    monkeypatch.setattr(store, "delete_person", lambda pid, token: False)
+    phone = TestClient(server.app, client=WIFI)
+    for method, path in [("get", "/people/p_jordan"), ("post", "/listening"), ("post", "/calls/end"),
+                         ("post", "/transcript"), ("post", "/faces"), ("post", "/ask"), ("post", "/actions/a1")]:
+        assert getattr(phone, method)(path).status_code == 403, path
+    assert phone.get("/enroll").status_code == 200
+    deleted = phone.delete("/people/p_jordan", headers={"X-Delete-Token": "wrong"})
+    assert deleted.status_code == 403 and "delete link" in deleted.json()["detail"]  # reached the route's own token check
+
+
+def test_web_pages_on_this_laptop_are_refused_and_docs_are_off(http):
+    assert http.post("/calls/end", headers={"Origin": "https://example.com"}).status_code == 403
+    assert http.post("/calls/end").json() == {"note": None}  # capture, the overlay and curl send no Origin
+    assert [http.get(p).status_code for p in ("/docs", "/redoc", "/openapi.json")] == [404, 404, 404]
+
+
+def test_websocket_only_for_this_laptop(http):
+    for client, headers in [(http, {"Origin": "https://example.com"}), (TestClient(server.app, client=WIFI), {})]:
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect("/ws", headers=headers) as ws:
+                ws.receive_json()
+    for headers in ({}, {"Origin": "file://"}):  # Node/Python clients, and the overlay page
+        with http.websocket_connect("/ws", headers=headers) as ws:
+            assert ws.receive_json()["type"] == "listening"
+
+
+def test_remember_saves_the_face_on_screen_only_with_consent(http, events, monkeypatch):
+    enrolled = []
+
+    def enroll(name, face_print, selfie):
+        enrolled.append((name, face_print.tolist(), selfie))
+        return "p_new", "token123"
+
+    monkeypatch.setattr(store, "enroll", enroll)
+    monkeypatch.setattr(store, "match", lambda p: {"id": "p_new", "name": "Kai Park", "firstMet": date(2026, 10, 24), "score": 1.0}
+                        if enrolled else None)
+    monkeypatch.setattr(store, "last_time", lambda pid: None)
+    monkeypatch.setattr(store, "latest_note", lambda pid: None)
+    monkeypatch.setattr(store, "person", lambda pid: None)  # read by the call note at /calls/end
+    face = [0.0] * 511 + [1.0]
+    box = [10.0, 20.0, 100.0, 120.0]
+    assert http.post("/faces", json={"trackId": 7, "screenBox": box, "facePrint": face}).json() == {"person": None}
+    assert enrolled == []  # an unknown face on screen is never saved by itself
+
+    assert http.post("/faces/7/remember", json={"name": "Kai Park", "consent": False}).status_code == 400
+    assert http.post("/faces/7/remember", json={"name": "   ", "consent": True}).status_code == 422
+    assert http.post("/faces/7/remember", json={"name": "x" * 81, "consent": True}).status_code == 422
+    assert TestClient(server.app, client=WIFI).post("/faces/7/remember", json={"name": "Kai", "consent": True}).status_code == 403
+    assert enrolled == []
+
+    saved = http.post("/faces/7/remember", json={"name": "  Kai Park ", "consent": True})
+    assert saved.json() == {"id": "p_new", "deleteToken": "token123"}
+    assert enrolled == [("Kai Park", face, None)]  # the print from the call, no selfie
+    assert events[-1] == {"type": "face", "trackId": 7, "screenBox": box,
+                          "person": {"id": "p_new", "name": "Kai Park", "line": "", "met": "Met Oct 24"}}
+    assert "p_new" in server.call.people  # counted in this call from now on
+    assert http.post("/faces/7/remember", json={"name": "Kai Park", "consent": True}).status_code == 409  # already saved
+
+    enrolled.clear()
+    http.post("/faces", json={"trackId": 8, "screenBox": box, "facePrint": face})
+    http.post("/faces/gone", json={"trackId": 8})
+    gone = http.post("/faces/8/remember", json={"name": "Kai Park", "consent": True})
+    assert gone.status_code == 409 and gone.json()["detail"] == "That face has left the call"
+    http.post("/faces", json={"trackId": 9, "screenBox": box, "facePrint": face})
+    http.post("/calls/end")
+    assert http.post("/faces/9/remember", json={"name": "Kai Park", "consent": True}).status_code == 409
+    assert enrolled == [] and server.unknown == {}  # nothing kept after the face leaves or the call ends
+
+
+def test_insights_survive_a_failed_note_and_ignore_a_garbage_reply(http, events, monkeypatch):
+    server.tracks[1] = JORDAN
+    muse = FakeMuse({"notes": [{"personId": "p_jordan", "text": "Moved"}], "topic": "Move", "points": ["Moved"], "actions": []})
+    monkeypatch.setattr(picks, "chat", muse)
+    failures = iter([RuntimeError("person deleted mid-call")])
+
+    def add_note(pid, text):
+        if error := next(failures, None):
+            raise error
+
+    monkeypatch.setattr(store, "add_note", add_note)
+    http.post("/transcript", json=line("speaker_0", "First"))
+    wait_for(lambda: len(muse.prompts) == 1)
+    http.post("/transcript", json=line("speaker_0", "Second"))
+    wait_for(lambda: server.latest_insights is not None)  # the worker lived through the failed insert
+    good = server.latest_insights
+
+    monkeypatch.setattr(picks, "chat", lambda prompt: "no json at all")
+    http.post("/transcript", json=line("speaker_0", "Third"))
+    wait_for(lambda: server.history[-1:] == ["speaker_0: Third"])
+    assert server.latest_insights is good  # a garbage reply doesn't blank the panel
+
+
+def test_call_ending_while_muse_thinks_drops_the_late_result(http, events, monkeypatch):
+    gate = threading.Event()
+    muse = FakeMuse({"topic": "Old call", "points": ["Old point"], "actions": []})
+    monkeypatch.setattr(picks, "chat", lambda prompt: gate.wait(3) and muse(prompt))
+    http.post("/transcript", json=line("speaker_0", "Goodbye everyone"))
+    wait_for(lambda: server.fresh == [])  # the worker took the line and waits on Muse
+    http.post("/transcript", json=line("speaker_0", "Bye!"))  # leaves the worker's wake flag set
+    http.post("/calls/end")
+    gate.set()
+    time.sleep(server.INSIGHTS_SECONDS * 3)
+
+    assert len(muse.prompts) == 1  # no empty refresh for the lines the ended call took away
+    assert server.latest_insights is None and server.history == [] and server.call is None
+    assert [e for e in events if e["type"] == "insights"] == []
+
+
+def test_call_timer_starts_with_the_call_and_late_answers_open_no_call(http, events, monkeypatch):
+    monkeypatch.setattr(picks, "chat", FakeMuse())
+    http.post("/transcript", json=line("speaker_0", "Hi!"))  # the first line starts a call
+    wait_for(lambda: [e for e in events if e["type"] == "listening"])
+    started = [e for e in events if e["type"] == "listening"]
+    assert len(started) == 1 and started[0]["startedAt"] != "2026-10-24T20:00:00Z"
+    assert server.listening["startedAt"] == started[0]["startedAt"]
+
+    http.post("/calls/end")
+    http.post("/ask", json={"question": "Anything?"})  # answered after the call ended
+    assert server.call is None
+
+
+def test_call_note_keeps_the_latest_ten_points(http, events, monkeypatch):
+    refreshes = []
+
+    def muse(prompt: str) -> str:
+        refreshes.append(prompt)
+        n = len(refreshes)
+        return json.dumps({"topic": "t", "points": [f"point {n}.{i}" for i in range(3)], "actions": []})
+
+    monkeypatch.setattr(picks, "chat", muse)
+    for i in range(4):
+        http.post("/transcript", json=line("speaker_0", f"line {i}"))
+        wait_for(lambda: len(refreshes) == i + 1)
+    wait_for(lambda: server.latest_insights and server.latest_insights["points"][0] == "point 4.0")
+    assert len(server.call.points) == 10 and server.call.points[-1] == "point 4.2"
+
+
 def test_pause_ignores_transcript_and_resume_restarts_timer_only_between_calls(http, events):
     paused = http.post("/listening", json={"on": False}).json()
     assert paused == {"type": "listening", "on": False, "startedAt": "2026-10-24T20:00:00Z"} and events == [paused]
@@ -129,7 +271,7 @@ def test_pause_ignores_transcript_and_resume_restarts_timer_only_between_calls(h
     resumed = http.post("/listening", json={"on": True}).json()
     assert resumed["on"] and resumed["startedAt"] != paused["startedAt"] and events[-1] == resumed
 
-    server.this_call()  # a call is in progress: the timer keeps counting through a pause
+    server.call = server.Call()  # a call is in progress: the timer keeps counting through a pause
     server.listening["startedAt"] = "2026-10-24T20:05:00Z"
     http.post("/listening", json={"on": False})
     assert http.post("/listening", json={"on": True}).json()["startedAt"] == "2026-10-24T20:05:00Z"
@@ -153,11 +295,12 @@ def test_every_action_kind_and_ask_answer_and_land_in_the_call_note(http, events
     monkeypatch.setattr(serp.httpx, "get", fake_serpapi)
     monkeypatch.setattr(store, "person", lambda pid: {
         "id": pid, "name": "Jordan Lee", "firstMet": date(2025, 9, 24),
-        "encounters": [{"metAt": datetime(2026, 10, 2, 18, 0).astimezone(), "about": "Engineer who climbs", "lastTime": "Planned the move."},
+        "encounters": [{"metAt": datetime(2026, 10, 2, 18, 0).astimezone(), "about": "", "lastTime": "Planned the move."},
                        {"metAt": datetime(2025, 9, 24, 18, 0).astimezone(), "about": "Engineer", "lastTime": "Met at a meetup."}],
         "notes": [{"text": "Started climbing"}, {"text": "Moved to Austin"}],
     })
     server.tracks[1] = JORDAN
+    server.call = server.Call()  # answers are written into the note of the call in progress
     server.actions.update({
         "a_define": {"kind": "define", "label": "What is bouldering?", "query": "bouldering", "personId": None},
         "a_search": {"kind": "search", "label": "Search climbing gyms", "query": "climbing gyms austin", "personId": None},
@@ -184,7 +327,7 @@ def test_every_action_kind_and_ask_answer_and_land_in_the_call_note(http, events
     assert place["sources"] == [{"title": "Ledge", "url": "https://www.google.com/maps/search/?api=1&query=Ledge"}]
     assert run("/actions/a_events")["text"] == 'Nothing found for "climbing meetup".'
     assert run("/actions/a_recall")["text"] == (
-        "Jordan Lee, first met Sep 24, 2025.\nAbout: Engineer who climbs\n"
+        "Jordan Lee, first met Sep 24, 2025.\nAbout: Engineer\n"  # the latest about that isn't empty
         "Met Oct 2, 2026: Planned the move.\nMet Sep 24, 2025: Met at a meetup.\n- Started climbing\n- Moved to Austin"
     )
     assert run("/actions/a_helpful")["text"] == "Answer from Muse"
@@ -199,6 +342,7 @@ def test_every_action_kind_and_ask_answer_and_land_in_the_call_note(http, events
     text = open(note).read()
     assert "## AI responses" in text and "### Where should we eat?" in text
     assert "Sources: [Ledge](https://www.google.com/maps/search/?api=1&query=Ledge)" in text
+    assert "Remind me who Jordan is" not in text  # recall only repeats the database, and its person may delete themselves
 
 
 def test_missing_keys_end_as_errors_and_never_crash(http, events, monkeypatch):
