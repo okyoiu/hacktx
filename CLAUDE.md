@@ -9,11 +9,11 @@ Private glass overlay for Teams/Zoom calls: names people who opted in, shows Top
 | Capture (Person A) | `capture/` | `agent/capture` |
 | Memory (Person B) | `memory/` | `agent/memory` |
 | Overlay (Person C) | `overlay/`, `web/` | `agent/overlay` |
-| Coordinator (main session) | everything shared, merges | `starter-scaffold` |
+| Coordinator (main session) | everything shared, merges | `main` |
 
 - Work only in your own folder.
 - **Shared files belong to the coordinator:** README.md (it defines the event shapes between parts), `pyproject.toml`/`uv.lock` (dependencies), `shared/mocks/`, IDEAS.md, CLAUDE.md. Need a change there, such as a new dependency or a new event field? Stop and ask instead of editing.
-- Commit small, prefixed with your folder (`capture: …`). Open a PR into `starter-scaffold` (into `main` once that's merged).
+- Commit small, prefixed with your folder (`capture: …`). Open a PR into `main`.
 - Never put API keys in code or commits. Keys live only in `.env`.
 
 ## Shared services: don't stop them
