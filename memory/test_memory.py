@@ -1,3 +1,4 @@
+from memory import app
 from memory.picks import parse
 from memory.serp import first
 
@@ -34,3 +35,12 @@ def test_first_shapes_place_and_event_results():
     event = first("event", {"events_results": [{"title": "Boulder morning", "date": {"when": "Sat, 10 AM"}, "address": ["Gym", "Austin, TX"]}]})
     assert event == {"title": "Boulder morning", "detail": "Sat, 10 AM · Gym, Austin, TX"}
     assert first("event", {}) is None
+
+
+def test_seen_recently_blocks_repeat_titles_for_five_minutes():
+    app.recent_titles.clear()
+    assert not app.seen_recently("Climbing gym", 1000)
+    assert app.seen_recently("  climbing GYM ", 1299)
+    assert not app.seen_recently("Ledge", 1299)
+    assert not app.seen_recently("Climbing gym", 1300)  # window counts from the last push, not the last repeat
+    assert app.seen_recently("Climbing gym", 1301)

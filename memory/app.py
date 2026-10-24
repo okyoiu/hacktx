@@ -4,6 +4,7 @@ Run: uv run --env-file .env uvicorn memory.app:app --reload
 Keep it on localhost or your LAN; nothing here is authenticated except deleting a person.
 """
 import asyncio
+import time
 import uuid
 from pathlib import Path
 
@@ -16,12 +17,14 @@ from memory import picks, serp, store
 
 WEB = Path(__file__).resolve().parent.parent / "web"
 MAX_SELFIE_BYTES = 8_000_000
+REPEAT_SECONDS = 300
 
 app = FastAPI(title="Hello Again memory")
 clients: set[WebSocket] = set()
 tracks: dict[int, dict | None] = {}  # trackId -> card for the matched person (None = not enrolled)
 speakers: dict[str, str] = {}  # Muse speaker label -> display name
 history: list[str] = []  # recent lines, context for Muse Spark
+recent_titles: dict[str, float] = {}  # lowercased pick title -> when it was last pushed
 
 
 async def push(event: dict) -> None:
@@ -114,6 +117,17 @@ async def transcript(line: Line, tasks: BackgroundTasks):
     return {"ok": True}
 
 
+def seen_recently(title: str, now: float) -> bool:
+    """True if a pick with this title went out in the last REPEAT_SECONDS; otherwise record it as sent now."""
+    for k in [k for k, t in recent_titles.items() if now - t >= REPEAT_SECONDS]:
+        del recent_titles[k]
+    key = title.strip().lower()
+    if key in recent_titles:
+        return True
+    recent_titles[key] = now
+    return False
+
+
 async def make_picks(who: str, text: str) -> None:
     present = {p["id"]: p for p in tracks.values() if p}
     try:
@@ -138,6 +152,8 @@ async def make_picks(who: str, text: str) -> None:
                 hit = None
             if hit:
                 pick |= hit
+        if seen_recently(pick["title"], time.monotonic()):  # after SerpApi, so two searches landing on one place count once
+            continue
         await push({
             "type": "pick",
             "id": uuid.uuid4().hex[:8],
