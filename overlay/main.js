@@ -13,6 +13,7 @@ const { ROUTES } = require('./logic')
 
 const MOCK = process.argv.includes('--mock')
 const MEMORY_URL = process.env.MEMORY_URL || 'http://localhost:8000'
+const ENROLL_URL = process.env.ENROLL_URL || 'http://localhost:8000/enroll'
 const PANEL = { width: 448, gap: 12, margin: 24 }
 const BAR_HEIGHT = 56
 const IDLE_OPACITY = 0.3
@@ -124,6 +125,8 @@ function openAsk() {
 
 function broadcast(event) {
   if (event.type === 'insights') lastInsights = event
+  if (MOCK && event.type === 'face') demoFaces.set(event.trackId, event)
+  if (MOCK && event.type === 'face_gone') demoFaces.delete(event.trackId)
   if (event.type === 'response' && event.id !== closedResponse) reveal(windows.response)
   for (const win of Object.values(windows)) win.webContents.send('event', event)
 }
@@ -163,7 +166,15 @@ function replay() {
 
 // The demo answers locally, so clicking around in `npm run mock` never posts to a real memory service.
 let demoAnswers = 0
+const demoFaces = new Map()
 function demoApi(route, body) {
+  const remember = route.match(/^\/faces\/(\d+)\/remember$/)
+  if (remember) {
+    const face = demoFaces.get(+remember[1])
+    if (!face) return { error: 'That face has left the call.', status: 409 }
+    broadcast({ ...face, person: { id: `p_demo${++demoAnswers}`, name: body.name, line: '', met: 'Met today' } })
+    return { id: 'p_demo', deleteToken: 'demo' }
+  }
   if (route === '/listening') {
     broadcast({ type: 'listening', on: body.on, startedAt: demoStart })
     return {}
@@ -192,7 +203,7 @@ ipcMain.handle('api', async (_e, route, body) => {
     const data = await res.json().catch(() => ({}))
     if (res.ok) return data
     // the service explains refusals in `detail`, such as an action left over from before a restart
-    return { error: typeof data.detail === 'string' ? data.detail : `Hello Again answered ${res.status}. Try again.` }
+    return { error: typeof data.detail === 'string' ? data.detail : `Hello Again answered ${res.status}. Try again.`, status: res.status }
   } catch {
     return { error: "Couldn't reach Hello Again. Check it's running, then try again." }
   }
@@ -214,6 +225,18 @@ ipcMain.on('panel-idle', (e, idle) => {
 })
 
 ipcMain.on('copy', (_e, text) => clipboard.writeText(String(text)))
+// A thinking pill takes the mouse while the pointer is over it, and the keyboard while its form is open.
+ipcMain.on('click-through', (_e, on) => windows.cards.setIgnoreMouseEvents(Boolean(on), { forward: true }))
+ipcMain.on('cards-focus', (_e, on) => {
+  if (on) {
+    windows.cards.setFocusable(true)
+    windows.cards.focus()
+  } else {
+    if (windows.cards.isFocused()) windows.cards.blur() // the keyboard goes back to the call app
+    windows.cards.setFocusable(false)
+  }
+})
+ipcMain.on('copy-invite', () => clipboard.writeText(ENROLL_URL))
 ipcMain.on('ask', openAsk)
 ipcMain.on('toggle-all', toggleAll)
 ipcMain.on('close-response', (_e, id) => {
@@ -229,8 +252,11 @@ app.whenReady().then(async () => {
   const top = workArea.y + PANEL.margin / 2
   const below = top + BAR_HEIGHT + PANEL.gap
 
-  windows.cards = overlayWindow({ view: 'cards', ox: bounds.x, oy: bounds.y }, { ...bounds, focusable: false })
-  windows.cards.setIgnoreMouseEvents(true) // name cards never take the mouse
+  // A macOS panel takes typing for "Remember them" without activating the overlay, so the call app keeps focus.
+  // It can only take the keyboard while that form is open (cards-focus); clicks still land without it.
+  const panel = process.platform === 'darwin' ? { type: 'panel' } : {}
+  windows.cards = overlayWindow({ view: 'cards', ox: bounds.x, oy: bounds.y }, { ...bounds, ...panel, focusable: false, acceptFirstMouse: true })
+  windows.cards.setIgnoreMouseEvents(true, { forward: true }) // click-through, but hover still reaches thinking pills
   windows.bar = panelWindow('bar', { width: PANEL.width, height: BAR_HEIGHT, x: right - PANEL.width, y: top })
   windows.response = panelWindow('response', { width: PANEL.width, height: 160, x: right - PANEL.width, y: below })
   windows.insights = panelWindow('insights', {
