@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src ws://localhost:* ws://127.0.0.1:*; img-src 'self' data:">
+  <title>Hello Again</title>
+  <link rel="stylesheet" href="overlay.css">
+</head>
+<body>
+  <div id="cards" aria-live="polite"></div>
+
+  <main id="dock" class="dock glass" hidden>
+    <header class="dock-head">
+      <span class="brand">Hello Again</span>
+      <span class="status" id="status" data-state="off">Connecting</span>
+    </header>
+    <p class="private">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg>
+      Only you can see this
+    </p>
+
+    <section class="caption" id="caption" aria-live="polite" hidden>
+      <span class="who" id="captionWho"></span>
+      <span class="said" id="captionText"></span>
+    </section>
+
+    <h2 class="picks-title">Top picks</h2>
+    <ol class="picks" id="picks">
+      <li class="empty">Highlights from the conversation show up here as Muse hears them.</li>
+    </ol>
+  </main>
+
+  <script src="overlay.js"></script>
+</body>
+</html>
