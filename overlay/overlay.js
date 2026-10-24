@@ -133,7 +133,24 @@ function removeCard(trackId) {
 
 // ---------- Top picks ----------
 
+// The dock fades when nothing new has been said for a while and comes back on the next caption or pick.
+// Face events don't count: capture sends them every frame.
+const IDLE_MS = 20000
+let idleTimer
+
+function setDockIdle(idle) {
+  $('dock').classList.toggle('idle', idle)
+  window.overlay?.setDockIdle(idle) // the dock window fades itself, OS blur included
+}
+
+function wakeDock() {
+  if ($('dock').classList.contains('idle')) setDockIdle(false)
+  clearTimeout(idleTimer)
+  idleTimer = setTimeout(() => setDockIdle(true), IDLE_MS)
+}
+
 function showCaption({ speaker, text, final }) {
+  wakeDock()
   $('caption').hidden = false
   $('caption').classList.toggle('partial', !final)
   $('captionWho').textContent = speaker
@@ -141,6 +158,7 @@ function showCaption({ speaker, text, final }) {
 }
 
 function addPick({ kind, title, detail, quote, speaker }) {
+  wakeDock()
   const list = $('picks')
   list.querySelector('.empty')?.remove()
   const item = el('li', 'pick')
@@ -170,5 +188,6 @@ function connect() {
 }
 
 window.overlay?.onEvent(handle)
+if (view !== 'cards') wakeDock()
 if (q.get('mock')) setStatus('demo', 'Demo replay')
 else connect()
