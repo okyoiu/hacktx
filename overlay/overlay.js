@@ -53,9 +53,12 @@ function placeCard({ trackId, screenBox: [x, y, w], person }) {
   if (!card) {
     card = el('div')
     card.id = id
+    card.dataset.track = trackId
+    card.addEventListener('mouseenter', syncMouse)
+    card.addEventListener('mouseleave', syncMouse)
     fillCard(card, person)
     $('cards').append(card)
-  } else if (card.dataset.person !== known) morphCard(card, person)
+  } else if (card.dataset.person !== known) morph(card, () => fillCard(card, person))
   card.dataset.person = known
   // beside the face, flipping to the left side near the screen edge
   let left = x - origin.x + w + CARD.gap
@@ -64,24 +67,117 @@ function placeCard({ trackId, screenBox: [x, y, w], person }) {
 }
 
 function fillCard(card, person) {
-  // A face we can't name yet (still matching, or not enrolled) gets the thinking sparkle, never "unknown".
+  const hadForm = card.classList.contains('remembering')
   if (!person) {
+    // A face we can't name yet (still matching, or not enrolled) gets the thinking sparkle, never "unknown".
+    // Its one action, shown on hover, is "Remember them".
     card.className = 'card glass thinking'
-    return card.replaceChildren(icon('sparkle', 'mark'), verb('Recalling,Thinking,Remembering,Looking'))
+    const remember = el('button', 'remember', 'Remember them')
+    remember.type = 'button'
+    remember.addEventListener('click', () => morph(card, () => openRemember(card)))
+    card.replaceChildren(icon('sparkle', 'mark'), verb('Recalling,Thinking,Remembering,Looking'), remember)
+  } else {
+    card.className = 'card glass'
+    const row = el('div', 'row')
+    row.append(el('span', 'dot'), el('span', 'name', person.name))
+    card.replaceChildren(row)
+    if (person.line) card.append(el('div', 'line', person.line))
+    card.append(el('div', 'met', person.met))
   }
-  card.className = 'card glass'
-  const row = el('div', 'row')
-  row.append(el('span', 'dot'), el('span', 'name', person.name))
-  card.replaceChildren(row)
-  if (person.line) card.append(el('div', 'line', person.line))
-  card.append(el('div', 'met', person.met))
+  if (hadForm) release()
+  else syncMouse() // a hovered pill that just became a name card must stop taking the mouse
+}
+
+// "Remember them": a name, their yes, Save. The cards window takes the keyboard while this is open.
+function openRemember(card) {
+  card.className = 'card glass remembering'
+  const name = el('input', 'name-field')
+  Object.assign(name, { type: 'text', maxLength: 80, placeholder: 'Their name', autocomplete: 'off', spellcheck: false })
+  name.setAttribute('aria-label', 'Their name')
+  const consent = el('input')
+  consent.type = 'checkbox'
+  const yes = el('label', 'yes')
+  yes.append(consent, el('span', null, 'They said yes'))
+  const save = el('button', 'save', 'Save')
+  save.type = 'submit'
+  save.disabled = true
+  const invite = el('button', 'invite', 'Copy invite link')
+  invite.type = 'button'
+  const close = el('button', 'icon-btn')
+  close.type = 'button'
+  close.setAttribute('aria-label', 'Close')
+  close.append(icon('close'))
+  const head = el('div', 'remember-head')
+  head.append(icon('sparkle', 'mark'), el('span', null, 'Remember them'), close)
+  const actions = el('div', 'remember-actions')
+  actions.append(save, invite)
+  const note = el('p', 'note')
+  note.setAttribute('role', 'status')
+  const form = el('form', 'remember-form')
+  form.append(name, yes, actions, note)
+  card.replaceChildren(head, form)
+
+  const ready = () => (save.disabled = !(cleanName(name.value) && consent.checked))
+  name.addEventListener('input', ready)
+  consent.addEventListener('change', ready)
+  close.addEventListener('click', () => closeRemember(card))
+  invite.addEventListener('click', () => {
+    window.overlay?.copyInvite() // for people who'd rather enroll themselves with a selfie
+    invite.textContent = 'Link copied'
+  })
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault()
+    if (save.disabled) return
+    for (const control of [name, consent, save]) control.disabled = true
+    save.textContent = 'Saving…'
+    note.textContent = ''
+    card.dataset.saving = 'true'
+    const { error, status } = await api(`/faces/${Number(card.dataset.track)}/remember`, { name: cleanName(name.value), consent: true })
+    delete card.dataset.saving
+    if (!card.classList.contains('remembering')) return // already their name card
+    if (status === 409) return leftCall(card)
+    if (card.dataset.gone) return leftCall(card, error ? undefined : 'Saved. They have left the call.') // left while saving
+    if (error) {
+      note.textContent = error
+      save.textContent = 'Save'
+      name.disabled = consent.disabled = false
+      return ready()
+    }
+    // the server now pushes this face's updated `face` event, which morphs the form into their name card
+    setTimeout(() => card.classList.contains('remembering') && closeRemember(card), 4000)
+  })
+  window.overlay?.focusCards(true)
+  name.focus()
+}
+
+function closeRemember(card) {
+  morph(card, () => fillCard(card, null))
+}
+
+// They left the call while the form was open: say so, then let the card go.
+function leftCall(card, text = 'They left the call before saving.') {
+  card.querySelector('.note').textContent = text
+  for (const control of card.querySelectorAll('input, .save')) control.disabled = true
+  setTimeout(() => {
+    card.remove()
+    release()
+  }, 2500)
+}
+
+// The cards window takes the mouse only while the pointer is over a thinking pill or its form.
+const syncMouse = () => window.overlay?.setClickThrough(!document.querySelector('#cards :is(.thinking, .remembering):hover'))
+
+// Hands the keyboard back to the call app, and the mouse unless the pointer is still over a pill.
+function release() {
+  window.overlay?.focusCards(false)
+  syncMouse()
 }
 
 // Same element, new content: tween the old size to the new one and blur the new content in.
-function morphCard(card, person) {
+function morph(card, change) {
   const size = () => ({ width: card.offsetWidth + 'px', height: card.offsetHeight + 'px', borderRadius: getComputedStyle(card).borderRadius })
   const from = size()
-  fillCard(card, person)
+  change()
   if (calm.matches) return
   card.animate([{ ...from, overflow: 'hidden' }, { ...size(), overflow: 'hidden' }], { duration: 420, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' })
   for (const child of card.children) {
@@ -92,8 +188,23 @@ function morphCard(card, person) {
 function removeCard(trackId) {
   const card = $('t' + trackId)
   if (!card) return
+  if (card.classList.contains('remembering')) {
+    if (card.dataset.saving) card.dataset.gone = 'true' // the save's answer decides what to say
+    else leftCall(card)
+    return
+  }
   card.classList.add('leaving')
-  setTimeout(() => card.remove(), 250)
+  setTimeout(() => {
+    card.remove()
+    syncMouse() // in case the pointer was over it
+  }, 250)
+}
+
+if (shows('cards')) {
+  document.addEventListener('keydown', (e) => {
+    const open = document.querySelector('.card.remembering')
+    if (e.key === 'Escape' && open) closeRemember(open)
+  })
 }
 
 // an icon from the <symbol>s in index.html
