@@ -5,12 +5,16 @@ The region is the call window as x,y,width,height in screen points (on a Mac: th
 On a Mac, --app zoom.us (or FaceTime, 'Google Chrome', …) follows that app's window instead, even when you move it;
 with neither, it follows the largest window of a known call app (capture/window.py).
 Without a live call: --video call.mp4 reads a recording instead; its pixels stand in for screen points.
+It also names Muse's voices from whose lips move (capture/speakers.py) and tells memory with POST /speakers.
+Nothing here shows frames or boxes to anyone; tools/cv_check.py is the debug view.
 """
 import argparse
 import math
 import os
 import sys
+import threading
 import time
+from collections import deque
 
 import cv2
 import httpx
@@ -18,7 +22,8 @@ import mss
 import numpy as np
 from ultralytics import YOLO
 
-from capture.embed import faces_in
+from capture.embed import faces_in, mouths_in
+from capture.speakers import Namer, listen
 from capture.window import CALL_APPS, apps_on_screen, call_window
 
 PERSON = 0  # COCO class id YOLO uses for people
@@ -93,8 +98,12 @@ def main() -> None:
         ap.error(f"no {args.app or 'call app'} window on screen; apps with windows now: {', '.join(apps_on_screen())}")
 
     model = YOLO("yolo26n.pt")  # downloads on first run
-    http = httpx.Client(base_url=os.getenv("MEMORY_URL", "http://localhost:8000"), timeout=10)
+    memory_url = os.getenv("MEMORY_URL", "http://localhost:8000")
+    http = httpx.Client(base_url=memory_url, timeout=10)
     printed: set[int] = set()  # track ids whose face print the memory service already has
+    people: dict[int, dict] = {}  # track id -> the recognized person memory replied with
+    namer, captions = Namer(), deque()
+    threading.Thread(target=listen, args=(memory_url.replace("http", "ws", 1) + "/ws", captions), daemon=True).start()
 
     def send(path: str, body: dict) -> dict:
         try:
@@ -111,7 +120,16 @@ def main() -> None:
         live: set[int] = set()
         if result.boxes is not None and result.boxes.is_track:
             boxes = dict(zip(result.boxes.id.int().tolist(), result.boxes.xyxy.tolist()))
-            found = assign(faces_in(frame), boxes) if boxes.keys() - printed else {}  # one InsightFace pass, only when needed
+            now = time.monotonic()
+            if boxes.keys() - printed:
+                found = assign(faces_in(frame), boxes)  # one full InsightFace pass gives prints and lips
+            elif namer.wants_lips([p["id"] for p in people.values()], now):
+                found = assign(mouths_in(frame), boxes)
+            else:
+                found = {}
+            for tid, face in found.items():
+                if tid in people:
+                    namer.saw(people[tid], face, now)
             for tid, (x1, y1, x2, y2) in boxes.items():
                 live.add(tid)
                 body = {"trackId": tid, "screenBox": [x + x1 / scale, y + y1 / scale, (x2 - x1) / scale, (y2 - y1) / scale]}
@@ -120,12 +138,21 @@ def main() -> None:
                         continue  # face not visible yet (turned away); try again next frame
                     body["facePrint"] = found[tid].normed_embedding.tolist()
                     printed.add(tid)
-                if send("/faces", body).get("needPrint"):
+                reply = send("/faces", body)
+                if reply.get("needPrint"):
                     printed.discard(tid)
+                if reply.get("person"):
+                    people[tid] = reply["person"]
+                    namer.met(reply["person"])
 
         for tid in printed - live:
             send("/faces/gone", {"trackId": tid})
             printed.discard(tid)
+            people.pop(tid, None)
+        while captions:
+            if named := namer.caption(*captions.popleft()):
+                send("/speakers", {"label": named[0], "name": named[1]})
+                print(f"Muse speaker {named[0]} is {named[1]}")
         time.sleep(max(0.0, 1 / args.fps - (time.time() - started)))
 
     for tid in printed:  # the video ended; clear its cards

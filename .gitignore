@@ -7,3 +7,9 @@ node_modules/
 .DS_Store
 .impeccable/
 notes/
+
+# Claude Code and design-skill files: local to whoever runs Claude, teammates don't need them
+.claude/
+CLAUDE.md
+PRODUCT.md
+DESIGN.md

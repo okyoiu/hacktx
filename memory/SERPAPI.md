@@ -1,9 +1,18 @@
 # SerpApi connection
 
-Muse's `place` and `event` picks with a `search` query call `memory.serp.lookup`
-from the transcript background task. The first real result replaces the pick's
-title and detail, using the existing overlay event format. Missing results or
-failed searches do not publish a place/event card; captions and other picks continue.
+`memory.pipeline` owns every SerpApi call, inside the Meta-driven flow: final
+Muse Voice transcript lines → Meta Muse Spark writes Live insights actions with an
+explicit search query → the user clicks one → `memory.pipeline` → SerpApi → the
+AI response panel. `app.py` never calls SerpApi itself. Partial or blank transcript
+lines never schedule Muse Spark, blank queries never reach SerpApi, and notes,
+points and the other action kinds never trigger a search. There is no polling
+search task.
+
+A `places` or `events` action calls `memory.serp.lookup` and the first real result
+becomes the AI response, with a link. A `search` action calls `memory.serp.search`
+(engine `google`) and Muse Spark summarises the top 3 web results, which are listed
+as the response's sources. Missing results answer "Nothing found"; a failed search
+ends that response as an error with a credential-safe message, and the call goes on.
 
 Set `SERPAPI_KEY` in the root `.env` (see `.env.example`). The key stays on the
 Python server. `DEMO_LL` centers Maps searches and defaults to downtown Austin.
