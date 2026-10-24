@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hello Again · Remember each other?</title>
+  <style>
+    :root {
+      --bg: #EEF1F6; --card: #FFFFFF; --ink: #141821; --ink-2: #4B5364; --line: #D9DFE8;
+      --accent: #1D5FD1; --on-accent: #FFFFFF; --good: #157F57; --bad: #B4332A;
+      font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #0D1016; --card: #161B23; --ink: #E7EAF0; --ink-2: #A3ACBB; --line: #2A313D; --accent: #6E9EF2; --on-accent: #0D1016; --good: #3FBF8B; --bad: #F07A6E; color-scheme: dark; }
+    }
+    body { margin: 0; background: var(--bg); color: var(--ink); }
+    main { max-width: 440px; margin: 0 auto; padding: 32px 18px 48px; display: grid; gap: 18px; }
+    h1 { margin: 0; font-size: 28px; line-height: 1.15; letter-spacing: -0.02em; }
+    p { margin: 0; color: var(--ink-2); }
+    .box { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px; display: grid; gap: 14px; }
+    ul { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
+    label { display: grid; gap: 6px; font-weight: 600; font-size: 15px; }
+    input[type="text"] { font: inherit; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--ink); }
+    input[type="file"] { font: inherit; font-size: 14px; }
+    .check { display: flex; gap: 10px; align-items: flex-start; font-weight: 500; }
+    .check input { width: 20px; height: 20px; margin-top: 2px; accent-color: var(--accent); }
+    img { width: 96px; height: 96px; object-fit: cover; border-radius: 50%; border: 1px solid var(--line); }
+    button { font: inherit; font-weight: 650; padding: 13px 16px; border-radius: 12px; border: 0; background: var(--accent); color: var(--on-accent); cursor: pointer; }
+    button.quiet { background: transparent; color: var(--bad); border: 1px solid var(--line); }
+    button:disabled { opacity: 0.5; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .msg { font-weight: 600; }
+    .msg.error { color: var(--bad); }
+    .msg.ok { color: var(--good); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Remember each other?</h1>
+  <p>People who use Hello Again on calls with you will see your name and a few notes next to your face. Nobody else in the call sees anything, and you can delete it all at any time.</p>
+
+  <form class="box" id="form" novalidate>
+    <div>
+      <strong>What gets saved</strong>
+      <ul>
+        <li>A face print made from the selfie you take here</li>
+        <li>That selfie, shown on your name card</li>
+        <li>Notes from calls you're both in</li>
+      </ul>
+    </div>
+    <p>Everything is deleted after one year, or right away when you ask.</p>
+
+    <label for="name">Your name
+      <input id="name" name="name" type="text" autocomplete="name" required maxlength="80">
+    </label>
+    <label for="selfie">Selfie
+      <input id="selfie" name="selfie" type="file" accept="image/*" capture="user" required>
+    </label>
+    <label class="check" for="consent">
+      <input id="consent" type="checkbox" required>
+      <span>I agree to let Hello Again recognize my face and keep notes about our calls.</span>
+    </label>
+    <button type="submit" id="submit">Agree and enroll</button>
+    <p class="msg" id="msg" role="status"></p>
+  </form>
+
+  <section class="box" id="done" hidden>
+    <p class="msg ok" id="doneText"></p>
+    <p>Bookmark this page to delete your data later. The link holds your private delete key.</p>
+    <button type="button" class="quiet" id="delete">Delete my data</button>
+    <p class="msg" id="deleteMsg" role="status"></p>
+  </section>
+
+  <p>Not interested? Just close this page. Nothing has been saved.</p>
+</main>
+
+<script>
+  const $ = (id) => document.getElementById(id)
+
+  $('selfie').addEventListener('change', () => {
+    const file = $('selfie').files[0]
+    $('preview')?.remove()
+    if (!file) return
+    const img = new Image()
+    img.id = 'preview'
+    img.alt = 'Your selfie'
+    img.src = URL.createObjectURL(file)
+    $('selfie').closest('label').after(img)
+  })
+
+  $('form').addEventListener('submit', async (e) => {
+    e.preventDefault()
+    const name = $('name').value.trim()
+    const file = $('selfie').files[0]
+    const say = (text) => { $('msg').className = 'msg error'; $('msg').textContent = text }
+    if (!name) return say('Add your name so people know who you are.')
+    if (!file) return say('Take a selfie so Hello Again can recognize you.')
+    if (!$('consent').checked) return say('Tick the box to agree. Nothing is saved without it.')
+
+    const body = new FormData()
+    body.append('name', name)
+    body.append('consent', 'true')
+    body.append('selfie', file)
+    $('submit').disabled = true
+    $('msg').className = 'msg'
+    $('msg').textContent = 'Enrolling…'
+    try {
+      const res = await fetch('/enroll', { method: 'POST', body })
+      const data = await res.json()
+      if (!res.ok) return say(data.detail || 'Enrolling failed. Try again.')
+      location.hash = `delete=${data.id}.${data.deleteToken}`
+      showDone(`You're in, ${name}. You'll be recognized on your next call.`)
+    } catch {
+      say("Couldn't reach Hello Again. Check you're on the same Wi-Fi and try again.")
+    } finally {
+      $('submit').disabled = false
+    }
+  })
+
+  function showDone(text) {
+    $('form').hidden = true
+    $('done').hidden = false
+    $('doneText').textContent = text
+  }
+
+  $('delete').addEventListener('click', async () => {
+    const [id, token] = location.hash.replace('#delete=', '').split('.')
+    try {
+      const res = await fetch(`/people/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { 'X-Delete-Token': token } })
+      const data = await res.json()
+      $('deleteMsg').className = res.ok ? 'msg ok' : 'msg error'
+      $('deleteMsg').textContent = res.ok ? 'Deleted. Hello Again no longer knows your face or any notes.' : data.detail
+      if (res.ok) history.replaceState(null, '', location.pathname)
+    } catch {
+      $('deleteMsg').className = 'msg error'
+      $('deleteMsg').textContent = "Couldn't reach Hello Again. Try again on the same Wi-Fi."
+    }
+  })
+
+  if (location.hash.startsWith('#delete=')) showDone('You are enrolled in Hello Again.')
+</script>
+</body>
+</html>
