@@ -21,6 +21,7 @@ dependencies = [
   "mss>=9.0",
   "sounddevice>=0.4",
   "websockets>=12",
+  "lap>=0.5.12",
 ]
 
 [dependency-groups]
