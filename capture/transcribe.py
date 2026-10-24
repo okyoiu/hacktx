@@ -1,5 +1,11 @@
-"""Stream call audio to Muse Voice Transcribe and post transcript lines to memory."""
+"""Stream call audio to Muse Voice Transcribe (speaker labels on) and post each line to the memory service.
 
+Run: uv run --env-file .env python -m capture.transcribe --device "BlackHole 2ch"
+List audio inputs with --list-devices (pass the name or its number). To hear the *call* (not just your mic)
+on a Mac, route call audio through a virtual device such as BlackHole and pick it here.
+The mic is recorded at its own rate (Windows mics often only do 48 kHz) and resampled to Muse's 24 kHz.
+Protocol: https://dev.meta.ai/docs/speech-to-text
+"""
 import argparse
 import asyncio
 import json
@@ -11,131 +17,81 @@ import sounddevice as sd
 import soxr
 import websockets
 
-URL = "wss://api.meta.ai/v1/asr/realtime"
+from capture.speakers import UNLABELED
 
-# Microphone runs at 48 kHz; Muse expects 24 kHz, mono, 16-bit PCM.
-INPUT_RATE = 48_000
-RATE = 24_000
-FRAME = 1_920  # 80 ms at 24 kHz
-INPUT_FRAME = int(FRAME * INPUT_RATE / RATE)
+URL = "wss://api.meta.ai/v1/asr/realtime"
+RATE = 24_000  # Muse PCM_24KHZ: 16-bit mono little-endian
+FRAME_SECONDS = 0.08  # 80 ms per frame, as in Meta's example
+
+
+def resampler(input_rate: int):
+    """bytes of 16-bit mono at input_rate -> bytes at Muse's 24 kHz; keeps state so chunk edges don't click."""
+    if input_rate == RATE:
+        return bytes
+    stream = soxr.ResampleStream(input_rate, RATE, 1, dtype="int16", quality="HQ")
+    return lambda chunk: stream.resample_chunk(np.frombuffer(chunk, dtype=np.int16)).tobytes()
 
 
 async def run(device: int | str | None) -> None:
     loop = asyncio.get_running_loop()
     audio: asyncio.Queue[bytes] = asyncio.Queue()
+    input_rate = int(sd.query_devices(device, "input")["default_samplerate"])
+    to_muse = resampler(input_rate)
 
     def on_audio(indata, frames, when, status):
-        # Keep the real-time microphone callback lightweight.
-        raw_audio = bytes(indata)
-        loop.call_soon_threadsafe(audio.put_nowait, raw_audio)
+        # keep the real-time audio callback light: resampling happens in send_audio
+        loop.call_soon_threadsafe(audio.put_nowait, bytes(indata))
 
-    async with (
-        websockets.connect(URL) as ws,
-        httpx.AsyncClient(
-            base_url=os.getenv("MEMORY_URL", "http://localhost:8000")
-        ) as http,
-    ):
+    async with websockets.connect(URL) as ws, httpx.AsyncClient(base_url=os.getenv("MEMORY_URL", "http://localhost:8000")) as http:
         await ws.send(json.dumps({
-            "authorization": {
-                "accessToken": f"Bearer {os.environ['MODEL_API_KEY']}"
-            },
+            "authorization": {"accessToken": f"Bearer {os.environ['MODEL_API_KEY']}"},
             "model": "muse-voice-transcribe-1.0",
             "audioEncoding": "PCM_24KHZ",
             "mode": "DIARIZATION",
             "partialMode": "CUMULATIVE",
             "emitAudioProgress": False,
         }))
-
         ack = json.loads(await ws.recv())
         if ack.get("type") == "error":
-            raise SystemExit(
-                f"Muse rejected the session: {ack.get('message')}"
-            )
-
+            raise SystemExit(f"Muse rejected the session: {ack.get('message')}")
         print("Muse session", ack.get("sessionId"))
-        print("Listening to microphone. Speak to test transcription.")
+        print(f"Listening at {input_rate} Hz (sent to Muse at {RATE} Hz). Speak to test transcription.")
 
         async def send_audio():
-            # Streaming resampler preserves state between audio blocks.
-            resampler = soxr.ResampleStream(
-                INPUT_RATE, RATE, 1, dtype="float32", quality="LQ"
-            )
-
             while True:
-                raw_audio = await audio.get()
-
-                samples = np.frombuffer(raw_audio, dtype="<i2")
-                samples = samples.astype(np.float32) / 32768.0
-
-                converted = resampler.resample_chunk(
-                    samples, last=False
-                )
-
-                if len(converted) == 0:
-                    continue
-
-                pcm = np.clip(
-                    converted * 32768.0, -32768, 32767
-                ).astype("<i2").tobytes()
-
-                await ws.send(pcm)
+                pcm = to_muse(await audio.get())
+                if pcm:  # the resampler holds back a few ms at the start
+                    await ws.send(pcm)
 
         async def read_events():
-            speaker = "speaker"
-
+            # shortcut: a turn takes the most recent speaker label; overlapping turns can be mislabeled
+            speaker = UNLABELED
             async for raw in ws:
                 event = json.loads(raw)
                 kind = event.get("type")
-
                 if kind == "speaker":
                     speaker = event.get("label") or speaker
-
                 elif kind == "transcript" and event.get("transcript"):
-                    text = event["transcript"]
-                    print(f"[{speaker}] {text}")
-                    await post(
-                        http,
-                        {"speaker": speaker, "text": text, "final": False},
-                    )
-
+                    await post(http, {"speaker": speaker, "text": event["transcript"], "final": False})
                 elif kind == "speechComplete" and event.get("transcript"):
-                    text = event["transcript"]
-                    print(f"[{speaker}] FINAL: {text}")
-                    await post(
-                        http,
-                        {"speaker": speaker, "text": text, "final": True},
-                    )
-
+                    print(f"[{speaker}] {event['transcript']}")
+                    await post(http, {"speaker": speaker, "text": event["transcript"], "final": True})
                 elif kind == "error":
                     print("Muse error:", event.get("message"))
+                # other event types are progress signals; Meta says to ignore unknown types
 
-        with sd.RawInputStream(
-            samplerate=INPUT_RATE,
-            channels=1,
-            dtype="int16",
-            blocksize=INPUT_FRAME,
-            device=device,
-            callback=on_audio,
-        ):
+        blocksize = int(input_rate * FRAME_SECONDS)
+        with sd.RawInputStream(samplerate=input_rate, channels=1, dtype="int16", blocksize=blocksize, device=device, callback=on_audio):
             sender = asyncio.create_task(send_audio())
-
             try:
                 await read_events()
-            except websockets.exceptions.ConnectionClosed as e:
-                print(f"Muse connection closed: {e}")
             finally:
                 sender.cancel()
                 try:
                     await sender
                 except asyncio.CancelledError:
                     pass
-
-                # Don't send endStream if Muse already closed the connection.
-                if not ws.closed:
-                    try:
-                        await ws.send(json.dumps({"type": "endStream"}))
-                    except websockets.exceptions.ConnectionClosed:
-                        pass
+                await ws.send(json.dumps({"type": "endStream"}))
 
 
 async def post(http: httpx.AsyncClient, line: dict) -> None:
@@ -143,23 +99,19 @@ async def post(http: httpx.AsyncClient, line: dict) -> None:
         response = await http.post("/transcript", json=line)
         response.raise_for_status()
     except httpx.HTTPError as e:
-        print(f"Memory service unreachable ({e!r})")
+        print(f"memory service unreachable ({e!r})")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--device", help="audio input name or index")
+    ap.add_argument("--device", help="audio input name or number (default: system default mic)")
     ap.add_argument("--list-devices", action="store_true")
     args = ap.parse_args()
-
     if args.list_devices:
         print(sd.query_devices())
         return
-
-    device = args.device
-    if device is not None and device.isdigit():
-        device = int(device)
-
+    device = int(args.device) if args.device and args.device.isdigit() else args.device
+    # Muse sessions last up to 60 minutes; restart this script for longer calls.
     asyncio.run(run(device))
 
 
