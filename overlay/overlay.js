@@ -36,29 +36,44 @@ function placeCard({ trackId, screenBox: [x, y, w], person }) {
   const id = 't' + trackId
   let card = $(id)
   const known = person ? person.id : 'unknown'
-  if (!card || card.dataset.person !== known) {
-    card?.remove()
-    card = buildCard(person)
+  if (!card) {
+    card = el('div')
     card.id = id
-    card.dataset.person = known
+    // the cards window ignores the mouse except while the pointer is over a card with an action
+    card.addEventListener('mouseenter', () => card.classList.contains('actionable') && window.overlay?.setClickThrough(false))
+    card.addEventListener('mouseleave', () => window.overlay?.setClickThrough(true))
+    fillCard(card, person)
     $('cards').append(card)
-  }
+  } else if (card.dataset.person !== known) morphCard(card, person)
+  card.dataset.person = known
   // beside the face, flipping to the left side near the screen edge
   let left = x - origin.x + w + CARD.gap
   if (left + CARD.width > innerWidth) left = x - origin.x - CARD.width - CARD.gap
   card.style.transform = `translate(${Math.max(8, left)}px, ${Math.max(8, y - origin.y)}px)`
 }
 
-function buildCard(person) {
-  if (!person) return buildThinking()
+function fillCard(card, person) {
+  if (!person) return fillThinking(card)
   // Known faces are read-only: no hover state, clicks pass straight through to the call.
-  const card = el('div', 'card glass')
+  card.className = 'card glass'
   const row = el('div', 'row')
   row.append(el('span', 'dot'), el('span', 'name', person.name))
-  card.append(row)
+  card.replaceChildren(row)
   if (person.line) card.append(el('div', 'line', person.line))
   card.append(el('div', 'met', person.met))
-  return card
+}
+
+// Same element, new content: tween the old size to the new one and blur the new content in.
+function morphCard(card, person) {
+  const from = { width: card.offsetWidth + 'px', height: card.offsetHeight + 'px', borderRadius: getComputedStyle(card).borderRadius }
+  fillCard(card, person)
+  window.overlay?.setClickThrough(true) // the pointer may have been over the old card's action
+  if (calm.matches) return
+  const to = { width: card.offsetWidth + 'px', height: card.offsetHeight + 'px', borderRadius: getComputedStyle(card).borderRadius }
+  card.animate([{ ...from, overflow: 'hidden' }, { ...to, overflow: 'hidden' }], { duration: 420, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' })
+  for (const child of card.children) {
+    child.animate([{ opacity: 0, filter: 'blur(4px)' }, { opacity: 1, filter: 'blur(0)' }], { duration: 320, delay: 120, easing: 'ease-out', fill: 'backwards' })
+  }
 }
 
 // A face we can't name yet (still matching, or not enrolled) keeps a small glass card with a thinking
@@ -66,9 +81,9 @@ function buildCard(person) {
 const VERBS = ['Recalling', 'Thinking', 'Remembering', 'Looking']
 let verbIndex = 0
 
-function buildThinking() {
-  const card = el('div', 'card glass thinking actionable')
-  card.append(sparkle(), el('span', 'verb', VERBS[verbIndex] + '…'))
+function fillThinking(card) {
+  card.className = 'card glass thinking actionable'
+  card.replaceChildren(sparkle(), el('span', 'verb', VERBS[verbIndex] + '…'))
   const invite = el('button', 'invite', 'Copy invite link')
   invite.type = 'button'
   invite.addEventListener('click', async () => {
@@ -80,10 +95,6 @@ function buildThinking() {
     }
   })
   card.append(invite)
-  // the cards window ignores the mouse except while the pointer is over a card with an action
-  card.addEventListener('mouseenter', () => window.overlay?.setClickThrough(false))
-  card.addEventListener('mouseleave', () => window.overlay?.setClickThrough(true))
-  return card
 }
 
 function sparkle() {
