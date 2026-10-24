@@ -6,3 +6,4 @@ node_modules/
 *.pt
 .DS_Store
 .impeccable/
+notes/
