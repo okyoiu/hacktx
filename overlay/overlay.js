@@ -1,36 +1,50 @@
-// Renders memory-service events. view=cards draws name cards beside faces; view=dock draws the Top picks
-// fed by Muse transcripts; view=both (a plain browser tab) draws everything, for styling.
-// Event shapes: see README "Overlay events".
+// Renders memory-service events in one overlay window, picked by ?view=: cards (name cards beside faces),
+// bar (control bar), insights (Live insights) or response (AI response). view=all, a plain browser tab,
+// draws everything for styling. Event shapes: see README "Overlay events".
 const q = new URLSearchParams(location.search)
-const view = q.get('view') || 'both'
-const origin = { x: +q.get('ox') || 0, y: +q.get('oy') || 0 } // this window's top-left in screen points
-const KIND_LABEL = { fact: 'Note', common: 'In common', place: 'Place', event: 'Event' }
-const MAX_PICKS = 3
+const view = q.get('view') || 'all'
+const shows = (part) => view === 'all' || view === part
+const origin = { x: +q.get('ox') || 0, y: +q.get('oy') || 0 } // the cards window's top-left in screen points
 const CARD = { width: 208, gap: 12 }
+const KIND_EMOJI = { define: '📘', search: '🌐', places: '📍', events: '📅', recall: '👋', followups: '💬', helpful: '✨' }
+const calm = matchMedia('(prefers-reduced-motion: reduce)')
 
 const $ = (id) => document.getElementById(id)
 document.body.dataset.view = view
-$('dock').hidden = view === 'cards'
+$('bar').hidden = !shows('bar')
+$('insights').hidden = !shows('insights')
+if (!/Mac/.test(navigator.platform)) for (const key of document.querySelectorAll('kbd.mod')) key.textContent = 'Ctrl'
 
 function el(tag, className, text) {
   const node = document.createElement(tag)
   if (className) node.className = className
-  if (text != null) node.textContent = text // names and quotes are untrusted; never innerHTML
+  if (text != null) node.textContent = text // names, captions and answers are untrusted; never innerHTML
   return node
 }
 
+// resolves to the service's answer, or to { error } with a sentence to show (see main.js)
+const api = (route, body) => (window.overlay ? window.overlay.api(route, body) : Promise.resolve({ error: 'Open the overlay app to send this.' }))
+
 function handle(e) {
-  if (view !== 'dock') {
-    if (e.type === 'face') return placeCard(e)
-    if (e.type === 'face_gone') return removeCard(e.trackId)
+  if (shows('cards')) {
+    if (e.type === 'face') placeCard(e)
+    if (e.type === 'face_gone') removeCard(e.trackId)
   }
-  if (view !== 'cards') {
-    if (e.type === 'caption') return showCaption(e)
-    if (e.type === 'pick') return addPick(e)
+  if (shows('bar')) {
+    if (e.type === 'listening') setListening(e)
+    if (e.type === 'caption') energy = 1
+  }
+  if (shows('insights')) {
+    if (e.type === 'insights') showInsights(e)
+    if (e.type === 'caption') addCaption(e)
+  }
+  if (shows('response')) {
+    if (e.type === 'insights') actions = e.actions
+    if (e.type === 'response') showResponse(e)
   }
 }
 
-// ---------- name cards ----------
+// ---------- name cards (click-through, never show tracking data) ----------
 
 function placeCard({ trackId, screenBox: [x, y, w], person }) {
   const id = 't' + trackId
@@ -39,9 +53,6 @@ function placeCard({ trackId, screenBox: [x, y, w], person }) {
   if (!card) {
     card = el('div')
     card.id = id
-    // the cards window ignores the mouse except while the pointer is over a card with an action
-    card.addEventListener('mouseenter', () => card.classList.contains('actionable') && window.overlay?.setClickThrough(false))
-    card.addEventListener('mouseleave', () => window.overlay?.setClickThrough(true))
     fillCard(card, person)
     $('cards').append(card)
   } else if (card.dataset.person !== known) morphCard(card, person)
@@ -53,8 +64,11 @@ function placeCard({ trackId, screenBox: [x, y, w], person }) {
 }
 
 function fillCard(card, person) {
-  if (!person) return fillThinking(card)
-  // Known faces are read-only: no hover state, clicks pass straight through to the call.
+  // A face we can't name yet (still matching, or not enrolled) gets the thinking sparkle, never "unknown".
+  if (!person) {
+    card.className = 'card glass thinking'
+    return card.replaceChildren(icon('sparkle', 'mark'), verb('Recalling,Thinking,Remembering,Looking'))
+  }
   card.className = 'card glass'
   const row = el('div', 'row')
   row.append(el('span', 'dot'), el('span', 'name', person.name))
@@ -65,129 +79,331 @@ function fillCard(card, person) {
 
 // Same element, new content: tween the old size to the new one and blur the new content in.
 function morphCard(card, person) {
-  const from = { width: card.offsetWidth + 'px', height: card.offsetHeight + 'px', borderRadius: getComputedStyle(card).borderRadius }
+  const size = () => ({ width: card.offsetWidth + 'px', height: card.offsetHeight + 'px', borderRadius: getComputedStyle(card).borderRadius })
+  const from = size()
   fillCard(card, person)
-  window.overlay?.setClickThrough(true) // the pointer may have been over the old card's action
   if (calm.matches) return
-  const to = { width: card.offsetWidth + 'px', height: card.offsetHeight + 'px', borderRadius: getComputedStyle(card).borderRadius }
-  card.animate([{ ...from, overflow: 'hidden' }, { ...to, overflow: 'hidden' }], { duration: 420, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' })
+  card.animate([{ ...from, overflow: 'hidden' }, { ...size(), overflow: 'hidden' }], { duration: 420, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' })
   for (const child of card.children) {
     child.animate([{ opacity: 0, filter: 'blur(4px)' }, { opacity: 1, filter: 'blur(0)' }], { duration: 320, delay: 120, easing: 'ease-out', fill: 'backwards' })
   }
 }
 
-// A face we can't name yet (still matching, or not enrolled) keeps a small glass card with a thinking
-// sparkle instead of an "unknown" label. Its one action, the invite link, only appears on hover.
-const VERBS = ['Recalling', 'Thinking', 'Remembering', 'Looking']
-let verbIndex = 0
-
-function fillThinking(card) {
-  card.className = 'card glass thinking actionable'
-  card.replaceChildren(sparkle(), el('span', 'verb', VERBS[verbIndex] + '…'))
-  const invite = el('button', 'invite', 'Copy invite link')
-  invite.type = 'button'
-  invite.addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(q.get('enroll') || '')
-      invite.textContent = 'Copied · paste in the chat'
-    } catch {
-      invite.textContent = q.get('enroll') || 'No invite link set'
-    }
-  })
-  card.append(invite)
-}
-
-function sparkle() {
-  const ns = 'http://www.w3.org/2000/svg'
-  const svg = document.createElementNS(ns, 'svg')
-  svg.setAttribute('viewBox', '-12 -12 24 24')
-  svg.setAttribute('class', 'sparkle')
-  svg.setAttribute('aria-hidden', 'true')
-  for (const angle of [0, 45, 90, 135]) {
-    const ray = document.createElementNS(ns, 'line')
-    ray.setAttribute('y1', '-9')
-    ray.setAttribute('y2', '9')
-    ray.setAttribute('transform', `rotate(${angle})`)
-    svg.append(ray)
-  }
-  return svg
-}
-
-const calm = matchMedia('(prefers-reduced-motion: reduce)')
-setInterval(() => {
-  if (calm.matches) return
-  verbIndex = (verbIndex + 1) % VERBS.length
-  for (const verb of document.querySelectorAll('.thinking .verb')) {
-    verb.textContent = VERBS[verbIndex] + '…'
-    verb.animate([{ opacity: 0, filter: 'blur(3px)' }, { opacity: 1, filter: 'blur(0)' }], { duration: 320, easing: 'ease-out' })
-  }
-}, 2400)
-
 function removeCard(trackId) {
   const card = $('t' + trackId)
   if (!card) return
   card.classList.add('leaving')
-  window.overlay?.setClickThrough(true) // in case the pointer was over it
   setTimeout(() => card.remove(), 250)
 }
 
-// ---------- Top picks ----------
+// an icon from the <symbol>s in index.html
+function icon(id, className) {
+  const ns = 'http://www.w3.org/2000/svg'
+  const svg = document.createElementNS(ns, 'svg')
+  if (className) svg.setAttribute('class', className)
+  svg.setAttribute('aria-hidden', 'true')
+  const use = document.createElementNS(ns, 'use')
+  use.setAttribute('href', '#' + id)
+  svg.append(use)
+  return svg
+}
 
-// The dock fades when nothing new has been said for a while and comes back on the next caption or pick.
-// Face events don't count: capture sends them every frame.
+function verb(list) {
+  const verbs = list.split(',')
+  const span = el('span', 'verb shimmer', verbs[verbIndex % verbs.length] + '…')
+  span.dataset.verbs = list
+  return span
+}
+
+// Thinking verbs take turns while we wait ("Recalling…", "Searching…").
+let verbIndex = 0
+setInterval(() => {
+  if (calm.matches) return
+  verbIndex++
+  for (const node of document.querySelectorAll('.verb')) {
+    const list = node.dataset.verbs.split(',')
+    node.textContent = list[verbIndex % list.length] + '…'
+    node.animate([{ opacity: 0, filter: 'blur(3px)' }, { opacity: 1, filter: 'blur(0)' }], { duration: 320, easing: 'ease-out' })
+  }
+}, 2400)
+
+// ---------- control bar ----------
+
+let listening = { on: false, startedAt: null }
+let connected = !window.overlay || !!q.get('mock') // a browser preview has no connection to lose
+let energy = 0 // jumps to 1 on each caption, then settles: the waveform breathes with the conversation
+
+function setListening({ on, startedAt }) {
+  listening = { on, startedAt: startedAt || listening.startedAt }
+  renderBar()
+}
+
+function renderBar() {
+  const live = connected && listening.on
+  $('bar').dataset.state = !connected ? 'offline' : live ? 'live' : 'paused'
+  $('pause').disabled = !connected
+  $('pause').setAttribute('aria-label', listening.on ? 'Pause listening' : 'Resume listening')
+  tick()
+  if (live && !calm.matches) requestAnimationFrame(wave)
+  else drawWave(live ? 'icon' : 'flat')
+}
+
+let notSentUntil = 0 // a failed pause shows "Not sent" in the timer's place for a few seconds
+
+function tick() {
+  $('timer').textContent = Date.now() < notSentUntil ? 'Not sent' : connected ? elapsed(listening.startedAt, Date.now()) : 'Offline'
+}
+
+const BARS = [...$('wave').children]
+const ICON = [0.35, 0.6, 0.95, 0.55, 1, 0.7, 0.4] // the resting waveform glyph
+
+function drawWave(shape) {
+  BARS.forEach((bar, i) => (bar.style.transform = `scaleY(${shape === 'flat' ? 0.14 : ICON[i]})`))
+}
+
+let waving = false
+function wave(t) {
+  if (waving) return
+  waving = true
+  const frame = (now) => {
+    if ($('bar').dataset.state !== 'live' || calm.matches) {
+      waving = false
+      return renderBar()
+    }
+    energy = Math.max(0.2, energy * 0.985)
+    BARS.forEach((bar, i) => {
+      const swing = Math.abs(Math.sin(now / (240 + i * 41) + i * 1.9))
+      bar.style.transform = `scaleY(${0.16 + ICON[i] * (0.25 + 0.75 * energy) * swing})`
+    })
+    requestAnimationFrame(frame)
+  }
+  frame(t)
+}
+
+if (shows('bar')) {
+  renderBar()
+  setInterval(tick, 1000)
+  calm.addEventListener('change', renderBar)
+  window.overlay?.onStatus((state) => {
+    connected = state !== 'off'
+    renderBar()
+  })
+  $('pause').addEventListener('click', async () => {
+    $('pause').disabled = true
+    const { error } = await api('/listening', { on: !listening.on }) // the bar updates when the `listening` event comes back
+    $('pause').disabled = !connected
+    $('timer').title = error || ''
+    if (error) notSentUntil = Date.now() + 3000
+    tick()
+  })
+  $('askBtn').addEventListener('click', () => window.overlay?.ask())
+  $('hideBtn').addEventListener('click', () => window.overlay?.toggleAll())
+}
+
+// ---------- Live insights ----------
+
+let insights = null
+
+function showInsights(next) {
+  wakePanel()
+  const prev = insights
+  insights = next
+  $('insightsEmpty').hidden = true
+  $('topic').hidden = false
+  if (next.topic !== prev?.topic) fresh($('topic'))
+  $('topic').textContent = next.topic
+  const seen = new Set(prev?.points)
+  $('points').replaceChildren(...next.points.slice(0, 3).map((p) => fresh(el('li', null, p), seen.has(p))))
+  const had = new Set(prev?.actions.map((a) => a.id))
+  $('actionsTitle').hidden = !next.actions.length
+  $('actions').replaceChildren(...next.actions.slice(0, 4).map((a) => fresh(actionRow(a), had.has(a.id))))
+}
+
+// new lines blur in; lines that were already there stay still
+function fresh(node, old = false) {
+  if (!old) {
+    node.classList.remove('fresh')
+    void node.offsetWidth // restart the animation on a reused element
+    node.classList.add('fresh')
+  }
+  return node
+}
+
+function actionRow({ id, kind, label }) {
+  const item = el('li')
+  const button = el('button', 'action')
+  button.type = 'button'
+  button.append(el('span', 'emoji', KIND_EMOJI[kind] || '✨'), el('span', null, label))
+  button.firstChild.setAttribute('aria-hidden', 'true')
+  button.addEventListener('click', async () => {
+    button.disabled = true
+    const { error } = await api('/actions/' + encodeURIComponent(id)) // the answer arrives as `response` events
+    $('actionsNote').textContent = error || ''
+    button.disabled = false
+  })
+  item.append(button)
+  return item
+}
+
+const MAX_CAPTIONS = 200
+
+function addCaption({ speaker, text, final }) {
+  wakePanel()
+  const list = $('transcript')
+  const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 24
+  // a speaker's partial line keeps growing in place until its final version arrives
+  const line = [...list.querySelectorAll('li.partial')].find((li) => li.dataset.speaker === speaker) || list.appendChild(el('li'))
+  line.dataset.speaker = speaker
+  line.className = final ? '' : 'partial'
+  line.replaceChildren(el('span', 'who', speaker), el('span', 'said', text))
+  while (list.children.length > MAX_CAPTIONS) list.firstElementChild.remove()
+  if (atBottom) list.scrollTop = list.scrollHeight
+}
+
+function copy(button, text) {
+  if (window.overlay) window.overlay.copy(text)
+  else navigator.clipboard?.writeText(text).catch(() => {})
+  button.classList.add('done')
+  button.setAttribute('aria-label', 'Copied')
+  setTimeout(() => {
+    button.classList.remove('done')
+    button.setAttribute('aria-label', button.dataset.label)
+  }, 1400)
+}
+for (const button of document.querySelectorAll('.copy-btn')) button.dataset.label = button.getAttribute('aria-label')
+
+if (shows('insights')) {
+  $('transcriptBtn').addEventListener('click', () => {
+    const open = $('transcript').hidden
+    $('transcript').hidden = !open
+    $('insightsBody').hidden = open
+    $('transcriptBtn').setAttribute('aria-pressed', open)
+    $('transcriptBtn').lastElementChild.textContent = open ? 'Hide transcript' : 'Show transcript'
+    if (open) $('transcript').scrollTop = $('transcript').scrollHeight
+  })
+  $('copyInsights').addEventListener('click', (e) => {
+    const lines = $('transcript').hidden
+      ? insights ? [insights.topic, ...insights.points.map((p) => '- ' + p)] : []
+      : [...$('transcript').children].map((li) => `${li.dataset.speaker}: ${li.lastChild.textContent}`)
+    copy(e.currentTarget, lines.join('\n'))
+  })
+}
+
+// ---------- AI response ----------
+
+let response = { state: 'idle' } // idle | ask | thinking | done | error
+let actions = [] // the latest actions, to put the right emoji on a query chip
+let closed = null
+
+function showResponse(e) {
+  if (!takesOver(response, e, closed)) return
+  wakePanel()
+  response = { state: e.status, id: e.id, query: e.query, text: e.text || '', sources: e.sources || [] }
+  renderResponse()
+}
+
+function renderResponse() {
+  const { state, query, text, sources } = response
+  const panel = $('response')
+  panel.hidden = state === 'idle'
+  panel.dataset.state = state
+  $('responseTitle').textContent = state === 'ask' ? 'Ask AI' : 'AI response'
+  $('askForm').hidden = state !== 'ask'
+  $('askNote').textContent = ''
+  $('chip').hidden = state === 'ask' || !query
+  $('chipEmoji').textContent = KIND_EMOJI[actions.find((a) => a.label === query)?.kind] || ''
+  $('chipText').textContent = query || ''
+  $('chip').title = query || ''
+  $('copyAnswer').hidden = state === 'ask'
+  $('copyAnswer').disabled = state !== 'done'
+  $('thinking').hidden = state !== 'thinking'
+  const lines = state === 'done' ? text.split('\n').filter((l) => l.trim())
+    : state === 'error' ? ["Couldn't get an answer.", (text ? text + ' ' : '') + 'Try again in a moment.']
+    : []
+  $('answer').replaceChildren(...lines.map((line, i) => {
+    const p = el('p', null, line)
+    p.style.animationDelay = i * 70 + 'ms'
+    return p
+  }))
+  $('sources').replaceChildren(...(state === 'done' ? sources : []).map(sourceLink))
+}
+
+function sourceLink({ title, url }) {
+  const item = el('li')
+  const safe = /^https?:\/\//.test(url || '') // links come from search results; only open web pages
+  const link = el(safe ? 'a' : 'span', 'source', title || url)
+  if (safe) {
+    link.href = url
+    link.target = '_blank'
+    link.rel = 'noreferrer'
+    link.title = url
+    link.append(icon('external'))
+  }
+  item.append(link)
+  return item
+}
+
+function closeResponse() {
+  closed = response.id
+  window.overlay?.closeResponse(response.id)
+  response = { state: 'idle' }
+  setTimeout(renderResponse, window.overlay ? 200 : 0) // after the window has faded out
+}
+
+function startAsk() {
+  closed = null
+  response = { state: 'ask' }
+  renderResponse()
+  $('question').value = ''
+  $('question').focus()
+}
+
+if (shows('response')) {
+  window.overlay?.onAsk(startAsk)
+  $('closeResponse').addEventListener('click', closeResponse)
+  document.addEventListener('keydown', (e) => e.key === 'Escape' && response.state !== 'idle' && closeResponse())
+  $('copyAnswer').addEventListener('click', (e) => {
+    copy(e.currentTarget, [response.text, ...response.sources.map((s) => `${s.title}: ${s.url}`)].join('\n'))
+  })
+  $('askForm').addEventListener('submit', async (e) => {
+    e.preventDefault()
+    const question = $('question').value.trim()
+    if (!question) return
+    $('question').disabled = true
+    response = { state: 'sent' } // the answer's events may arrive before its id does; let them in
+    const { id, error } = await api('/ask', { question })
+    $('question').disabled = false
+    if (error) {
+      response = { state: 'ask' }
+      renderResponse()
+      $('askNote').textContent = error
+    } else if (response.id !== id) showResponse({ id, query: question, status: 'thinking' })
+  })
+}
+
+// ---------- panels fit their windows and fade when the call goes quiet ----------
+
 const IDLE_MS = 20000
 let idleTimer
 
-function setDockIdle(idle) {
-  $('dock').classList.toggle('idle', idle)
-  window.overlay?.setDockIdle(idle) // the dock window fades itself, OS blur included
+function setIdle(idle) {
+  document.body.classList.toggle('idle', idle)
+  window.overlay?.setIdle(idle) // the panel window fades itself, OS blur included
 }
 
-function wakeDock() {
-  if ($('dock').classList.contains('idle')) setDockIdle(false)
+function wakePanel() {
+  if (document.body.classList.contains('idle')) setIdle(false)
   clearTimeout(idleTimer)
-  idleTimer = setTimeout(() => setDockIdle(true), IDLE_MS)
+  idleTimer = setTimeout(() => setIdle(true), IDLE_MS)
 }
 
-function showCaption({ speaker, text, final }) {
-  wakeDock()
-  $('caption').hidden = false
-  $('caption').classList.toggle('partial', !final)
-  $('captionWho').textContent = speaker
-  $('captionText').textContent = text
-}
-
-function addPick({ kind, title, detail, quote, speaker }) {
-  wakeDock()
-  const list = $('picks')
-  list.querySelector('.empty')?.remove()
-  const item = el('li', 'pick')
-  item.dataset.kind = kind
-  item.append(el('span', 'kind', KIND_LABEL[kind] || 'Note'), el('strong', 'title', title))
-  if (detail) item.append(el('span', 'detail', detail))
-  if (quote) item.append(el('span', 'from', `${speaker}: "${quote}"`))
-  list.prepend(item)
-  while (list.children.length > MAX_PICKS) list.lastElementChild.remove()
-}
-
-// ---------- event source ----------
-
-function setStatus(state, text) {
-  $('status').dataset.state = state
-  $('status').textContent = text
-}
-
-function connect() {
-  const ws = new WebSocket(q.get('ws') || 'ws://localhost:8000/ws')
-  ws.onopen = () => setStatus('on', 'Listening')
-  ws.onmessage = (m) => handle(JSON.parse(m.data))
-  ws.onclose = () => {
-    setStatus('off', 'Reconnecting')
-    setTimeout(connect, 2000)
+for (const part of ['insights', 'response']) {
+  if (!shows(part)) continue
+  $(part).addEventListener('mouseenter', wakePanel)
+  if (view === part && window.overlay) {
+    new ResizeObserver(() => window.overlay.fit(Math.ceil($(part).getBoundingClientRect().height))).observe($(part))
   }
 }
 
 window.overlay?.onEvent(handle)
-if (view !== 'cards') wakeDock()
-if (q.get('mock')) setStatus('demo', 'Demo replay')
-else connect()
+if (shows('insights')) wakePanel()
