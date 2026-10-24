@@ -21,6 +21,19 @@ def faces_in(bgr: np.ndarray) -> list:
     return _model().get(bgr) if bgr.size else []
 
 
+def mouths_in(bgr: np.ndarray) -> list:
+    """Faces with lip landmarks (.bbox, .landmark_3d_68) but no prints: quick enough to run on every frame."""
+    from insightface.app.common import Face
+
+    model = _model()
+    # InsightFace's default sizes: 128 finds faces that fill the frame; faces that need 1280 are too small to read lips
+    boxes, kpss = model.det_model.detect(bgr, input_size=[(128, 128), (640, 640)])
+    faces = [Face(bbox=b[:4], kps=k, det_score=b[4]) for b, k in zip(boxes, kpss)]
+    for face in faces:
+        model.models["landmark_3d_68"].get(bgr, face)
+    return faces
+
+
 def embed(bgr: np.ndarray) -> np.ndarray | None:
     """512-number unit-length print of the largest face in a BGR image, or None if there is no face."""
     faces = faces_in(bgr)

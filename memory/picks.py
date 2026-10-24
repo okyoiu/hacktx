@@ -42,11 +42,12 @@ Return one JSON object only, with this shape:
 At most 3 points and 4 actions. Action kinds:
 - define: explain a term that came up; query is the term
 - search: look something up on the web; query is the search
-- places: find a real place; query is a Google Maps search
-- events: find an event; query is an events search
+- places: find a real place; query is a concise Google Maps search grounded in the conversation, with the city when known
+- events: find a real event; query is a concise Google Events search grounded in the conversation, with the city when known
 - recall: remind the user who someone in the call is; personId is their ID
 - followups: suggest follow-up questions to ask
 - helpful: give helpful information about the conversation
+Never invent venues or events: the query is run on SerpApi only if the user clicks, and finds real options.
 Take notes from the new lines only. Use [] when there is nothing useful.
 Only use person IDs from the supplied list. Do not infer private facts.
 """

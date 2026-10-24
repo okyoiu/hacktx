@@ -9,14 +9,13 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote_plus
 
 import numpy as np
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from memory import notes, picks, serp, store
+from memory import notes, picks, pipeline, store
 
 WEB = Path(__file__).resolve().parent.parent / "web"
 MAX_SELFIE_BYTES = 8_000_000
@@ -304,7 +303,7 @@ async def finish(event: dict, kind: str, arg: str | None, present: dict[str, str
         text, sources = await asyncio.to_thread(answer, kind, arg, present, lines)
         event = event | {"status": "done", "text": text, "sources": sources}
         this_call().responses.append(event)
-    except (NoAnswer, picks.MuseError, serp.SerpApiError) as e:
+    except (NoAnswer, picks.MuseError, pipeline.SerpApiError) as e:
         event = event | {"status": "error", "text": str(e)}
     except Exception as e:  # never leave the panel stuck on "thinking"
         print(f"response failed: {e!r}")
@@ -317,19 +316,11 @@ def answer(kind: str, arg: str | None, present: dict[str, str], lines: list[str]
     if kind == "recall":
         return recall(arg), []
     if kind in ("places", "events"):
-        hit = serp.lookup(kind[:-1], arg)
-        if not hit:
-            return f'Nothing found for "{arg}".', []
-        link = "https://www.google.com/maps/search/?api=1&query=" if kind == "places" else "https://www.google.com/search?q="
-        return f"{hit['title']}\n{hit['detail']}".strip(), [{"title": hit["title"], "url": link + quote_plus(hit["title"])}]
+        return pipeline.lookup(kind, arg)  # SerpApi only through pipeline, for a query Muse wrote
     known = store.notes_for(list(present))
     people = {pid: {"name": name, "notes": known.get(pid, [])} for pid, name in present.items()}
     if kind == "search":
-        results = serp.search(arg)
-        if not results:
-            return f'No web results for "{arg}".', []
-        sources = [{"title": r["title"], "url": r["url"]} for r in results]
-        return picks.answer("search", arg, people, lines, results), sources
+        return pipeline.search(arg, people, lines)
     return picks.answer(kind, arg or "", people, lines), []
 
 
