@@ -9,11 +9,12 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Annotated
 
 import numpy as np
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 from starlette.requests import HTTPConnection
 
 from memory import notes, picks, pipeline, store
@@ -32,6 +33,7 @@ def utc_now() -> str:
 
 clients: set[WebSocket] = set()
 tracks: dict[int, dict | None] = {}  # trackId -> card for the matched person (None = not enrolled)
+unknown: dict[int, dict] = {}  # trackId -> {print, box} of a face on screen we can't name; RAM only, saved only on consent
 speakers: dict[str, str] = {}  # Muse speaker label -> display name
 history: list[str] = []  # lines Muse Spark has already seen, context for the next refresh
 fresh: list[str] = []  # final lines since the last insights refresh
@@ -101,6 +103,7 @@ def end_call() -> asyncio.Future:
     ended, call = call or Call(), None
     latest_insights = None  # the next call, and overlays connecting later, start clean
     history.clear()
+    unknown.clear()  # strangers' prints never outlive the call
     fresh.clear()
     loop = asyncio.get_running_loop()
     loop.run_in_executor(None, remember_encounters, ended)  # Muse Spark is slow; the note doesn't wait for it
@@ -188,6 +191,11 @@ async def faces(t: FaceTrack):
         tracks[t.trackId] = await asyncio.to_thread(card_for, t.facePrint)
     elif t.trackId not in tracks:
         return {"needPrint": True}  # we restarted and lost this track; capture resends its print
+    if tracks[t.trackId] is None:  # can't name them: hold the print in RAM in case they agree to be remembered
+        if t.facePrint is not None:
+            unknown[t.trackId] = {"print": t.facePrint}
+        if t.trackId in unknown:
+            unknown[t.trackId]["box"] = t.screenBox
     saw_face(tracks[t.trackId])
     await push({"type": "face", "trackId": t.trackId, "screenBox": t.screenBox, "person": tracks[t.trackId]})
     return {"person": tracks[t.trackId]}
@@ -196,8 +204,29 @@ async def faces(t: FaceTrack):
 @app.post("/faces/gone")
 async def face_gone(g: Gone):
     tracks.pop(g.trackId, None)
+    unknown.pop(g.trackId, None)
     await push({"type": "face_gone", "trackId": g.trackId})
     return {"ok": True}
+
+
+class Remember(BaseModel):
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
+    consent: bool
+
+
+@app.post("/faces/{track_id}/remember")
+async def remember(track_id: int, body: Remember):
+    """Enroll the face on screen in this track from its print, once they've said yes; no photo needed."""
+    if not body.consent:
+        raise HTTPException(400, "Consent is required to remember someone. Nothing was saved.")
+    face = unknown.pop(track_id, None)  # popped first, so a double click can't enroll them twice
+    if face is None:
+        raise HTTPException(409, "That face has left the call")
+    pid, token = await asyncio.to_thread(store.enroll, body.name, np.asarray(face["print"], dtype=np.float32), None)
+    tracks[track_id] = await asyncio.to_thread(card_for, face["print"])
+    saw_face(tracks[track_id])
+    await push({"type": "face", "trackId": track_id, "screenBox": face["box"], "person": tracks[track_id]})
+    return {"id": pid, "deleteToken": token}
 
 
 # --- transcript (from capture/transcribe.py) and the pause button ---

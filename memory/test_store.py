@@ -217,6 +217,29 @@ def test_call_end_summarises_only_recognized_people(db, enroll, tmp_path, monkey
     assert db.execute("select count(*) from encounters where person_id = 'p_stranger'").fetchone()[0] == 0
 
 
+def test_remember_from_the_call_enrolls_with_consent_and_no_photo(db, monkeypatch):
+    for name, value in {"call": None, "tracks": {}, "unknown": {}}.items():
+        monkeypatch.setattr(server, name, value)
+    face = random_print()
+
+    def saved_prints() -> int:
+        return db.execute("select count(*) from faces where print = %s", (face,)).fetchone()[0]
+
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
+        assert http.post("/faces", json={"trackId": 990301, "screenBox": [0, 0, 100, 100], "facePrint": face.tolist()}).json() == {"person": None}
+        assert saved_prints() == 0  # on screen and unknown: RAM only
+        got = http.post("/faces/990301/remember", json={"name": "Kai Park", "consent": True}).json()
+        try:
+            person = http.get(f"/people/{got['id']}").json()
+            assert person["name"] == "Kai Park" and saved_prints() == 1
+            assert db.execute("select selfie is null from people where id = %s", (got["id"],)).fetchone()[0]
+            assert server.card_for(face.tolist())["id"] == got["id"]  # recognized from now on
+            http.post("/faces/gone", json={"trackId": 990301})
+        finally:
+            assert store.delete_person(got["id"], got["deleteToken"])  # the returned token works, and cleans up
+    assert saved_prints() == 0
+
+
 def test_summary_without_model_key_is_skipped_and_logged(db, enroll, monkeypatch, capsys):
     monkeypatch.delenv("MODEL_API_KEY", raising=False)
     picks.client.cache_clear()

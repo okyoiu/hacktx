@@ -44,7 +44,7 @@ def fake_serpapi(url, params, timeout):
 @pytest.fixture
 def http(monkeypatch, tmp_path):
     """A fresh server: no call, transcript, insights or faces, and listening."""
-    state = {"call": None, "history": [], "fresh": [], "actions": {}, "latest_insights": None, "tracks": {},
+    state = {"call": None, "history": [], "fresh": [], "actions": {}, "latest_insights": None, "tracks": {}, "unknown": {},
              "speakers": {}, "clients": set(), "listening": {"type": "listening", "on": True, "startedAt": "2026-10-24T20:00:00Z"}}
     for name, value in state.items():
         monkeypatch.setattr(server, name, value)
@@ -149,6 +149,49 @@ def test_websocket_only_for_this_laptop(http):
     for headers in ({}, {"Origin": "file://"}):  # Node/Python clients, and the overlay page
         with http.websocket_connect("/ws", headers=headers) as ws:
             assert ws.receive_json()["type"] == "listening"
+
+
+def test_remember_saves_the_face_on_screen_only_with_consent(http, events, monkeypatch):
+    enrolled = []
+
+    def enroll(name, face_print, selfie):
+        enrolled.append((name, face_print.tolist(), selfie))
+        return "p_new", "token123"
+
+    monkeypatch.setattr(store, "enroll", enroll)
+    monkeypatch.setattr(store, "match", lambda p: {"id": "p_new", "name": "Kai Park", "firstMet": date(2026, 10, 24), "score": 1.0}
+                        if enrolled else None)
+    monkeypatch.setattr(store, "last_time", lambda pid: None)
+    monkeypatch.setattr(store, "latest_note", lambda pid: None)
+    monkeypatch.setattr(store, "person", lambda pid: None)  # read by the call note at /calls/end
+    face = [0.0] * 511 + [1.0]
+    box = [10.0, 20.0, 100.0, 120.0]
+    assert http.post("/faces", json={"trackId": 7, "screenBox": box, "facePrint": face}).json() == {"person": None}
+    assert enrolled == []  # an unknown face on screen is never saved by itself
+
+    assert http.post("/faces/7/remember", json={"name": "Kai Park", "consent": False}).status_code == 400
+    assert http.post("/faces/7/remember", json={"name": "   ", "consent": True}).status_code == 422
+    assert http.post("/faces/7/remember", json={"name": "x" * 81, "consent": True}).status_code == 422
+    assert TestClient(server.app, client=WIFI).post("/faces/7/remember", json={"name": "Kai", "consent": True}).status_code == 403
+    assert enrolled == []
+
+    saved = http.post("/faces/7/remember", json={"name": "  Kai Park ", "consent": True})
+    assert saved.json() == {"id": "p_new", "deleteToken": "token123"}
+    assert enrolled == [("Kai Park", face, None)]  # the print from the call, no selfie
+    assert events[-1] == {"type": "face", "trackId": 7, "screenBox": box,
+                          "person": {"id": "p_new", "name": "Kai Park", "line": "", "met": "Met Oct 24"}}
+    assert "p_new" in server.call.people  # counted in this call from now on
+    assert http.post("/faces/7/remember", json={"name": "Kai Park", "consent": True}).status_code == 409  # already saved
+
+    enrolled.clear()
+    http.post("/faces", json={"trackId": 8, "screenBox": box, "facePrint": face})
+    http.post("/faces/gone", json={"trackId": 8})
+    gone = http.post("/faces/8/remember", json={"name": "Kai Park", "consent": True})
+    assert gone.status_code == 409 and gone.json()["detail"] == "That face has left the call"
+    http.post("/faces", json={"trackId": 9, "screenBox": box, "facePrint": face})
+    http.post("/calls/end")
+    assert http.post("/faces/9/remember", json={"name": "Kai Park", "consent": True}).status_code == 409
+    assert enrolled == [] and server.unknown == {}  # nothing kept after the face leaves or the call ends
 
 
 def test_insights_survive_a_failed_note_and_ignore_a_garbage_reply(http, events, monkeypatch):
