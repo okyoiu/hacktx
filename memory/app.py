@@ -130,14 +130,17 @@ async def make_picks(who: str, text: str) -> None:
     for note in out["notes"]:
         await asyncio.to_thread(store.add_note, note["personId"], note["text"])
     for pick in out["picks"]:
-        if pick["kind"] in ("place", "event") and pick["search"]:
+        if pick["kind"] in ("place", "event"):
+            if not pick.get("search"):
+                continue
             try:
                 hit = await asyncio.to_thread(serp.lookup, pick["kind"], pick["search"])
-            except Exception as e:
-                print(f"serpapi failed: {e!r}")
+            except (serp.SerpApiError, ValueError) as e:
+                print(f"serpapi failed: {e}")
                 hit = None
-            if hit:
-                pick |= hit
+            if not hit:
+                continue  # Don't present a model-invented venue as a real search result.
+            pick |= hit
         await push({
             "type": "pick",
             "id": uuid.uuid4().hex[:8],
