@@ -37,7 +37,7 @@ def main() -> None:
             print(f"memory service unreachable ({e!r}); is uvicorn running?")
             return {}
 
-    with mss.mss() as screen:
+    with mss.MSS() as screen:
         while True:
             started = time.time()
             frame = cv2.cvtColor(np.array(screen.grab(region)), cv2.COLOR_BGRA2BGR)
