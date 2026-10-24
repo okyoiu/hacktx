@@ -6,6 +6,8 @@ Keep it on localhost or your LAN; nothing here is authenticated except deleting 
 import asyncio
 import time
 import uuid
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -13,11 +15,12 @@ from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException,
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from memory import picks, serp, store
+from memory import notes, picks, serp, store
 
 WEB = Path(__file__).resolve().parent.parent / "web"
 MAX_SELFIE_BYTES = 8_000_000
 REPEAT_SECONDS = 300
+CALL_IDLE_SECONDS = 60  # a call ends this long after the last face was seen
 
 app = FastAPI(title="Hello Again memory")
 clients: set[WebSocket] = set()
@@ -25,6 +28,43 @@ tracks: dict[int, dict | None] = {}  # trackId -> card for the matched person (N
 speakers: dict[str, str] = {}  # Muse speaker label -> display name
 history: list[str] = []  # recent lines, context for Muse Spark
 recent_titles: dict[str, float] = {}  # lowercased pick title -> when it was last pushed
+
+
+@dataclass
+class Call:
+    started: datetime = field(default_factory=datetime.now)
+    people: dict[str, list[str]] = field(default_factory=dict)  # recognized person id -> notes learned this call
+    picks: list[dict] = field(default_factory=list)  # pick events pushed this call
+
+
+call: Call | None = None  # None between calls
+idle_timer: asyncio.TimerHandle | None = None
+
+
+def this_call() -> Call:
+    global call
+    call = call or Call()
+    return call
+
+
+def end_call() -> asyncio.Future:
+    """Close the current call and write its note in a thread; the future resolves to the note's path or None."""
+    global call
+    if idle_timer:
+        idle_timer.cancel()
+    ended, call = call or Call(), None
+    return asyncio.get_running_loop().run_in_executor(None, notes.write, ended.started, ended.people, ended.picks)
+
+
+def saw_face(card: dict | None) -> None:
+    """Count this face toward the current call and restart the idle countdown that ends it."""
+    global idle_timer
+    people = this_call().people
+    if card:
+        people.setdefault(card["id"], [])
+    if idle_timer:
+        idle_timer.cancel()
+    idle_timer = asyncio.get_running_loop().call_later(CALL_IDLE_SECONDS, end_call)
 
 
 async def push(event: dict) -> None:
@@ -77,6 +117,7 @@ async def faces(t: FaceTrack):
         tracks[t.trackId] = await asyncio.to_thread(card_for, t.facePrint)
     elif t.trackId not in tracks:
         return {"needPrint": True}  # we restarted and lost this track; capture resends its print
+    saw_face(tracks[t.trackId])
     await push({"type": "face", "trackId": t.trackId, "screenBox": t.screenBox, "person": tracks[t.trackId]})
     return {"person": tracks[t.trackId]}
 
@@ -143,6 +184,7 @@ async def make_picks(who: str, text: str) -> None:
 
     for note in out["notes"]:
         await asyncio.to_thread(store.add_note, note["personId"], note["text"])
+        this_call().people.setdefault(note["personId"], []).append(note["text"])
     for pick in out["picks"]:
         if pick["kind"] in ("place", "event") and pick["search"]:
             try:
@@ -154,7 +196,7 @@ async def make_picks(who: str, text: str) -> None:
                 pick |= hit
         if seen_recently(pick["title"], time.monotonic()):  # after SerpApi, so two searches landing on one place count once
             continue
-        await push({
+        event = {
             "type": "pick",
             "id": uuid.uuid4().hex[:8],
             "kind": pick["kind"],
@@ -162,7 +204,15 @@ async def make_picks(who: str, text: str) -> None:
             "detail": pick["detail"],
             "quote": text,
             "speaker": who,
-        })
+        }
+        this_call().picks.append(event)
+        await push(event)
+
+
+@app.post("/calls/end")
+async def calls_end():
+    path = await end_call()
+    return {"note": str(path) if path else None}
 
 
 # --- enrollment (web/enroll.html, opened on the guest's own phone) ---
@@ -190,6 +240,14 @@ async def enroll(
         raise HTTPException(422, "No face found in that photo. Try again facing the camera in good light.")
     pid, token = await asyncio.to_thread(store.enroll, name.strip(), face_print, data)
     return {"id": pid, "deleteToken": token}
+
+
+@app.get("/people/{pid}")
+def get_person(pid: str):
+    found = store.person(pid)
+    if found is None:
+        raise HTTPException(404, "Nobody with that id (or their consent has run out).")
+    return found
 
 
 @app.delete("/people/{pid}")

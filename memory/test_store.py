@@ -1,13 +1,17 @@
-"""store.py against the real database. Run with: uv run --env-file .env pytest
+"""store.py, and the endpoints that read it, against the real database. Run with: uv run --env-file .env pytest
 Every test makes its own people and deletes them afterwards; nothing else is touched."""
 import os
 import secrets
+import time
+from pathlib import Path
 
 import numpy as np
 import psycopg
 import pytest
+from fastapi.testclient import TestClient
 
-from memory import store
+from memory import app as server
+from memory import notes, picks, store
 
 os.environ.setdefault("PGCONNECT_TIMEOUT", "3")  # skip fast instead of hanging when the host is unreachable
 
@@ -92,3 +96,52 @@ def test_delete_needs_the_right_token(db, enroll):
     assert store.delete_person(pid, token) is True
     assert [count(db, t, pid) for t in ("people", "faces", "consents")] == [0, 0, 0]
     assert store.delete_person(pid, token) is False
+
+
+def test_person_returns_notes_newest_first(db, enroll):
+    pid, _ = enroll(random_print())
+    store.add_note(pid, "Moved to Austin")
+    store.add_note(pid, "Started climbing")
+    got = store.person(pid)
+    assert [n["text"] for n in got["notes"]] == ["Started climbing", "Moved to Austin"]
+    assert got["firstMet"] is not None and got["name"].startswith("Test ")
+    assert store.person("p_nobody") is None
+    db.execute("update consents set expires_at = current_date - 1 where person_id = %s", (pid,))
+    assert store.person(pid) is None
+
+
+def test_call_note_on_end_and_after_faces_go_idle(db, enroll, tmp_path, monkeypatch):
+    monkeypatch.setattr(notes, "NOTES", tmp_path)
+    monkeypatch.setattr(server, "CALL_IDLE_SECONDS", 30)
+    monkeypatch.setattr(server, "call", None)
+    face = random_print()
+    pid, _ = enroll(face)
+    name = store.person(pid)["name"]
+    title = "Marathon " + secrets.token_hex(3)  # unique, so repeat-pick suppression can't hide it
+    monkeypatch.setattr(picks, "extract", lambda *a: {
+        "notes": [{"personId": pid, "text": "Training for a marathon"}],
+        "picks": [{"kind": "fact", "title": title, "detail": "Race in March", "search": None}],
+    })
+    box = {"trackId": 990001, "screenBox": [0, 0, 100, 100]}
+
+    with TestClient(server.app) as http:
+        assert http.get(f"/people/{pid}").json()["name"] == name
+        assert http.get("/people/p_nobody").status_code == 404
+
+        assert http.post("/calls/end").json() == {"note": None}  # nothing happened, no file
+        http.post("/faces", json=box | {"facePrint": face.tolist()})
+        http.post("/transcript", json={"speaker": "You", "text": "Are you still running?", "final": True})
+        assert http.get(f"/people/{pid}").json()["notes"][0]["text"] == "Training for a marathon"
+        text = Path(http.post("/calls/end").json()["note"]).read_text()
+        assert f"## {name}" in text and "- Training for a marathon" in text and f"**{title}**: Race in March (You)" in text
+
+        def calls_written() -> int:
+            return sum(f.read_text().count("# Call on") for f in tmp_path.glob("*.md"))
+
+        monkeypatch.setattr(server, "CALL_IDLE_SECONDS", 0.2)
+        http.post("/faces", json=box)  # same track still on screen: starts the next call, which then goes idle
+        deadline = time.time() + 3
+        while calls_written() < 2 and time.time() < deadline:
+            time.sleep(0.05)
+        http.post("/faces/gone", json={"trackId": 990001})
+    assert calls_written() == 2 and server.call is None

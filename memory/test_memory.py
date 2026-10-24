@@ -1,4 +1,7 @@
-from memory import app
+from datetime import date, datetime
+
+from memory import app, notes
+from memory.notes import render
 from memory.picks import parse
 from memory.serp import first
 
@@ -44,3 +47,41 @@ def test_seen_recently_blocks_repeat_titles_for_five_minutes():
     assert not app.seen_recently("Ledge", 1299)
     assert not app.seen_recently("Climbing gym", 1300)  # window counts from the last push, not the last repeat
     assert app.seen_recently("Climbing gym", 1301)
+
+
+def test_render_lists_people_learned_notes_and_picks():
+    people = [
+        {"name": "Jordan Lee", "firstMet": date(2025, 9, 24), "learned": ["Moved to Austin"]},
+        {"name": "Maya Chen", "firstMet": date(2026, 10, 24), "learned": []},
+    ]
+    picks = [{"title": "Ledge", "detail": "Climbing gym · 1 Main St", "speaker": "Jordan Lee"},
+             {"title": "Both run", "detail": "", "speaker": "You"}]
+    assert render(datetime(2026, 10, 24, 15, 30), people, picks) == """# Call on Saturday Oct 24, 2026, 15:30
+
+## Jordan Lee
+
+First met Sep 24, 2025.
+
+- Moved to Austin
+
+## Maya Chen
+
+First met Oct 24, 2026.
+
+Nothing new this call.
+
+## Top picks
+
+- **Ledge**: Climbing gym · 1 Main St (Jordan Lee)
+- **Both run** (You)
+"""
+
+
+def test_write_skips_empty_calls_and_appends_within_a_minute(tmp_path, monkeypatch):
+    monkeypatch.setattr(notes, "NOTES", tmp_path / "notes")
+    started = datetime(2026, 10, 24, 15, 30)
+    pick = [{"title": "Ledge", "detail": "", "speaker": "You"}]
+    assert notes.write(started, {}, []) is None
+    path = notes.write(started, {}, pick)
+    assert notes.write(started, {}, pick) == path and path.name == "2026-10-24-1530.md"
+    assert path.read_text().count("# Call on") == 2
