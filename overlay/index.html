@@ -2,34 +2,80 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src ws://localhost:* ws://127.0.0.1:*; img-src 'self' data:">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:">
   <title>Hello Again</title>
   <link rel="stylesheet" href="overlay.css">
 </head>
 <body>
+  <svg hidden>
+    <symbol id="sparkle" viewBox="0 0 24 24">
+      <path d="M13.5 4.5C14 9.5 17.5 13 22.5 13.5 17.5 14 14 17.5 13.5 22.5 13 17.5 9.5 14 4.5 13.5 9.5 13 13 9.5 13.5 4.5Z"/>
+      <path d="M5 1.5C5.2 3.6 6.4 4.8 8.5 5 6.4 5.2 5.2 6.4 5 8.5 4.8 6.4 3.6 5.2 1.5 5 3.6 4.8 4.8 3.6 5 1.5Z"/>
+    </symbol>
+    <symbol id="copy" viewBox="0 0 20 20"><rect x="7" y="7" width="10" height="10" rx="2.5"/><path d="M13 7V5.5A2.5 2.5 0 0 0 10.5 3h-5A2.5 2.5 0 0 0 3 5.5v5A2.5 2.5 0 0 0 5.5 13H7"/></symbol>
+    <symbol id="check" viewBox="0 0 20 20"><path d="m4.5 10.5 3.5 3.5 7.5-8"/></symbol>
+    <symbol id="external" viewBox="0 0 20 20"><path d="M7 13 13 7M8 7h5v5"/></symbol>
+  </svg>
+
   <div id="cards" aria-live="polite"></div>
 
-  <main id="dock" class="dock glass" hidden>
-    <header class="dock-head">
-      <span class="brand">Hello Again</span>
-      <span class="status" id="status" data-state="off">Connecting</span>
+  <header id="bar" class="bar glass" hidden>
+    <button class="pause" id="pause" type="button" aria-label="Pause listening">
+      <svg class="i-pause" viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="2.5" width="3" height="11" rx="1"/><rect x="9.5" y="2.5" width="3" height="11" rx="1"/></svg>
+      <svg class="i-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.2v9.6a.8.8 0 0 0 1.2.7l7.4-4.8a.8.8 0 0 0 0-1.4L6.2 2.5A.8.8 0 0 0 5 3.2Z"/></svg>
+    </button>
+    <span class="wave" id="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+    <span class="timer" id="timer" role="timer" aria-label="Call time">00:00</span>
+    <button class="key-btn" id="askBtn" type="button" aria-keyshortcuts="Meta+Enter">Ask AI <kbd class="mod">⌘</kbd><kbd>↵</kbd></button>
+    <button class="key-btn" id="hideBtn" type="button" aria-keyshortcuts="Meta+Backslash">Show/Hide <kbd class="mod">⌘</kbd><kbd>\</kbd></button>
+  </header>
+
+  <section id="insights" class="panel glass insights" aria-label="Live insights" hidden>
+    <header class="panel-head">
+      <h1 class="panel-title"><svg class="mark" aria-hidden="true"><use href="#sparkle"/></svg>Live insights</h1>
+      <button class="text-btn" id="transcriptBtn" type="button" aria-pressed="false">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 15 5.5 5 9 15M3.3 11.5h4.4M12 7h6M12 11h6M12 15h6"/></svg>
+        <span>Show transcript</span>
+      </button>
+      <button class="icon-btn copy-btn" id="copyInsights" type="button" aria-label="Copy insights">
+        <svg class="i-copy" aria-hidden="true"><use href="#copy"/></svg><svg class="i-done" aria-hidden="true"><use href="#check"/></svg>
+      </button>
     </header>
-    <p class="private">
-      <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg>
-      Only you can see this
-    </p>
+    <div id="insightsBody">
+      <p class="empty" id="insightsEmpty">Insights show up here once the conversation gets going.</p>
+      <h2 class="topic" id="topic" hidden></h2>
+      <ul class="points" id="points"></ul>
+      <h3 class="actions-title" id="actionsTitle" hidden>Actions</h3>
+      <ul class="actions" id="actions"></ul>
+      <p class="note" id="actionsNote" role="status"></p>
+    </div>
+    <ol class="transcript" id="transcript" aria-label="Transcript" hidden></ol>
+  </section>
 
-    <section class="caption" id="caption" aria-live="polite" hidden>
-      <span class="who" id="captionWho"></span>
-      <span class="said" id="captionText"></span>
-    </section>
+  <section id="response" class="panel glass response" aria-label="AI response" hidden>
+    <header class="panel-head">
+      <h1 class="panel-title" id="responseTitle">AI response</h1>
+      <span class="chip" id="chip" hidden><span class="emoji" id="chipEmoji" aria-hidden="true"></span><span class="q" id="chipText"></span></span>
+      <button class="icon-btn copy-btn" id="copyAnswer" type="button" aria-label="Copy answer">
+        <svg class="i-copy" aria-hidden="true"><use href="#copy"/></svg><svg class="i-done" aria-hidden="true"><use href="#check"/></svg>
+      </button>
+      <button class="icon-btn" id="closeResponse" type="button" aria-label="Close">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.5"/><path d="m7.6 7.6 4.8 4.8m0-4.8-4.8 4.8"/></svg>
+      </button>
+    </header>
+    <form class="ask" id="askForm" hidden>
+      <input id="question" maxlength="500" autocomplete="off" spellcheck="false" placeholder="Ask about this call…" aria-label="Question">
+      <kbd>↵</kbd>
+    </form>
+    <p class="note" id="askNote" role="status"></p>
+    <div class="thinking" id="thinking" hidden>
+      <svg class="mark" aria-hidden="true"><use href="#sparkle"/></svg><span class="verb shimmer" data-verbs="Thinking,Searching,Reading,Writing">Thinking…</span>
+    </div>
+    <div class="answer" id="answer" aria-live="polite"></div>
+    <ul class="sources" id="sources" aria-label="Sources"></ul>
+  </section>
 
-    <h2 class="picks-title">Top picks</h2>
-    <ol class="picks" id="picks">
-      <li class="empty">Highlights from the conversation show up here as Muse hears them.</li>
-    </ol>
-  </main>
-
+  <script src="logic.js"></script>
   <script src="overlay.js"></script>
 </body>
 </html>

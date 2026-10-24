@@ -6,7 +6,8 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "mock": "electron . --mock"
+    "mock": "electron . --mock",
+    "test": "node --test"
   },
   "devDependencies": {
     "electron": "44.6.0"
