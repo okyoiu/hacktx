@@ -124,7 +124,7 @@ def test_call_note_on_end_and_after_faces_go_idle(db, enroll, tmp_path, monkeypa
     }))
     box = {"trackId": 990001, "screenBox": [0, 0, 100, 100]}
 
-    with TestClient(server.app) as http:
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
         assert http.get(f"/people/{pid}").json()["name"] == name
         assert http.get("/people/p_nobody").status_code == 404
 
@@ -169,9 +169,10 @@ def test_call_end_summarises_only_recognized_people(db, enroll, tmp_path, monkey
     monkeypatch.setattr(notes, "NOTES", tmp_path)
     for name, value in {"call": None, "history": [], "fresh": [], "tracks": {}, "latest_insights": None, "speakers": {}}.items():
         monkeypatch.setattr(server, name, value)
-    face = random_print()
+    face, quiet_face = random_print(), random_print()
     pid, _ = enroll(face)
-    name = store.person(pid)["name"]
+    quiet, _ = enroll(quiet_face)  # recognized, mostly asks questions, and Muse leaves them out
+    name, quiet_name = store.person(pid)["name"], store.person(quiet)["name"]
     prompts = []
 
     def muse(prompt: str) -> str:
@@ -184,29 +185,59 @@ def test_call_end_summarises_only_recognized_people(db, enroll, tmp_path, monkey
         return json.dumps({"topic": "", "points": [], "actions": []})
 
     monkeypatch.setattr(picks, "chat", muse)
-    with TestClient(server.app) as http:
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
         http.post("/faces", json={"trackId": 990011, "screenBox": [0, 0, 100, 100], "facePrint": face.tolist()})
+        http.post("/faces", json={"trackId": 990014, "screenBox": [400, 0, 100, 100], "facePrint": quiet_face.tolist()})
         stranger = http.post("/faces", json={"trackId": 990012, "screenBox": [200, 0, 100, 100], "facePrint": random_print().tolist()})
         assert stranger.json()["person"] is None  # not enrolled
         http.post("/speakers", json={"label": "speaker_0", "name": name})
+        http.post("/speakers", json={"label": "speaker_1", "name": quiet_name})
+        http.post("/transcript", json={"speaker": "speaker_1", "text": "When is your race?", "final": True})
         http.post("/transcript", json={"speaker": "speaker_0", "text": "My race is in March.", "final": True})
         http.post("/calls/end")
         deadline = time.time() + 3
-        while store.last_time(pid) is None and time.time() < deadline:
+        while (store.last_time(pid) is None or store.last_time(quiet) is None) and time.time() < deadline:
             time.sleep(0.05)
 
         summary = next(p for p in prompts if "A video call just ended" in p)
         roster = summary.split("existing notes):\n")[1].split("\n\nTranscript:")[0]
-        assert roster.splitlines() == [f"{pid}: {name} (nothing yet)"]  # only the recognized person
+        assert roster.splitlines() == [f"{pid}: {name} (nothing yet)", f"{quiet}: {quiet_name} (nothing yet)"]  # no stranger
         assert f"{name}: My race is in March." in summary
         got = http.get(f"/people/{pid}").json()["encounters"]
         assert [(e["about"], e["lastTime"]) for e in got] == [("Runner training for a marathon", "Talked about the March race.")]
+        assert [(e["about"], e["lastTime"]) for e in http.get(f"/people/{quiet}").json()["encounters"]] == [
+            ("", "You were on a call together.")]
 
         again = http.post("/faces", json={"trackId": 990013, "screenBox": [0, 0, 100, 100], "facePrint": face.tolist()})
         assert again.json()["person"]["line"] == "Last time: Talked about the March race."
-        for track in (990011, 990012, 990013):
+        rejoin = http.post("/faces", json={"trackId": 990015, "screenBox": [400, 0, 100, 100], "facePrint": quiet_face.tolist()})
+        assert rejoin.json()["person"]["line"] == "Last time: You were on a call together."
+        for track in (990011, 990012, 990013, 990014, 990015):
             http.post("/faces/gone", json={"trackId": track})
     assert db.execute("select count(*) from encounters where person_id = 'p_stranger'").fetchone()[0] == 0
+
+
+def test_remember_from_the_call_enrolls_with_consent_and_no_photo(db, monkeypatch):
+    for name, value in {"call": None, "tracks": {}, "unknown": {}}.items():
+        monkeypatch.setattr(server, name, value)
+    face = random_print()
+
+    def saved_prints() -> int:
+        return db.execute("select count(*) from faces where print = %s", (face,)).fetchone()[0]
+
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
+        assert http.post("/faces", json={"trackId": 990301, "screenBox": [0, 0, 100, 100], "facePrint": face.tolist()}).json() == {"person": None}
+        assert saved_prints() == 0  # on screen and unknown: RAM only
+        got = http.post("/faces/990301/remember", json={"name": "Kai Park", "consent": True}).json()
+        try:
+            person = http.get(f"/people/{got['id']}").json()
+            assert person["name"] == "Kai Park" and saved_prints() == 1
+            assert db.execute("select selfie is null from people where id = %s", (got["id"],)).fetchone()[0]
+            assert server.card_for(face.tolist())["id"] == got["id"]  # recognized from now on
+            http.post("/faces/gone", json={"trackId": 990301})
+        finally:
+            assert store.delete_person(got["id"], got["deleteToken"])  # the returned token works, and cleans up
+    assert saved_prints() == 0
 
 
 def test_summary_without_model_key_is_skipped_and_logged(db, enroll, monkeypatch, capsys):

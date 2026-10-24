@@ -9,11 +9,13 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Annotated
 
 import numpy as np
-from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, Field, StringConstraints
+from starlette.requests import HTTPConnection
 
 from memory import notes, picks, pipeline, store
 
@@ -22,6 +24,7 @@ MAX_SELFIE_BYTES = 8_000_000
 CALL_IDLE_SECONDS = 60  # a call ends this long after the last face was seen
 INSIGHTS_SECONDS = 8  # Muse Spark refreshes the insights at most this often
 MAX_ACTIONS_KEPT = 100  # actions from older insights stay clickable until this many newer ones exist
+NOTE_POINTS = 10  # Muse rephrases points every refresh, so the call note keeps only the latest few
 
 
 def utc_now() -> str:
@@ -30,6 +33,7 @@ def utc_now() -> str:
 
 clients: set[WebSocket] = set()
 tracks: dict[int, dict | None] = {}  # trackId -> card for the matched person (None = not enrolled)
+unknown: dict[int, dict] = {}  # trackId -> {print, box} of a face on screen we can't name; RAM only, saved only on consent
 speakers: dict[str, str] = {}  # Muse speaker label -> display name
 history: list[str] = []  # lines Muse Spark has already seen, context for the next refresh
 fresh: list[str] = []  # final lines since the last insights refresh
@@ -48,25 +52,46 @@ async def lifespan(_: FastAPI):
     worker.cancel()
 
 
-app = FastAPI(title="Hello Again memory", lifespan=lifespan)
+app = FastAPI(title="Hello Again memory", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+
+
+def from_this_laptop(conn: HTTPConnection) -> bool:
+    """Capture, the overlay and curl connect over loopback with no Origin (the overlay page sends file://); browsers
+    send their page's origin, so other Wi-Fi devices and web pages open on this laptop both fail."""
+    return conn.client is not None and conn.client.host in ("127.0.0.1", "::1") and conn.headers.get("origin") in (None, "file://")
+
+
+@app.middleware("http")
+async def guests_only_enroll(request: Request, call_next):
+    """Phones on the Wi-Fi may enroll and delete themselves; every other route is for this laptop only."""
+    guest = request.url.path == "/enroll" or (request.method == "DELETE" and request.url.path.startswith("/people/"))
+    if not guest and not from_this_laptop(request):
+        return JSONResponse({"detail": "Only the laptop running Hello Again can use that."}, 403)
+    return await call_next(request)
 
 
 @dataclass
 class Call:
     started: datetime = field(default_factory=datetime.now)
     people: dict[str, list[str]] = field(default_factory=dict)  # recognized person id -> notes learned this call
-    points: list[str] = field(default_factory=list)  # every distinct insight point, in order
+    points: list[str] = field(default_factory=list)  # the latest NOTE_POINTS distinct insight points, in order
     responses: list[dict] = field(default_factory=list)  # finished response events
     lines: list[str] = field(default_factory=list)  # every final transcript line, "who: text"
 
 
 call: Call | None = None  # None between calls
 idle_timer: asyncio.TimerHandle | None = None
+background: set[asyncio.Task] = set()  # pushes started from sync code, kept referenced until sent
 
 
 def this_call() -> Call:
     global call
-    call = call or Call()
+    if call is None:
+        call = Call()
+        listening["startedAt"] = utc_now()  # the control bar's call timer starts with the call
+        task = asyncio.get_running_loop().create_task(push(dict(listening)))
+        background.add(task)
+        task.add_done_callback(background.discard)
     return call
 
 
@@ -78,6 +103,7 @@ def end_call() -> asyncio.Future:
     ended, call = call or Call(), None
     latest_insights = None  # the next call, and overlays connecting later, start clean
     history.clear()
+    unknown.clear()  # strangers' prints never outlive the call
     fresh.clear()
     loop = asyncio.get_running_loop()
     loop.run_in_executor(None, remember_encounters, ended)  # Muse Spark is slow; the note doesn't wait for it
@@ -119,6 +145,8 @@ async def push(event: dict) -> None:
 
 @app.websocket("/ws")
 async def overlay_socket(ws: WebSocket):
+    if not from_this_laptop(ws):  # the http middleware doesn't see WebSockets
+        return await ws.close(code=1008)
     await ws.accept()
     for event in (listening, latest_insights):  # catch up an overlay that starts mid-call
         if event:
@@ -163,6 +191,11 @@ async def faces(t: FaceTrack):
         tracks[t.trackId] = await asyncio.to_thread(card_for, t.facePrint)
     elif t.trackId not in tracks:
         return {"needPrint": True}  # we restarted and lost this track; capture resends its print
+    if tracks[t.trackId] is None:  # can't name them: hold the print in RAM in case they agree to be remembered
+        if t.facePrint is not None:
+            unknown[t.trackId] = {"print": t.facePrint}
+        if t.trackId in unknown:
+            unknown[t.trackId]["box"] = t.screenBox
     saw_face(tracks[t.trackId])
     await push({"type": "face", "trackId": t.trackId, "screenBox": t.screenBox, "person": tracks[t.trackId]})
     return {"person": tracks[t.trackId]}
@@ -171,8 +204,29 @@ async def faces(t: FaceTrack):
 @app.post("/faces/gone")
 async def face_gone(g: Gone):
     tracks.pop(g.trackId, None)
+    unknown.pop(g.trackId, None)
     await push({"type": "face_gone", "trackId": g.trackId})
     return {"ok": True}
+
+
+class Remember(BaseModel):
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
+    consent: bool
+
+
+@app.post("/faces/{track_id}/remember")
+async def remember(track_id: int, body: Remember):
+    """Enroll the face on screen in this track from its print, once they've said yes; no photo needed."""
+    if not body.consent:
+        raise HTTPException(400, "Consent is required to remember someone. Nothing was saved.")
+    face = unknown.pop(track_id, None)  # popped first, so a double click can't enroll them twice
+    if face is None:
+        raise HTTPException(409, "That face has left the call")
+    pid, token = await asyncio.to_thread(store.enroll, body.name, np.asarray(face["print"], dtype=np.float32), None)
+    tracks[track_id] = await asyncio.to_thread(card_for, face["print"])
+    saw_face(tracks[track_id])
+    await push({"type": "face", "trackId": track_id, "screenBox": face["box"], "person": tracks[track_id]})
+    return {"id": pid, "deleteToken": token}
 
 
 # --- transcript (from capture/transcribe.py) and the pause button ---
@@ -225,7 +279,10 @@ async def insights_worker() -> None:
     while True:
         await wake.wait()
         wake.clear()
-        await refresh_insights()
+        try:
+            await refresh_insights()
+        except Exception as e:  # a failed model call or note insert must not stop the stream
+            print(f"insights failed: {e!r}")
         await asyncio.sleep(INSIGHTS_SECONDS)  # lines arriving meanwhile wait for the next refresh
 
 
@@ -234,23 +291,25 @@ async def refresh_insights() -> None:
     global latest_insights
     new = fresh[:]
     fresh.clear()
+    if not new:
+        return  # the call they belonged to has ended
+    owner = call  # the call these lines belong to
     present = {p["id"]: p for p in tracks.values() if p}
     try:
         known = await asyncio.to_thread(store.notes_for, list(present))
         people = {pid: {"name": p["name"], "notes": known.get(pid, [])} for pid, p in present.items()}
         out = await asyncio.to_thread(picks.extract, people, history[-12:], new)
-    except Exception as e:  # one failed model call must not stop the stream
-        print(f"insights failed: {e!r}")
-        return
     finally:
-        history.extend(new)
-        del history[:-20]
+        if call is owner:  # a call that ended meanwhile took its transcript with it
+            history.extend(new)
+            del history[:-20]
 
-    current = this_call()
     for note in out["notes"]:
         await asyncio.to_thread(store.add_note, note["personId"], note["text"])
-        current.people.setdefault(note["personId"], []).append(note["text"])
-    current.points += [p for p in out["points"] if p not in current.points]
+        owner.people.setdefault(note["personId"], []).append(note["text"])
+    if call is not owner or not (out["topic"] or out["points"] or out["actions"]):
+        return  # the call ended while Muse thought, or the reply was unusable: leave the panel as it is
+    owner.points = (owner.points + [p for p in out["points"] if p not in owner.points])[-NOTE_POINTS:]
     shown = []
     for action in out["actions"]:
         aid = "a" + uuid.uuid4().hex[:7]
@@ -302,7 +361,8 @@ async def finish(event: dict, kind: str, arg: str | None, present: dict[str, str
     try:
         text, sources = await asyncio.to_thread(answer, kind, arg, present, lines)
         event = event | {"status": "done", "text": text, "sources": sources}
-        this_call().responses.append(event)
+        if call and kind != "recall":  # recall only repeats the database, about someone who may delete themselves
+            call.responses.append(event)
     except (NoAnswer, picks.MuseError, pipeline.SerpApiError) as e:
         event = event | {"status": "error", "text": str(e)}
     except Exception as e:  # never leave the panel stuck on "thinking"
@@ -329,8 +389,8 @@ def recall(pid: str) -> str:
     if person is None:
         raise NoAnswer("That person is no longer enrolled, so there's nothing to recall.")
     out = [f"{person['name']}, first met {notes.day(person['firstMet'])}."]
-    if person["encounters"]:
-        out.append(f"About: {person['encounters'][0]['about']}")
+    if about := next((e["about"] for e in person["encounters"] if e["about"]), None):  # latest one Muse could write
+        out.append(f"About: {about}")
     out += [f"Met {notes.day(e['metAt'].astimezone())}: {e['lastTime']}" for e in person["encounters"]]
     out += [f"- {n['text']}" for n in person["notes"]] or ["No notes about them yet."]
     return "\n".join(out)

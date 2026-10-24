@@ -44,19 +44,24 @@ def test_parse_survives_garbage():
     assert parse('{"points": "not a list", "actions": [1, null], "topic": 7}', KNOWN) == empty
 
 
-def test_parse_summary_keeps_one_valid_entry_per_known_person():
+def test_parse_summary_gives_every_known_person_one_last_time_line():
     reply = "Here you go:\n" + json.dumps({"people": [
         {"personId": "p_jordan", "about": " Engineer, just moved to Austin ", "lastTime": "Talked about finding a climbing gym."},
         {"personId": "p_jordan", "about": "duplicate", "lastTime": "duplicate"},
         {"personId": "p_stranger", "about": "Not in the call", "lastTime": "x"},
-        {"personId": "p_maya", "about": "", "lastTime": "empty about"},
+        {"personId": "p_maya", "about": None, "lastTime": "Asked Jordan about climbing gyms."},
+        {"personId": "p_sam", "about": "Nurse", "lastTime": "  "},
         "junk",
     ]})
-    assert parse_summary(reply, KNOWN | {"p_maya"}) == [
+    together = "You were on a call together."
+    assert parse_summary(reply, {"p_jordan", "p_maya", "p_sam", "p_kai"}) == [
         {"personId": "p_jordan", "about": "Engineer, just moved to Austin", "lastTime": "Talked about finding a climbing gym."},
+        {"personId": "p_maya", "about": "", "lastTime": "Asked Jordan about climbing gyms."},  # about may be empty
+        {"personId": "p_sam", "about": "Nurse", "lastTime": together},
+        {"personId": "p_kai", "about": "", "lastTime": together},  # Muse left them out
     ]
-    assert parse_summary("no json", KNOWN) == []
-    assert parse_summary('{"people": "nope"}', KNOWN) == []
+    assert parse_summary("no json", KNOWN) == [{"personId": "p_jordan", "about": "", "lastTime": together}]
+    assert parse_summary('{"people": "nope"}', set()) == []
 
 
 def test_first_shapes_place_and_event_results():
