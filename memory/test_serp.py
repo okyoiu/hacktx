@@ -104,6 +104,16 @@ def test_search_returns_top_three_linked_results(monkeypatch):
     assert serp.search("  Climbing  Gyms ") == [{"title": f"R{i}", "url": f"https://e.com/{i}", "snippet": ""} for i in range(3)]
 
 
+def test_search_drops_links_that_are_not_http(monkeypatch):
+    def get(url, **kwargs):
+        hits = [{"title": "Script", "link": "javascript:void(0)"}, {"title": "File", "link": "file:///tmp/x"},
+                {"title": "Ok", "link": "https://e.com/ok"}]
+        return httpx.Response(200, json={"organic_results": hits}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(serp.httpx, "get", get)
+    assert serp.search("anything") == [{"title": "Ok", "url": "https://e.com/ok", "snippet": ""}]
+
+
 def test_empty_and_single_place_results():
     assert serp.first("place", {}) is None
     assert serp.first("event", {"events_results": []}) is None

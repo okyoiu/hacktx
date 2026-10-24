@@ -73,10 +73,13 @@ def this_call() -> Call:
 
 def end_call() -> asyncio.Future:
     """Close the current call and write its note in a thread; the future resolves to the note's path or None."""
-    global call
+    global call, latest_insights
     if idle_timer:
         idle_timer.cancel()
     ended, call = call or Call(), None
+    latest_insights = None  # the next call, and overlays connecting later, start clean
+    history.clear()
+    fresh.clear()
     loop = asyncio.get_running_loop()
     loop.run_in_executor(None, remember_encounters, ended)  # Muse Spark is slow; the note doesn't wait for it
     return loop.run_in_executor(None, notes.write, ended.started, ended.people, ended.points, ended.responses)

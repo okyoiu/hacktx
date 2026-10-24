@@ -107,6 +107,19 @@ def test_insights_refresh_at_most_every_interval_and_actions_answer(http, events
     assert "Suggest three short follow-up questions" in muse.prompts[-1] and "Not yet." in muse.prompts[-1]
 
 
+def test_next_call_does_not_see_the_last_calls_insights_or_transcript(http, events, monkeypatch):
+    muse = FakeMuse({"topic": "Old call", "points": ["Something private"], "actions": []})
+    monkeypatch.setattr(picks, "chat", muse)
+    http.post("/transcript", json=line("speaker_0", "Last call's private line"))
+    wait_for(lambda: server.latest_insights is not None)
+
+    http.post("/calls/end")
+    assert server.latest_insights is None  # a newly connected overlay gets no stale insights
+    http.post("/transcript", json=line("speaker_0", "New call starts"))
+    wait_for(lambda: len(muse.prompts) == 2)
+    assert "Last call's private line" not in muse.prompts[1]
+
+
 def test_pause_ignores_transcript_and_resume_restarts_timer_only_between_calls(http, events):
     paused = http.post("/listening", json={"on": False}).json()
     assert paused == {"type": "listening", "on": False, "startedAt": "2026-10-24T20:00:00Z"} and events == [paused]

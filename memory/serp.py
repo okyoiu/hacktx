@@ -67,7 +67,8 @@ def _lookup(kind: str, query: str, key: str, ll: str, location: str) -> dict | N
 @lru_cache(maxsize=256)
 def _search(query: str, key: str) -> tuple[dict, ...]:
     data = _get({"engine": "google", "q": query, "api_key": key, "hl": "en", "gl": "us"})
-    hits = [r for r in data.get("organic_results") or [] if isinstance(r, dict) and r.get("title") and r.get("link")]
+    hits = [r for r in data.get("organic_results") or []  # links become clickable sources: http(s) only
+            if isinstance(r, dict) and r.get("title") and str(r.get("link")).startswith(("https://", "http://"))]
     return tuple({"title": r["title"], "url": r["link"], "snippet": r.get("snippet") or ""} for r in hits[:3])
 
 
