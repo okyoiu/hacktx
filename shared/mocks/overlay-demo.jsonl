@@ -1,14 +1,15 @@
-{"delayMs": 600, "event": {"type": "face", "trackId": 3, "screenBox": [180, 260, 200, 260], "person": null}}
+{"delayMs": 300, "event": {"type": "listening", "on": true, "startedAt": "2026-10-24T21:40:00Z"}}
+{"delayMs": 300, "event": {"type": "face", "trackId": 3, "screenBox": [180, 260, 200, 260], "person": null}}
 {"delayMs": 300, "event": {"type": "face", "trackId": 4, "screenBox": [620, 270, 190, 250], "person": null}}
 {"delayMs": 2200, "event": {"type": "face", "trackId": 3, "screenBox": [184, 262, 200, 260], "person": {"id": "p_jordan", "name": "Jordan Lee", "line": "Was planning a move to Austin", "met": "Met Sep 24"}}}
 {"delayMs": 500, "event": {"type": "face", "trackId": 4, "screenBox": [618, 270, 190, 250], "person": {"id": "p_maya", "name": "Maya Chen", "line": "Product designer", "met": "Met Oct 2"}}}
 {"delayMs": 1500, "event": {"type": "caption", "speaker": "Jordan Lee", "text": "We finally finished the move", "final": false}}
 {"delayMs": 700, "event": {"type": "caption", "speaker": "Jordan Lee", "text": "We finally finished the move to Austin last week.", "final": true}}
-{"delayMs": 1200, "event": {"type": "pick", "id": "a1", "kind": "fact", "title": "Jordan just moved to Austin", "detail": "Ask how the new place is", "quote": "We finally finished the move to Austin last week.", "speaker": "Jordan Lee"}}
+{"delayMs": 1200, "event": {"type": "insights", "topic": "Jordan's move to Austin", "points": ["Jordan moved to Austin last week"], "actions": [{"id": "x2", "kind": "recall", "label": "Remind me who Jordan is"}, {"id": "x9", "kind": "helpful", "label": "Give me helpful information"}]}}
 {"delayMs": 1800, "event": {"type": "caption", "speaker": "Maya Chen", "text": "Nice! Have you found a climbing gym yet?", "final": true}}
 {"delayMs": 1800, "event": {"type": "caption", "speaker": "Jordan Lee", "text": "Not yet. I want somewhere close to South Congress.", "final": true}}
-{"delayMs": 1200, "event": {"type": "pick", "id": "a2", "kind": "common", "title": "You all climb", "detail": "Suggest bouldering together", "quote": "Have you found a climbing gym yet?", "speaker": "Maya Chen"}}
-{"delayMs": 900, "event": {"type": "pick", "id": "a3", "kind": "place", "title": "Ledge Climbing Co. (sample)", "detail": "Bouldering gym · 1.2 mi from South Congress", "quote": "I want somewhere close to South Congress.", "speaker": "Jordan Lee"}}
+{"delayMs": 1200, "event": {"type": "insights", "topic": "Jordan's move to Austin", "points": ["Jordan moved to Austin last week", "Maya asked whether Jordan found a climbing gym", "You all climb: a chance to plan something together"], "actions": [{"id": "x1", "kind": "places", "label": "Find climbing gyms near South Congress"}, {"id": "x2", "kind": "recall", "label": "Remind me who Maya is"}, {"id": "x3", "kind": "followups", "label": "Suggest follow-up questions"}, {"id": "x4", "kind": "events", "label": "Find a climbing meetup this weekend"}]}}
+{"delayMs": 2500, "event": {"type": "response", "id": "r1", "query": "Find climbing gyms near South Congress", "status": "thinking", "text": "", "sources": []}}
+{"delayMs": 2200, "event": {"type": "response", "id": "r1", "query": "Find climbing gyms near South Congress", "status": "done", "text": "Ledge Climbing Co. (sample) is a bouldering gym 1.2 mi from South Congress, open until 10 PM.\nRiverside Boulders (sample) adds yoga classes and is 2.8 mi away.", "sources": [{"title": "Google Maps (sample)", "url": "https://maps.google.com"}]}}
 {"delayMs": 2000, "event": {"type": "face", "trackId": 5, "screenBox": [980, 520, 170, 220], "person": null}}
 {"delayMs": 1500, "event": {"type": "caption", "speaker": "You", "text": "We should all go bouldering this weekend.", "final": true}}
-{"delayMs": 1200, "event": {"type": "pick", "id": "a4", "kind": "event", "title": "Community boulder morning (sample)", "detail": "Sat, Oct 31 · 10:00 AM", "quote": "We should all go bouldering this weekend.", "speaker": "You"}}
