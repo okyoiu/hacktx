@@ -2,10 +2,12 @@
 
 Run: uv run --env-file .env python -m capture.faces --region 0,38,1100,700
 The region is the call window as x,y,width,height in screen points (on a Mac: the numbers Cmd+Shift+4 shows).
+On a Mac you can leave --region out: it finds the Teams or Zoom window on screen.
 Without a live call: --video call.mp4 reads a recording instead; its pixels stand in for screen points.
 """
 import argparse
 import os
+import sys
 import time
 
 import cv2
@@ -15,6 +17,7 @@ import numpy as np
 from ultralytics import YOLO
 
 from capture.embed import embed
+from capture.window import call_window
 
 PERSON = 0  # COCO class id YOLO uses for people
 
@@ -48,10 +51,17 @@ def main() -> None:
             raise SystemExit(f"can't open video {args.video}")
         x, y, w = 0, 0, int(video.get(cv2.CAP_PROP_FRAME_WIDTH))  # video pixels stand in for screen points
         frames = video_frames(video, args.fps)
-    elif not args.region:
-        ap.error("pass --region or --video")
     else:
-        x, y, w, h = (int(v) for v in args.region.split(","))
+        if args.region:
+            x, y, w, h = (int(v) for v in args.region.split(","))
+        elif sys.platform != "darwin":
+            ap.error("pass --region or --video")
+        elif found := call_window():
+            # shortcut: the window is found once at start; restart if you move or resize the call, or re-read it periodically if that bites
+            x, y, w, h = found
+            print(f"capturing the call window: --region {x},{y},{w},{h}")
+        else:
+            ap.error("no Teams or Zoom window on screen; open the call or pass --region")
         frames = screen_frames({"left": x, "top": y, "width": w, "height": h})
 
     model = YOLO("yolo26n.pt")  # downloads on first run
