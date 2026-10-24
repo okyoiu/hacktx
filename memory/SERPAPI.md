@@ -1,7 +1,13 @@
 # SerpApi connection
 
-Muse's `place` and `event` picks with a `search` query call `memory.serp.lookup`
-from the transcript background task. The first real result replaces the pick's
+The Python container `memory.pipeline.process` owns the Meta-to-SerpApi sequence:
+final Muse Voice transcript → Meta Muse Spark → explicit search query → SerpApi
+→ overlay. Partial or blank transcripts never schedule this operation. Meta
+failures never reach SerpApi; notes and shared interests do not trigger searches.
+There is no standalone HTTP search endpoint or polling search task.
+
+Muse's `place` and `event` picks with a nonempty `search` query call
+`memory.serp.lookup` inside that operation. The first real result replaces the pick's
 title and detail, using the existing overlay event format. Missing results or
 failed searches do not publish a place/event card; captions and other picks continue.
 
