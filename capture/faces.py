@@ -7,6 +7,7 @@ with neither, it follows the largest window of a known call app (capture/window.
 Without a live call: --video call.mp4 reads a recording instead; its pixels stand in for screen points.
 """
 import argparse
+import math
 import os
 import sys
 import time
@@ -17,7 +18,7 @@ import mss
 import numpy as np
 from ultralytics import YOLO
 
-from capture.embed import embed
+from capture.embed import faces_in
 from capture.window import CALL_APPS, apps_on_screen, call_window
 
 PERSON = 0  # COCO class id YOLO uses for people
@@ -48,6 +49,24 @@ def video_frames(video: cv2.VideoCapture, fps: float):
         yield frame, (0, 0, frame.shape[1])  # video pixels stand in for screen points
         for _ in range(skip):
             video.grab()
+
+
+def assign(faces: list, boxes: dict[int, list[float]]) -> dict[int, object]:
+    """Give each person box (track id -> x1, y1, x2, y2) the face that belongs to it, so overlapping people (a shared room
+    camera) can't get a neighbour's face: the face's centre is inside the box and nearest the box's top middle, where a
+    head sits. A face goes to one box only."""
+    best: dict[int, tuple[float, object]] = {}
+    for face in faces:
+        fx, fy = (face.bbox[0] + face.bbox[2]) / 2, (face.bbox[1] + face.bbox[3]) / 2
+        fits = [
+            (math.hypot((fx - (x1 + x2) / 2) / (x2 - x1), (fy - y1) / (y2 - y1)), tid)
+            for tid, (x1, y1, x2, y2) in boxes.items() if x1 <= fx <= x2 and y1 <= fy <= y2
+        ]
+        if fits:
+            d, tid = min(fits)
+            if tid not in best or d < best[tid][0]:
+                best[tid] = (d, face)
+    return {tid: face for tid, (_, face) in best.items()}
 
 
 def main() -> None:
@@ -91,14 +110,15 @@ def main() -> None:
 
         live: set[int] = set()
         if result.boxes is not None and result.boxes.is_track:
-            for (x1, y1, x2, y2), tid in zip(result.boxes.xyxy.tolist(), result.boxes.id.int().tolist()):
+            boxes = dict(zip(result.boxes.id.int().tolist(), result.boxes.xyxy.tolist()))
+            found = assign(faces_in(frame), boxes) if boxes.keys() - printed else {}  # one InsightFace pass, only when needed
+            for tid, (x1, y1, x2, y2) in boxes.items():
                 live.add(tid)
                 body = {"trackId": tid, "screenBox": [x + x1 / scale, y + y1 / scale, (x2 - x1) / scale, (y2 - y1) / scale]}
                 if tid not in printed:
-                    face_print = embed(frame[int(y1):int(y2), int(x1):int(x2)])
-                    if face_print is None:
+                    if tid not in found:
                         continue  # face not visible yet (turned away); try again next frame
-                    body["facePrint"] = face_print.tolist()
+                    body["facePrint"] = found[tid].normed_embedding.tolist()
                     printed.add(tid)
                 if send("/faces", body).get("needPrint"):
                     printed.discard(tid)
