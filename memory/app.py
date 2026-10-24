@@ -58,6 +58,7 @@ class Call:
     people: dict[str, list[str]] = field(default_factory=dict)  # recognized person id -> notes learned this call
     points: list[str] = field(default_factory=list)  # every distinct insight point, in order
     responses: list[dict] = field(default_factory=list)  # finished response events
+    lines: list[str] = field(default_factory=list)  # every final transcript line, "who: text"
 
 
 call: Call | None = None  # None between calls
@@ -76,9 +77,23 @@ def end_call() -> asyncio.Future:
     if idle_timer:
         idle_timer.cancel()
     ended, call = call or Call(), None
-    return asyncio.get_running_loop().run_in_executor(
-        None, notes.write, ended.started, ended.people, ended.points, ended.responses
-    )
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(None, remember_encounters, ended)  # Muse Spark is slow; the note doesn't wait for it
+    return loop.run_in_executor(None, notes.write, ended.started, ended.people, ended.points, ended.responses)
+
+
+def remember_encounters(ended: Call) -> None:
+    """Runs in a thread: store Muse Spark's about/last-time summary for each recognized person of a finished call."""
+    try:
+        # store.person drops anyone who deleted themselves or whose consent ran out; unenrolled faces never got here
+        people = {p["id"]: {"name": p["name"], "notes": [n["text"] for n in p["notes"][:5]]}
+                  for p in map(store.person, ended.people) if p}
+        if not people or not ended.lines:
+            return
+        for s in picks.summarise(people, ended.lines):
+            store.add_encounter(s["personId"], ended.started.astimezone(), s["about"], s["lastTime"])
+    except Exception as e:  # e.g. no MODEL_API_KEY: the call still ends and its note is still written
+        print(f"encounter summaries skipped: {e}")
 
 
 def saw_face(card: dict | None) -> None:
@@ -131,10 +146,11 @@ def card_for(face_print: list[float]) -> dict | None:
     if person is None:
         return None
     met = person["firstMet"]
+    last = store.last_time(person["id"])
     return {
         "id": person["id"],
         "name": person["name"],
-        "line": store.latest_note(person["id"]) or "",
+        "line": f"Last time: {last}" if last else store.latest_note(person["id"]) or "",
         "met": f"Met {met:%b} {met.day}",
     }
 
@@ -198,6 +214,7 @@ async def transcript(line: Line):
     await push({"type": "caption", "speaker": who, "text": line.text, "final": line.final})
     if line.final and line.text.strip():
         fresh.append(f"{who}: {line.text}")
+        this_call().lines.append(f"{who}: {line.text}")
         wake.set()
     return {"ok": True}
 
@@ -318,6 +335,9 @@ def recall(pid: str) -> str:
     if person is None:
         raise NoAnswer("That person is no longer enrolled, so there's nothing to recall.")
     out = [f"{person['name']}, first met {notes.day(person['firstMet'])}."]
+    if person["encounters"]:
+        out.append(f"About: {person['encounters'][0]['about']}")
+    out += [f"Met {notes.day(e['metAt'].astimezone())}: {e['lastTime']}" for e in person["encounters"]]
     out += [f"- {n['text']}" for n in person["notes"]] or ["No notes about them yet."]
     return "\n".join(out)
 

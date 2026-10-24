@@ -1,7 +1,7 @@
 """Insights, pause and AI responses through the real endpoints, with fake Muse Spark and SerpApi: no keys or database."""
 import json
 import time
-from datetime import date
+from datetime import date, datetime
 
 import httpx
 import pytest
@@ -138,8 +138,12 @@ def test_every_action_kind_and_ask_answer_and_land_in_the_call_note(http, events
     monkeypatch.setattr(picks, "chat", muse)
     monkeypatch.setenv("SERPAPI_KEY", "test-key")
     monkeypatch.setattr(serp.httpx, "get", fake_serpapi)
-    monkeypatch.setattr(store, "person", lambda pid: {"id": pid, "name": "Jordan Lee", "firstMet": date(2025, 9, 24),
-                                                      "notes": [{"text": "Started climbing"}, {"text": "Moved to Austin"}]})
+    monkeypatch.setattr(store, "person", lambda pid: {
+        "id": pid, "name": "Jordan Lee", "firstMet": date(2025, 9, 24),
+        "encounters": [{"metAt": datetime(2026, 10, 2, 18, 0).astimezone(), "about": "Engineer who climbs", "lastTime": "Planned the move."},
+                       {"metAt": datetime(2025, 9, 24, 18, 0).astimezone(), "about": "Engineer", "lastTime": "Met at a meetup."}],
+        "notes": [{"text": "Started climbing"}, {"text": "Moved to Austin"}],
+    })
     server.tracks[1] = JORDAN
     server.actions.update({
         "a_define": {"kind": "define", "label": "What is bouldering?", "query": "bouldering", "personId": None},
@@ -166,7 +170,10 @@ def test_every_action_kind_and_ask_answer_and_land_in_the_call_note(http, events
     assert place["text"] == "Ledge\nClimbing gym · 1 Main St"
     assert place["sources"] == [{"title": "Ledge", "url": "https://www.google.com/maps/search/?api=1&query=Ledge"}]
     assert run("/actions/a_events")["text"] == 'Nothing found for "climbing meetup".'
-    assert run("/actions/a_recall")["text"] == "Jordan Lee, first met Sep 24, 2025.\n- Started climbing\n- Moved to Austin"
+    assert run("/actions/a_recall")["text"] == (
+        "Jordan Lee, first met Sep 24, 2025.\nAbout: Engineer who climbs\n"
+        "Met Oct 2, 2026: Planned the move.\nMet Sep 24, 2025: Met at a meetup.\n- Started climbing\n- Moved to Austin"
+    )
     assert run("/actions/a_helpful")["text"] == "Answer from Muse"
     asked = run("/ask", {"question": "  Where should we eat? "})
     assert asked["query"] == "Where should we eat?" and "Answer their question: Where should we eat?" in muse.prompts[-1]

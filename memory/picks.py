@@ -70,6 +70,30 @@ TASKS = {
     "search": "Answer \"{query}\" using only these web results, citing them as [1], [2], [3]:\n{results}",
 }
 
+SUMMARY = """A video call just ended. For each person below, write what the user should remember next time they meet.
+
+People in the call (id: name, existing notes):
+{people}
+
+Transcript:
+{transcript}
+
+Return one JSON object only, with this shape:
+{{
+  "people": [
+    {{
+      "personId": "an ID from the people list",
+      "about": "Who they are: a few short facts",
+      "lastTime": "What you talked about this time, 1-2 short lines"
+    }}
+  ]
+}}
+
+Only include people from the list, and leave out anyone the transcript says nothing about.
+Do not infer private facts.
+"""
+SUMMARY_LINES = 500
+
 
 class MuseError(RuntimeError):
     """Safe to show the user: never includes the API key."""
@@ -151,6 +175,55 @@ def answer(
             task=task,
         )
     ).strip()
+
+
+def summarise(people: dict[str, dict], lines: list[str]) -> list[dict]:
+    """About and last-time summaries for the people of a finished call, from its transcript."""
+    content = chat(
+        SUMMARY.format(
+            people=roster(people),
+            # shortcut: only the last SUMMARY_LINES lines; summarise in chunks if calls run longer
+            transcript="\n".join(lines[-SUMMARY_LINES:]),
+        )
+    )
+    return parse_summary(content, set(people))
+
+
+def parse_summary(reply: str, known_ids: set[str]) -> list[dict]:
+    """Validated [{personId, about, lastTime}], at most one per known person."""
+    match = re.search(r"\{.*\}", reply, re.S)
+    if not match:
+        return []
+
+    try:
+        data = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return []
+
+    if not isinstance(data, dict) or not isinstance(data.get("people"), list):
+        return []
+
+    out = []
+    seen = set()
+    for entry in data["people"]:
+        if not isinstance(entry, dict):
+            continue
+
+        pid = entry.get("personId")
+        about = entry.get("about")
+        last = entry.get("lastTime")
+
+        if pid not in known_ids or pid in seen:
+            continue
+        if not isinstance(about, str) or not isinstance(last, str):
+            continue
+
+        about, last = about.strip(), last.strip()
+        if about and last:
+            seen.add(pid)
+            out.append({"personId": pid, "about": about[:300], "lastTime": last[:240]})
+
+    return out
 
 
 def parse(reply: str, known_ids: set[str]) -> dict:

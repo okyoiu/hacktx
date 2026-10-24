@@ -4,6 +4,7 @@ import json
 import os
 import secrets
 import time
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -147,3 +148,71 @@ def test_call_note_on_end_and_after_faces_go_idle(db, enroll, tmp_path, monkeypa
             time.sleep(0.05)
         http.post("/faces/gone", json={"trackId": 990001})
     assert calls_written() == 2 and server.call is None
+
+
+def test_encounters_newest_first_and_card_says_last_time(db, enroll):
+    face = random_print()
+    pid, _ = enroll(face)
+    assert store.last_time(pid) is None and store.person(pid)["encounters"] == []
+    assert server.card_for(face.tolist())["line"] == ""
+    store.add_note(pid, "Moved to Austin")
+    assert server.card_for(face.tolist())["line"] == "Moved to Austin"  # no encounter yet: latest note
+    store.add_encounter(pid, datetime(2026, 9, 24, 18, 0).astimezone(), "Engineer", "Met at a climbing meetup.")
+    store.add_encounter(pid, datetime(2026, 10, 24, 18, 0).astimezone(), "Engineer in Austin", "Talked about gyms near South Congress.")
+    got = store.person(pid)["encounters"]
+    assert [(e["about"], e["lastTime"]) for e in got] == [
+        ("Engineer in Austin", "Talked about gyms near South Congress."), ("Engineer", "Met at a climbing meetup.")]
+    assert server.card_for(face.tolist())["line"] == "Last time: Talked about gyms near South Congress."
+
+
+def test_call_end_summarises_only_recognized_people(db, enroll, tmp_path, monkeypatch):
+    monkeypatch.setattr(notes, "NOTES", tmp_path)
+    for name, value in {"call": None, "history": [], "fresh": [], "tracks": {}, "latest_insights": None, "speakers": {}}.items():
+        monkeypatch.setattr(server, name, value)
+    face = random_print()
+    pid, _ = enroll(face)
+    name = store.person(pid)["name"]
+    prompts = []
+
+    def muse(prompt: str) -> str:
+        prompts.append(prompt)
+        if "A video call just ended" in prompt:
+            return json.dumps({"people": [
+                {"personId": pid, "about": "Runner training for a marathon", "lastTime": "Talked about the March race."},
+                {"personId": "p_stranger", "about": "Not in the call", "lastTime": "Never stored"},
+            ]})
+        return json.dumps({"topic": "", "points": [], "actions": []})
+
+    monkeypatch.setattr(picks, "chat", muse)
+    with TestClient(server.app) as http:
+        http.post("/faces", json={"trackId": 990011, "screenBox": [0, 0, 100, 100], "facePrint": face.tolist()})
+        stranger = http.post("/faces", json={"trackId": 990012, "screenBox": [200, 0, 100, 100], "facePrint": random_print().tolist()})
+        assert stranger.json()["person"] is None  # not enrolled
+        http.post("/speakers", json={"label": "speaker_0", "name": name})
+        http.post("/transcript", json={"speaker": "speaker_0", "text": "My race is in March.", "final": True})
+        http.post("/calls/end")
+        deadline = time.time() + 3
+        while store.last_time(pid) is None and time.time() < deadline:
+            time.sleep(0.05)
+
+        summary = next(p for p in prompts if "A video call just ended" in p)
+        roster = summary.split("existing notes):\n")[1].split("\n\nTranscript:")[0]
+        assert roster.splitlines() == [f"{pid}: {name} (nothing yet)"]  # only the recognized person
+        assert f"{name}: My race is in March." in summary
+        got = http.get(f"/people/{pid}").json()["encounters"]
+        assert [(e["about"], e["lastTime"]) for e in got] == [("Runner training for a marathon", "Talked about the March race.")]
+
+        again = http.post("/faces", json={"trackId": 990013, "screenBox": [0, 0, 100, 100], "facePrint": face.tolist()})
+        assert again.json()["person"]["line"] == "Last time: Talked about the March race."
+        for track in (990011, 990012, 990013):
+            http.post("/faces/gone", json={"trackId": track})
+    assert db.execute("select count(*) from encounters where person_id = 'p_stranger'").fetchone()[0] == 0
+
+
+def test_summary_without_model_key_is_skipped_and_logged(db, enroll, monkeypatch, capsys):
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    picks.client.cache_clear()
+    pid, _ = enroll(random_print())
+    server.remember_encounters(server.Call(people={pid: []}, lines=["You: hello"]))  # returns instead of raising
+    assert "encounter summaries skipped: Add MODEL_API_KEY to .env" in capsys.readouterr().out
+    assert store.last_time(pid) is None
