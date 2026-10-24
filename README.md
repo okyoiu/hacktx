@@ -27,7 +27,7 @@ guest's phone ─ web/enroll.html ───────────────�
 
 1. `cp .env.example .env` and fill in `MODEL_API_KEY` ([dev.meta.ai](https://dev.meta.ai/docs/overview)), `SERPAPI_KEY` and `DATABASE_URL`.
 2. Python: `uv sync`. It installs Python 3.12 and everything else; the first run downloads PyTorch and takes a few minutes. InsightFace compiles on install, so on a Mac run `xcode-select --install` first if you haven't.
-3. Database: create a Tiger Data service and paste its connection string into `DATABASE_URL` (pgvector is available there). Local fallback: `docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=postgres pgvector/pgvector:pg17`. Tables are created on first start.
+3. Database: create a Tiger Data service and paste its connection string into `DATABASE_URL` (pgvector is available there). Local fallback: `docker run -d --name hello-again-db -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=postgres pgvector/pgvector:pg17`. Tables are created on first start.
 4. Overlay: `cd overlay && npm install`.
 
 ## Run it
@@ -35,7 +35,7 @@ guest's phone ─ web/enroll.html ───────────────�
 One terminal each:
 
 ```sh
-uv run --env-file .env uvicorn memory.app:app --host 0.0.0.0 --port 8000   # B
+uv run --env-file .env uvicorn memory.app:app --host 127.0.0.1 --port 8000   # B: this laptop only
 cd overlay && npm start                                                     # C
 uv run --env-file .env python -m capture.faces --region 0,38,1100,700       # A: call window x,y,w,h in screen points
 uv run --env-file .env python -m capture.transcribe --device "BlackHole 2ch" # A: --list-devices to see inputs

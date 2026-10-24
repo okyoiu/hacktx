@@ -1,23 +1,37 @@
-// Two always-on-top windows that only this screen shows:
-//  - cards: full-screen, transparent and click-through; glass name cards sit beside faces
-//  - dock:  small "Top picks" panel; its own window so macOS/Windows can blur what is behind it (real glass)
-// `npm run mock` replays shared/mocks/overlay-demo.jsonl instead of listening to the memory service.
-const { app, BrowserWindow, ipcMain, screen, systemPreferences } = require('electron')
+// Always-on-top windows that only this screen shows:
+//  - cards:    full-screen, transparent and click-through; glass name cards sit beside faces
+//  - bar:      control bar (pause, waveform, timer, Ask AI ⌘↵, Show/Hide ⌘\)
+//  - insights: Live insights panel (topic, points, transcript, actions)
+//  - response: AI response panel, shown while there is a question or an answer
+// Each panel is its own window so macOS/Windows can blur what is behind it (real glass).
+// Main owns the event source (the memory service's WebSocket, or the demo replay with `npm run mock`) and
+// forwards every event to every window; panels call the memory API through main.
+const { app, BrowserWindow, clipboard, globalShortcut, ipcMain, screen, shell, systemPreferences } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
+const { ROUTES } = require('./logic')
 
 const MOCK = process.argv.includes('--mock')
-const MEMORY_WS = (process.env.MEMORY_URL || 'http://localhost:8000').replace(/^http/, 'ws') + '/ws'
-const ENROLL_URL = process.env.ENROLL_URL || 'http://localhost:8000/enroll'
-const DOCK = { width: 360, height: 400 }
+const MEMORY_URL = process.env.MEMORY_URL || 'http://localhost:8000'
+const PANEL = { width: 448, gap: 12, margin: 24 }
+const BAR_HEIGHT = 56
+const IDLE_OPACITY = 0.3
 
-function overlayWindow(opts, query) {
+const windows = {}
+const shownBeforeHide = new Set()
+const closing = new Set() // windows fading out to hidden; idle fades and Show/Hide must not stop that
+let allHidden = false
+let closedResponse = null // the answer the user closed; its late events must not reopen the panel
+let lastInsights = null
+
+function overlayWindow(query, opts) {
   const win = new BrowserWindow({
     frame: false,
     transparent: true,
     hasShadow: false,
     resizable: false,
     skipTaskbar: true,
+    show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.js') },
     ...opts,
   })
@@ -25,64 +39,224 @@ function overlayWindow(opts, query) {
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   // Keeps it out of screen shares on Windows; newer macOS screen sharing can still capture it.
   win.setContentProtection(true)
-  win.loadFile('index.html', { query: { ...query, ws: MEMORY_WS, enroll: ENROLL_URL, mock: MOCK ? '1' : '' } })
+  // Source links open in the browser; nothing navigates the overlay itself.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//.test(url)) shell.openExternal(url)
+    return { action: 'deny' }
+  })
+  win.webContents.on('will-navigate', (e) => e.preventDefault())
+  win.loadFile('index.html', { query: { ...query, mock: MOCK ? '1' : '' } })
   return win
 }
 
-function replay(windows) {
+function panelWindow(view, bounds) {
+  return overlayWindow({ view }, {
+    ...bounds,
+    acceptFirstMouse: true, // the first click on an inactive panel still presses the button under it
+    vibrancy: 'hud', // macOS blur
+    visualEffectState: 'active', // keep the blur when the call app has focus
+    backgroundMaterial: 'acrylic', // Windows 11 blur
+  })
+}
+
+// ---------- showing, hiding and fading ----------
+
+const fades = new Map()
+
+// Fades a whole window, OS blur included; CSS opacity can't reach the blur layer. Linux ignores window opacity.
+function fade(win, to, ms, done) {
+  clearInterval(fades.get(win))
+  if (systemPreferences.getAnimationSettings().prefersReducedMotion) ms = 0
+  const from = win.getOpacity()
+  const start = Date.now()
+  const step = () => {
+    const t = ms ? Math.min(1, (Date.now() - start) / ms) : 1
+    win.setOpacity(from + (to - from) * t)
+    if (t < 1) return
+    clearInterval(fades.get(win))
+    done?.()
+  }
+  fades.set(win, setInterval(step, 16))
+  step()
+}
+
+function reveal(win) {
+  if (allHidden) return shownBeforeHide.add(win)
+  closing.delete(win)
+  if (!win.isVisible()) {
+    win.setOpacity(0)
+    win.showInactive()
+  }
+  fade(win, 1, 220)
+}
+
+function conceal(win) {
+  shownBeforeHide.delete(win)
+  if (!win.isVisible()) return
+  closing.add(win)
+  fade(win, 0, 160, () => {
+    closing.delete(win)
+    win.hide()
+  })
+}
+
+function toggleAll() {
+  allHidden = !allHidden
+  for (const win of Object.values(windows)) {
+    if (allHidden && win.isVisible() && !closing.has(win)) {
+      conceal(win)
+      shownBeforeHide.add(win)
+    } else if (!allHidden && shownBeforeHide.delete(win)) reveal(win)
+  }
+}
+
+function openAsk() {
+  if (allHidden) toggleAll()
+  closedResponse = null
+  reveal(windows.response)
+  // typing needs keyboard focus; this is the one moment the overlay takes it from the call
+  if (process.platform === 'darwin') app.focus({ steal: true })
+  windows.response.focus()
+  windows.response.webContents.send('ask')
+}
+
+// ---------- events in ----------
+
+function broadcast(event) {
+  if (event.type === 'insights') lastInsights = event
+  if (event.type === 'response' && event.id !== closedResponse) reveal(windows.response)
+  for (const win of Object.values(windows)) win.webContents.send('event', event)
+}
+
+function status(state) {
+  for (const win of Object.values(windows)) win.webContents.send('status', state)
+}
+
+function connect() {
+  const ws = new WebSocket(MEMORY_URL.replace(/^http/, 'ws') + '/ws')
+  ws.onopen = () => status('on')
+  ws.onmessage = (m) => {
+    try {
+      broadcast(JSON.parse(m.data))
+    } catch (err) {
+      console.error('Skipped a malformed event:', err.message)
+    }
+  }
+  ws.onclose = () => {
+    status('off')
+    setTimeout(connect, 2000)
+  }
+}
+
+const demoStart = new Date().toISOString()
+
+function replay() {
   const file = path.join(__dirname, '..', 'shared', 'mocks', 'overlay-demo.jsonl')
   let at = 0
   for (const line of fs.readFileSync(file, 'utf8').split('\n').filter(Boolean)) {
     const { delayMs, event } = JSON.parse(line)
     at += delayMs
-    setTimeout(() => windows.forEach((w) => w.webContents.send('event', event)), at)
+    if (event.startedAt) event.startedAt = demoStart // the demo's timer starts at 00:00, not at the sample date
+    setTimeout(() => broadcast(event), at)
   }
 }
 
-app.whenReady().then(() => {
-  const { bounds } = screen.getPrimaryDisplay()
+// The demo answers locally, so clicking around in `npm run mock` never posts to a real memory service.
+let demoAnswers = 0
+function demoApi(route, body) {
+  if (route === '/listening') {
+    broadcast({ type: 'listening', on: body.on, startedAt: demoStart })
+    return {}
+  }
+  const id = `demo${++demoAnswers}`
+  const action = lastInsights?.actions.find((a) => route === `/actions/${encodeURIComponent(a.id)}`)
+  const query = body?.question || action?.label || 'Sample question'
+  broadcast({ type: 'response', id, query, status: 'thinking', text: '', sources: [] })
+  const text = 'This is a sample answer from the demo replay.\nStart the memory service to get real answers.'
+  setTimeout(() => broadcast({ type: 'response', id, query, status: 'done', text, sources: [] }), 1800)
+  return { id }
+}
 
-  const cards = overlayWindow({ ...bounds }, { view: 'cards', ox: bounds.x, oy: bounds.y })
-  cards.setIgnoreMouseEvents(true, { forward: true })
+// ---------- calls from the panels ----------
 
-  const dock = overlayWindow(
-    {
-      ...DOCK,
-      x: bounds.x + bounds.width - DOCK.width - 24,
-      y: bounds.y + 48,
-      vibrancy: 'hud', // macOS blur
-      visualEffectState: 'active', // keep the blur when another app has focus
-      backgroundMaterial: 'acrylic', // Windows 11 blur
-    },
-    { view: 'dock' },
-  )
-
-  if (MOCK) cards.webContents.once('did-finish-load', () => replay([cards, dock]))
+// Resolves to the service's JSON, or to { error } with a sentence the panel can show as is.
+ipcMain.handle('api', async (_e, route, body) => {
+  if (!ROUTES.test(route)) return { error: 'The overlay never makes that call.' }
+  if (MOCK) return demoApi(route, body)
+  try {
+    const res = await fetch(MEMORY_URL + route, {
+      method: 'POST',
+      headers: body ? { 'content-type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    })
+    const data = await res.json().catch(() => ({}))
+    if (res.ok) return data
+    // the service explains refusals in `detail`, such as an action left over from before a restart
+    return { error: typeof data.detail === 'string' ? data.detail : `Hello Again answered ${res.status}. Try again.` }
+  } catch {
+    return { error: "Couldn't reach Hello Again. Check it's running, then try again." }
+  }
 })
 
-// A card turns clickable while the pointer is over it (e.g. its "Copy invite link" button).
-ipcMain.on('click-through', (e, on) => {
-  BrowserWindow.fromWebContents(e.sender)?.setIgnoreMouseEvents(on, { forward: true })
-})
-
-// The dock fades when the conversation goes quiet. CSS opacity can't reach the OS blur layer, so fade the
-// whole window instead (Windows and macOS; Linux ignores window opacity).
-const IDLE_OPACITY = 0.3
-let fadeTimer
-ipcMain.on('dock-idle', (e, idle) => {
+// Panels grow and shrink with their content, so the blur never shows past the glass, and stop at the screen's edge.
+ipcMain.on('fit', (e, height) => {
   const win = BrowserWindow.fromWebContents(e.sender)
-  if (!win) return
-  const to = idle ? IDLE_OPACITY : 1
-  clearInterval(fadeTimer)
-  if (systemPreferences.getAnimationSettings().prefersReducedMotion) return win.setOpacity(to)
-  const from = win.getOpacity()
-  const ms = idle ? 800 : 200
-  const start = Date.now()
-  fadeTimer = setInterval(() => {
-    const t = Math.min(1, (Date.now() - start) / ms)
-    win.setOpacity(from + (to - from) * t)
-    if (t === 1) clearInterval(fadeTimer)
-  }, 16)
+  const bounds = win?.getBounds()
+  if (!bounds || !(height > 0)) return
+  const { workArea } = screen.getDisplayMatching(bounds)
+  const fitted = Math.min(Math.ceil(height), workArea.y + workArea.height - bounds.y)
+  if (bounds.height !== fitted) win.setBounds({ ...bounds, height: fitted })
 })
 
+ipcMain.on('panel-idle', (e, idle) => {
+  const win = BrowserWindow.fromWebContents(e.sender)
+  if (win?.isVisible() && !allHidden && !closing.has(win)) fade(win, idle ? IDLE_OPACITY : 1, idle ? 800 : 200)
+})
+
+ipcMain.on('copy', (_e, text) => clipboard.writeText(String(text)))
+ipcMain.on('ask', openAsk)
+ipcMain.on('toggle-all', toggleAll)
+ipcMain.on('close-response', (_e, id) => {
+  closedResponse = id
+  conceal(windows.response)
+})
+
+// ---------- start ----------
+
+app.whenReady().then(async () => {
+  const { bounds, workArea } = screen.getPrimaryDisplay()
+  const right = workArea.x + workArea.width - PANEL.margin
+  const top = workArea.y + PANEL.margin / 2
+  const below = top + BAR_HEIGHT + PANEL.gap
+
+  windows.cards = overlayWindow({ view: 'cards', ox: bounds.x, oy: bounds.y }, { ...bounds, focusable: false })
+  windows.cards.setIgnoreMouseEvents(true) // name cards never take the mouse
+  windows.bar = panelWindow('bar', { width: PANEL.width, height: BAR_HEIGHT, x: right - PANEL.width, y: top })
+  windows.response = panelWindow('response', { width: PANEL.width, height: 160, x: right - PANEL.width, y: below })
+  windows.insights = panelWindow('insights', {
+    width: PANEL.width,
+    height: 200,
+    x: Math.max(workArea.x + PANEL.margin, right - 2 * PANEL.width - PANEL.gap),
+    y: below,
+  })
+
+  await Promise.all(Object.values(windows).map((win) => new Promise((r) => win.webContents.once('did-finish-load', r))))
+  windows.cards.showInactive()
+  reveal(windows.bar)
+  reveal(windows.insights)
+
+  const shortcuts = { 'CommandOrControl+Return': openAsk, 'CommandOrControl+\\': toggleAll }
+  for (const [keys, run] of Object.entries(shortcuts)) {
+    if (!globalShortcut.register(keys, run)) console.warn(`${keys} is taken by another app; use the control bar instead`)
+  }
+
+  if (MOCK) {
+    status('demo')
+    replay()
+  } else connect()
+})
+
+// Clicking the Dock icon brings a hidden overlay back, in case another app owns ⌘\.
+app.on('activate', () => allHidden && toggleAll())
+app.on('will-quit', () => globalShortcut.unregisterAll())
 app.on('window-all-closed', () => app.quit())

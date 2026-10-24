@@ -31,6 +31,8 @@ def main() -> None:
     ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--enroll-as", help="name to enroll when you press e")
     args = ap.parse_args()
+    if args.region and args.enroll_as:
+        ap.error("--enroll-as works with the camera only: enroll yourself, never a face on someone's call")
 
     yolo, faces = YOLO("yolo26n.pt"), _model()
     if args.region:

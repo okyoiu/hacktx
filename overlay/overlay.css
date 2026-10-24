@@ -1,144 +1,236 @@
-/* Glass: a smoked tint, a bright top edge and a soft drop shadow.
-   Electron can't blur the desktop through a transparent window with CSS, so the dock gets real blur
-   from the OS (vibrancy/acrylic in main.js) and the cards carry a stronger tint to stay readable over video.
-   backdrop-filter still applies in a normal browser preview. */
+/* Smoked glass over the call; the look is pinned by docs/ui-reference.png.
+   Panel windows get real blur from the OS (vibrancy/acrylic in main.js) and only add a light smoke here.
+   The cards window is full-screen and can't blur the desktop, so cards carry a stronger tint to stay readable
+   over video. A plain browser tab (view=all) stands in for the OS blur with backdrop-filter. */
 :root {
-  --tint: rgba(18, 22, 30, 0.38);
-  --tint-strong: rgba(18, 22, 30, 0.66);
-  --sheen: linear-gradient(160deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.03) 55%);
-  --edge: rgba(255, 255, 255, 0.2);
-  --edge-top: rgba(255, 255, 255, 0.34);
-  --well: rgba(255, 255, 255, 0.07);
-  --well-edge: rgba(255, 255, 255, 0.11);
-  --ink: #F6F8FB;
-  --ink-2: rgba(246, 248, 251, 0.76);
-  --ink-3: rgba(246, 248, 251, 0.56);
+  --smoke: rgba(24, 26, 32, 0.62); /* keeps all text at 4.5:1 even over a white window, before the OS tint */
+  --smoke-card: rgba(22, 24, 30, 0.74);
+  --rim: rgba(255, 255, 255, 0.17);
+  --rim-top: rgba(255, 255, 255, 0.24);
+  --rule: rgba(255, 255, 255, 0.14);
+  --fill: rgba(255, 255, 255, 0.08);
+  --hover: rgba(255, 255, 255, 0.13);
+  --press: rgba(255, 255, 255, 0.2);
+  --ink: #FFFFFF;
+  --ink-2: rgba(255, 255, 255, 0.95); /* all secondary text; hierarchy comes from weight and size */
+  --ink-3: rgba(255, 255, 255, 0.68); /* marks only (paused waveform), never text */
   --known: #7EE2B0;
-  --unknown: #FFB36B;
-  --k-fact: #93BCFF;
-  --k-common: #7EE2B0;
-  --k-place: #FFC97A;
-  --k-event: #FF9FC0;
+  --radius: 16px;
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
   color-scheme: dark;
-  font: 13px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
 html, body { margin: 0; height: 100%; background: transparent; color: var(--ink); overflow: hidden; }
-::selection { background: rgba(147, 188, 255, 0.35); }
-button:focus-visible { outline: 2px solid var(--k-fact); outline-offset: 2px; }
+[hidden] { display: none !important; } /* flex and grid parts would otherwise beat the hidden attribute */
+::selection { background: rgba(255, 255, 255, 0.28); }
+:focus-visible { outline: 2px solid rgba(255, 255, 255, 0.85); outline-offset: 2px; }
+h1, h2, h3, p { margin: 0; }
+button { font: inherit; color: inherit; cursor: pointer; -webkit-app-region: no-drag; }
+button:disabled { cursor: default; }
 
 .glass {
-  background: var(--sheen), var(--tint);
-  border: 1px solid var(--edge);
-  box-shadow: inset 0 1px 0 var(--edge-top), 0 16px 36px -14px rgba(0, 0, 0, 0.6);
-  -webkit-backdrop-filter: blur(24px) saturate(170%);
-  backdrop-filter: blur(24px) saturate(170%);
+  background: var(--smoke);
+  border: 1px solid var(--rim);
+  box-shadow: inset 0 1px 0 var(--rim-top);
 }
 
-/* ---------- name cards beside faces ---------- */
-#cards { position: fixed; inset: 0; pointer-events: none; }
-.card {
-  position: absolute; left: 0; top: 0;
-  width: 208px; box-sizing: border-box;
-  padding: 10px 12px 11px;
-  border-radius: 14px;
-  background: var(--sheen), var(--tint-strong);
-  pointer-events: auto;
-  transition: transform 0.35s var(--ease);
-  animation: card-in 0.5s var(--ease) both;
-}
-.card .row { display: flex; align-items: center; gap: 7px; }
-.card .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--known); box-shadow: 0 0 0 3px rgba(126, 226, 176, 0.18); flex: none; }
-.card .name { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
-.card .line { margin-top: 3px; color: var(--ink-2); font-size: 12.5px; }
-.card .met { margin-top: 2px; color: var(--ink-3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
-.card.leaving { animation: card-out 0.25s ease-in both; }
+/* ---------- where each piece sits ---------- */
+.bar, .panel { box-sizing: border-box; width: 448px; border-radius: var(--radius); animation: panel-in 0.5s var(--ease) backwards; }
+body:not([data-view="all"]) :is(.bar, .panel) { position: absolute; top: 0; left: 0; width: 100%; }
 
-/* Clickable vs not: everything is click-through and has no hover state, except `.actionable` cards.
-   Those show a ring and a pointer on hover, and reveal their single action only then. */
-.card.actionable { cursor: pointer; transition: transform 0.35s var(--ease), box-shadow 0.2s ease; }
-.card.actionable:hover { box-shadow: inset 0 1px 0 var(--edge-top), 0 0 0 2px rgba(255, 207, 110, 0.55), 0 16px 36px -14px rgba(0, 0, 0, 0.6); }
-
-/* thinking: a face we can't name yet */
-.card.thinking {
-  width: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
-  padding: 8px 13px 8px 10px; border-radius: 999px;
+/* browser preview: the reference layout, with CSS blur standing in for the OS */
+body[data-view="all"] { background: #0E1014; }
+body[data-view="all"] :is(.bar, .panel) {
+  position: fixed;
+  -webkit-backdrop-filter: blur(28px) saturate(160%);
+  backdrop-filter: blur(28px) saturate(160%);
+  box-shadow: inset 0 1px 0 var(--rim-top), 0 22px 48px -20px rgba(0, 0, 0, 0.6);
 }
-.sparkle { width: 16px; height: 16px; flex: none; stroke: var(--unknown); stroke-width: 2.4; stroke-linecap: round; animation: sparkle 1.6s var(--ease) infinite; }
-.verb {
-  font-size: 13px; font-weight: 600; letter-spacing: 0.005em;
-  background: linear-gradient(90deg, var(--ink-3) 20%, var(--ink) 50%, var(--ink-3) 80%) 0 0 / 250% 100%;
-  -webkit-background-clip: text; background-clip: text; color: transparent;
+body[data-view="all"] .bar { top: 24px; right: 24px; }
+body[data-view="all"] .response { top: 92px; right: 24px; }
+body[data-view="all"] .insights { top: 92px; right: 484px; }
+body[data-view="all"] .panel { transition: opacity 0.2s ease; }
+/* quiet for a while: the preview fades here; each Electron panel window fades itself (main.js) */
+body[data-view="all"].idle .panel { opacity: 0.3; transition-duration: 0.8s; }
+
+/* ---------- control bar ---------- */
+.bar { display: flex; align-items: center; gap: 10px; height: 56px; padding: 0 9px 0 12px; -webkit-app-region: drag; user-select: none; }
+body[data-view="bar"] .bar { height: 100%; }
+
+.pause {
+  flex: none; display: grid; place-items: center; width: 32px; height: 32px; padding: 0;
+  border: 0; border-radius: 50%; background: var(--ink); color: #15171C;
+  transition: transform 0.2s var(--ease), opacity 0.2s ease;
+}
+.pause:hover { transform: scale(1.06); }
+.pause:active { transform: scale(0.95); }
+.pause:disabled { opacity: 0.4; transform: none; }
+.pause svg { width: 14px; height: 14px; fill: currentColor; }
+.bar .i-play, .bar[data-state="paused"] .i-pause { display: none; }
+.bar[data-state="paused"] .i-play { display: block; }
+
+.wave { flex: none; display: flex; align-items: center; gap: 2px; height: 20px; margin-left: 2px; }
+.wave i { width: 2px; height: 100%; border-radius: 1px; background: var(--ink); transform: scaleY(0.4); }
+.bar:not([data-state="live"]) .wave i { background: var(--ink-3); transition: transform 0.4s var(--ease); }
+
+.timer { min-width: 50px; font-size: 15px; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: 0.01em; white-space: nowrap; }
+.bar:not([data-state="live"]) .timer { color: var(--ink-2); }
+
+.key-btn {
+  display: inline-flex; align-items: center; gap: 4px; height: 38px; padding: 0 6px 0 10px;
+  border: 0; border-radius: 11px; background: none;
+  font-size: 15px; font-weight: 500; letter-spacing: -0.005em; white-space: nowrap;
+  transition: background-color 0.15s ease;
+}
+#askBtn { margin-left: auto; }
+.key-btn:hover { background: var(--hover); }
+.key-btn:active { background: var(--press); }
+.key-btn kbd:first-of-type { margin-left: 4px; }
+kbd {
+  display: inline-grid; place-items: center; min-width: 26px; height: 26px; padding: 0 6px; box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.3); border-radius: 7px;
+  font-family: inherit; font-size: 13px; font-weight: 500; line-height: 1; color: var(--ink-2);
+}
+
+/* ---------- panels ---------- */
+.panel { padding: 16px 20px 18px; }
+.panel-head {
+  display: flex; align-items: center; gap: 6px; min-height: 30px;
+  padding-bottom: 14px; margin-bottom: 16px; border-bottom: 1px solid var(--rule);
+  -webkit-app-region: drag; user-select: none;
+}
+.panel-title { display: flex; align-items: center; gap: 9px; margin-right: auto; font-size: 16px; font-weight: 650; letter-spacing: -0.012em; white-space: nowrap; }
+.mark { width: 20px; height: 20px; flex: none; fill: var(--ink); }
+
+.text-btn, .icon-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 30px; padding: 0;
+  border: 0; border-radius: 8px; background: none; color: var(--ink-2);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.text-btn { padding: 0 9px 0 7px; font-size: 14px; white-space: nowrap; }
+.icon-btn { flex: none; width: 30px; }
+.text-btn:hover, .icon-btn:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
+.text-btn[aria-pressed="true"] { background: var(--fill); color: var(--ink); }
+.icon-btn:disabled { opacity: 0.35; }
+.text-btn svg, .icon-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.copy-btn .i-done, .copy-btn.done .i-copy { display: none; }
+.copy-btn.done .i-done { display: block; }
+
+.note { margin-top: 10px; color: var(--ink); font-size: 13px; font-weight: 650; }
+.note:empty { display: none; }
+
+/* Live insights */
+.empty { color: var(--ink-2); }
+.topic { margin-bottom: 6px; font-size: 16px; font-weight: 650; letter-spacing: -0.01em; text-wrap: balance; }
+.points { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; color: var(--ink-2); text-wrap: pretty; }
+.actions-title { margin: 20px 0 6px; font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
+.actions { list-style: none; margin: 0 -10px; padding: 0; display: grid; gap: 2px; }
+.action {
+  display: flex; align-items: center; gap: 9px; width: 100%; min-height: 38px; padding: 8px 10px;
+  border: 0; border-radius: 10px; background: none; color: var(--ink); text-align: left; line-height: 1.35;
+  transition: background-color 0.15s ease;
+}
+.action:hover { background: var(--hover); }
+.action:active { background: var(--press); }
+.action:disabled { cursor: progress; background: var(--fill); }
+.emoji { flex: none; width: 20px; text-align: center; font-size: 15px; }
+
+.transcript {
+  list-style: none; margin: 0 -8px 0 0; padding: 0 8px 0 0; display: grid; gap: 10px;
+  max-height: 300px; overflow-y: auto; overscroll-behavior: contain;
+}
+.transcript li { display: grid; gap: 1px; }
+.transcript .who { font-size: 12.5px; font-weight: 650; color: var(--ink-2); }
+.transcript .said { color: var(--ink-2); }
+.transcript:empty::before { content: "Nothing has been said yet."; color: var(--ink-2); }
+:is(.transcript, .answer)::-webkit-scrollbar { width: 6px; }
+:is(.transcript, .answer)::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.22); border-radius: 3px; }
+
+/* AI response */
+.response .panel-title { margin-right: 6px; }
+#copyAnswer, .response[data-state="ask"] #closeResponse { margin-left: auto; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0; height: 30px; padding: 0 12px; box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 999px; background: var(--fill);
+  color: var(--ink-2); font-size: 14px; white-space: nowrap;
+}
+.chip .emoji { width: auto; font-size: 13px; }
+.chip .emoji:empty { display: none; }
+.chip .q { overflow: hidden; text-overflow: ellipsis; }
+
+.ask {
+  display: flex; align-items: center; gap: 8px; height: 46px; padding: 0 8px 0 14px;
+  border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 12px; background: var(--fill);
+  transition: border-color 0.15s ease;
+}
+.ask:focus-within { border-color: rgba(255, 255, 255, 0.45); }
+.ask input {
+  flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: none; background: none;
+  color: var(--ink); caret-color: var(--ink); font: inherit; font-size: 15px;
+}
+.ask input::placeholder, .ask input:disabled { color: var(--ink-2); }
+
+.thinking { display: flex; align-items: center; gap: 10px; min-height: 28px; }
+.thinking .mark, .card .mark { animation: turn 2.4s var(--ease) infinite; }
+.verb { font-weight: 650; color: var(--ink); }
+/* the thinking verb shimmers through a moving mask; the text itself stays solid white */
+.shimmer {
+  -webkit-mask-image: linear-gradient(100deg, rgba(0, 0, 0, 0.45) 35%, #000 50%, rgba(0, 0, 0, 0.45) 65%);
+  -webkit-mask-size: 300% 100%;
   animation: shimmer 2.2s linear infinite;
 }
-.card .invite {
-  display: none; flex-basis: 100%; margin: 2px 0 2px 24px; font: inherit; font-size: 12px; font-weight: 600;
-  color: var(--ink); background: rgba(255, 255, 255, 0.12); border: 1px solid var(--edge); border-radius: 8px;
-  padding: 5px 10px; cursor: pointer; justify-self: start; width: max-content;
+
+.answer {
+  display: grid; gap: 8px; color: var(--ink-2); text-wrap: pretty;
+  max-height: 360px; overflow-y: auto; overscroll-behavior: contain; margin-right: -8px; padding-right: 8px;
 }
-.card.thinking:hover { border-radius: 14px; }
-.card.thinking:hover .invite, .card.thinking:focus-within .invite { display: block; }
-.card .invite:hover { background: rgba(255, 255, 255, 0.2); }
-
-/* ---------- Top picks dock ---------- */
-.dock {
-  box-sizing: border-box; display: flex; flex-direction: column; gap: 10px;
-  padding: 14px 14px 16px; overflow: hidden;
+.answer:empty { display: none; }
+.answer p { animation: rise 0.45s var(--ease) backwards; }
+.response[data-state="error"] .answer p:first-child { color: var(--ink); font-weight: 650; }
+.sources { list-style: none; margin: 14px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.sources:empty { display: none; }
+.source {
+  display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 8px 0 10px;
+  border-radius: 8px; background: var(--fill); color: var(--ink-2); font-size: 13px; text-decoration: none;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
-body[data-view="dock"] .dock { position: fixed; inset: 0; border-radius: 12px; background: var(--sheen), rgba(18, 22, 30, 0.18); }
-body[data-view="both"] .dock { position: fixed; top: 48px; right: 24px; width: 360px; max-height: calc(100vh - 72px); border-radius: 18px; transition: opacity 0.2s ease; }
-/* quiet for a while: the browser preview fades here; the Electron dock window fades itself (main.js) */
-body[data-view="both"] .dock.idle { opacity: 0.3; transition-duration: 0.8s; }
+a.source:hover { background: var(--hover); color: var(--ink); }
+.source svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 
-.dock-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; -webkit-app-region: drag; cursor: grab; }
-.brand { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
-.status { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; color: var(--ink-2); padding: 3px 9px; border-radius: 999px; background: var(--well); border: 1px solid var(--well-edge); }
-.status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ink-3); }
-.status[data-state="on"]::before { background: var(--known); animation: pulse 2s ease-in-out infinite; }
-.status[data-state="demo"]::before { background: var(--k-fact); }
-
-.private { margin: -4px 0 0; display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--ink-3); }
-.private svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
-
-.caption { display: grid; gap: 1px; padding: 9px 11px; border-radius: 11px; background: var(--well); border: 1px solid var(--well-edge); }
-.caption .who { font-size: 11.5px; font-weight: 650; color: var(--ink-2); }
-.caption .said { font-size: 13px; color: var(--ink); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.caption.partial .said { color: var(--ink-2); }
-
-.picks-title { margin: 2px 0 0; font-size: 12px; font-weight: 650; color: var(--ink-2); }
-.picks { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.picks .empty { color: var(--ink-3); font-size: 12.5px; padding: 6px 2px; }
-.pick {
-  display: grid; gap: 2px; padding: 10px 12px; border-radius: 12px;
-  background: var(--well); border: 1px solid var(--well-edge);
-  animation: pick-in 0.55s var(--ease) both;
+/* ---------- name cards beside faces (click-through) ---------- */
+#cards { position: fixed; inset: 0; pointer-events: none; }
+.card {
+  position: absolute; left: 0; top: 0; width: 208px; box-sizing: border-box; padding: 10px 12px 11px;
+  border: 1px solid var(--rim); border-radius: 14px; background: var(--smoke-card);
+  box-shadow: inset 0 1px 0 var(--rim-top), 0 14px 32px -14px rgba(0, 0, 0, 0.6);
+  transition: transform 0.35s var(--ease);
+  animation: card-in 0.5s var(--ease) backwards;
 }
-.pick .kind { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 650; color: var(--k); }
-.pick .kind::before { content: ""; width: 6px; height: 6px; border-radius: 2px; background: var(--k); }
-.pick .title { font-size: 14px; font-weight: 620; letter-spacing: -0.005em; }
-.pick .detail { font-size: 12.5px; color: var(--ink-2); }
-.pick .from { margin-top: 3px; font-size: 11.5px; color: var(--ink-3); display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
-.pick[data-kind="fact"] { --k: var(--k-fact); }
-.pick[data-kind="common"] { --k: var(--k-common); }
-.pick[data-kind="place"] { --k: var(--k-place); }
-.pick[data-kind="event"] { --k: var(--k-event); }
+.card .row { display: flex; align-items: center; gap: 7px; }
+.card .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--known); flex: none; }
+.card .name { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
+.card .line { margin-top: 3px; color: var(--ink-2); font-size: 13px; text-wrap: pretty; }
+.card .met { margin-top: 2px; color: var(--ink-2); font-size: 12px; font-variant-numeric: tabular-nums; }
+.card.thinking { width: auto; display: flex; align-items: center; gap: 8px; padding: 8px 14px 8px 10px; border-radius: 999px; }
+.card .mark { width: 16px; height: 16px; }
+.card.leaving { animation: card-out 0.25s ease-in both; }
 
-@keyframes card-in { from { opacity: 0; filter: blur(6px); scale: 0.96; } to { opacity: 1; filter: none; scale: 1; } }
+/* ---------- motion ---------- */
+.fresh { animation: rise 0.45s var(--ease) backwards; }
+@keyframes panel-in { from { opacity: 0; filter: blur(8px); translate: 0 -6px; } }
+@keyframes card-in { from { opacity: 0; filter: blur(6px); scale: 0.96; } }
 @keyframes card-out { to { opacity: 0; filter: blur(4px); scale: 0.97; } }
-@keyframes pick-in { from { opacity: 0; transform: translateY(-10px); filter: blur(5px); } to { opacity: 1; transform: none; filter: none; } }
-@keyframes pulse { 50% { opacity: 0.35; } }
-@keyframes sparkle {
-  0% { transform: rotate(0deg) scale(0.72); opacity: 0.7; }
-  50% { transform: rotate(90deg) scale(1.08); opacity: 1; }
-  100% { transform: rotate(180deg) scale(0.72); opacity: 0.7; }
+@keyframes rise { from { opacity: 0; filter: blur(4px); translate: 0 4px; } }
+@keyframes turn {
+  0% { rotate: 0deg; scale: 0.8; }
+  50% { rotate: 90deg; scale: 1.06; }
+  100% { rotate: 180deg; scale: 0.8; }
 }
-@keyframes shimmer { from { background-position: 100% 0; } to { background-position: -150% 0; } }
+@keyframes shimmer { from { -webkit-mask-position: 100% 0; } to { -webkit-mask-position: 0 0; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .card, .pick, .card.leaving, .sparkle { animation: none; transition: none; }
-  body[data-view] .dock { transition: none; }
-  .verb { animation: none; color: var(--ink-2); background: none; }
-  .status[data-state="on"]::before { animation: none; }
+  *, *::before { animation: none !important; transition: none !important; }
+  .shimmer { -webkit-mask-image: none; }
 }
