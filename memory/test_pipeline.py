@@ -2,72 +2,65 @@ import asyncio
 from unittest.mock import Mock
 
 import pytest
-from fastapi import BackgroundTasks
 
 from memory import app, pipeline
 
 
-def test_meta_precedes_search_and_only_explicit_queries_search(monkeypatch):
-    order = []
-    note = {"personId": "p_jordan", "text": "Likes climbing"}
-    fact = {"kind": "fact", "title": "Likes climbing", "search": "ignored"}
-
-    def meta(*args):
-        order.append("meta")
-        return {"notes": [note], "picks": [
-            fact,
-            {"kind": "place", "title": "Gym", "search": "climbing Austin"},
-            {"kind": "event", "title": "Meetup", "search": "  "},
-        ]}
-
-    def search(kind, query):
-        order.append((kind, query))
-        return {"title": "Real gym", "detail": "Austin"}
-
-    monkeypatch.setattr(pipeline.picks, "extract", meta)
+def test_places_use_only_the_query_muse_wrote(monkeypatch):
+    search = Mock(return_value={"title": "Real gym", "detail": "Austin"})
     monkeypatch.setattr(pipeline.serp, "lookup", search)
-    result = pipeline.process("Jordan", "Let's climb in Austin", {}, [])
-    assert order == ["meta", ("place", "climbing Austin")]
-    assert result["notes"] == [note]
-    assert result["picks"] == [fact, {
-        "kind": "place", "title": "Real gym", "detail": "Austin", "search": "climbing Austin",
-    }]
+    text, sources = pipeline.lookup("places", "  climbing gyms Austin ")
+    search.assert_called_once_with("place", "climbing gyms Austin")
+    assert text == "Real gym\nAustin"
+    assert sources == [{"title": "Real gym", "url": "https://www.google.com/maps/search/?api=1&query=Real+gym"}]
 
 
-def test_meta_failure_never_calls_serpapi(monkeypatch):
-    search = Mock()
-    monkeypatch.setattr(pipeline.serp, "lookup", search)
-    monkeypatch.setattr(pipeline.picks, "extract", Mock(side_effect=RuntimeError("Meta unavailable")))
-    with pytest.raises(RuntimeError, match="Meta unavailable"):
-        pipeline.process("Jordan", "Find gyms", {}, [])
-    search.assert_not_called()
+@pytest.mark.parametrize("query", [None, "", "   "])
+def test_blank_queries_never_reach_serpapi(monkeypatch, query):
+    lookup, web = Mock(), Mock()
+    monkeypatch.setattr(pipeline.serp, "lookup", lookup)
+    monkeypatch.setattr(pipeline.serp, "search", web)
+    assert pipeline.lookup("events", query) == ("There was nothing to search for.", [])
+    assert pipeline.search(query, {}, []) == ("There was nothing to search for.", [])
+    lookup.assert_not_called()
+    web.assert_not_called()
 
 
-@pytest.mark.parametrize("outcome", [None, pipeline.serp.SerpApiError("Unavailable")])
-def test_failed_search_preserves_meta_notes_and_other_picks(monkeypatch, outcome):
-    fact = {"kind": "common", "title": "Both climb"}
-    monkeypatch.setattr(pipeline.picks, "extract", lambda *args: {
-        "notes": [{"text": "Likes climbing"}], "picks": [
-            {"kind": "event", "title": "Meetup", "search": "Austin climbing events"}, fact,
-        ],
-    })
-    search = Mock(side_effect=outcome) if isinstance(outcome, Exception) else Mock(return_value=outcome)
-    monkeypatch.setattr(pipeline.serp, "lookup", search)
-    result = pipeline.process("Jordan", "Climbing", {}, [])
-    assert result["picks"] == [fact]
-    assert result["notes"] == [{"text": "Likes climbing"}]
+def test_no_result_is_said_plainly_and_never_invented(monkeypatch):
+    monkeypatch.setattr(pipeline.serp, "lookup", Mock(return_value=None))
+    assert pipeline.lookup("events", "Austin climbing meetup") == ('Nothing found for "Austin climbing meetup".', [])
 
 
-def test_partial_or_blank_transcripts_never_schedule_pipeline(monkeypatch):
+def test_search_answers_from_results_and_cites_them(monkeypatch):
+    results = [{"title": "Windsurf deal", "url": "https://example.com/a", "snippet": "…"}]
+    monkeypatch.setattr(pipeline.serp, "search", Mock(return_value=results))
+    summarise = Mock(return_value="Cognition bought Windsurf [1].")
+    monkeypatch.setattr(pipeline.picks, "answer", summarise)
+    text, sources = pipeline.search("who bought Windsurf", {}, ["Neel: who bought Windsurf?"])
+    summarise.assert_called_once_with("search", "who bought Windsurf", {}, ["Neel: who bought Windsurf?"], results)
+    assert text == "Cognition bought Windsurf [1]."
+    assert sources == [{"title": "Windsurf deal", "url": "https://example.com/a"}]
+
+
+def test_search_failure_surfaces_as_serpapi_error(monkeypatch):
+    monkeypatch.setattr(pipeline.serp, "search", Mock(side_effect=pipeline.SerpApiError("Unavailable")))
+    with pytest.raises(pipeline.SerpApiError):
+        pipeline.search("anything", {}, [])
+
+
+def test_partial_or_blank_transcripts_never_schedule_muse(monkeypatch):
     async def push(event):
         pass
 
     monkeypatch.setattr(app, "push", push)
+    monkeypatch.setitem(app.listening, "on", True)
+    app.fresh.clear()
+    app.wake.clear()
     for line in [app.Line(speaker="Jordan", text="Climbing", final=False),
                  app.Line(speaker="Jordan", text="  ", final=True)]:
-        tasks = BackgroundTasks()
-        asyncio.run(app.transcript(line, tasks))
-        assert tasks.tasks == []
-    tasks = BackgroundTasks()
-    asyncio.run(app.transcript(app.Line(speaker="Jordan", text="Climbing", final=True), tasks))
-    assert len(tasks.tasks) == 1
+        asyncio.run(app.transcript(line))
+        assert app.fresh == [] and not app.wake.is_set()
+    asyncio.run(app.transcript(app.Line(speaker="Jordan", text="Climbing", final=True)))
+    assert app.fresh == ["Jordan: Climbing"] and app.wake.is_set()
+    app.fresh.clear()
+    app.wake.clear()

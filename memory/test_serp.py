@@ -11,8 +11,10 @@ def configuration(monkeypatch):
     monkeypatch.setenv("DEMO_LL", "@30.2672,-97.7431,13z")
     monkeypatch.setenv("SERPAPI_LOCATION", "Austin, Texas, United States")
     serp._lookup.cache_clear()
+    serp._search.cache_clear()
     yield
     serp._lookup.cache_clear()
+    serp._search.cache_clear()
 
 
 def test_maps_connection_cache_and_location(monkeypatch):
@@ -80,6 +82,36 @@ def test_missing_key_and_bad_inputs(monkeypatch):
         serp.lookup("fact", "gym")
     with pytest.raises(ValueError):
         serp.lookup("place", "  ")
+
+
+def test_no_results_is_empty_not_an_error(monkeypatch):
+    def get(url, **kwargs):
+        return httpx.Response(200, json={"error": "Google hasn't returned any results for this query.",
+                                         "search_metadata": {"status": "Success"}}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(serp.httpx, "get", get)
+    assert serp.lookup("event", "climbing meetup") is None
+    assert serp.search("climbing meetup") == []
+
+
+def test_search_returns_top_three_linked_results(monkeypatch):
+    def get(url, **kwargs):
+        assert kwargs["params"]["engine"] == "google"
+        hits = [{"title": "No link"}] + [{"title": f"R{i}", "link": f"https://e.com/{i}"} for i in range(4)]
+        return httpx.Response(200, json={"organic_results": hits}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(serp.httpx, "get", get)
+    assert serp.search("  Climbing  Gyms ") == [{"title": f"R{i}", "url": f"https://e.com/{i}", "snippet": ""} for i in range(3)]
+
+
+def test_search_drops_links_that_are_not_http(monkeypatch):
+    def get(url, **kwargs):
+        hits = [{"title": "Script", "link": "javascript:void(0)"}, {"title": "File", "link": "file:///tmp/x"},
+                {"title": "Ok", "link": "https://e.com/ok"}]
+        return httpx.Response(200, json={"organic_results": hits}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(serp.httpx, "get", get)
+    assert serp.search("anything") == [{"title": "Ok", "url": "https://e.com/ok", "snippet": ""}]
 
 
 def test_empty_and_single_place_results():

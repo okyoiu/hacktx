@@ -24,3 +24,12 @@ create table if not exists notes (
   text text not null,
   created_at timestamptz not null default now()
 );
+
+-- one row per person per call: Muse Spark's summary when the call ended
+create table if not exists encounters (
+  id bigserial primary key,
+  person_id text not null references people(id) on delete cascade,
+  met_at timestamptz not null,
+  about text not null,
+  last_time text not null
+);

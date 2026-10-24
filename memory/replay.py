@@ -38,7 +38,7 @@ def main() -> None:
         line = json.loads(raw)
         time.sleep(line.pop("delayMs") / 1000)
         http.post("/transcript", json=line)
-    print("Replay sent. Top picks arrive on the overlay as Muse Spark answers.")
+    print("Replay sent. Live insights arrive on the overlay as Muse Spark answers.")
 
 
 if __name__ == "__main__":
