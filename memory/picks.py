@@ -37,7 +37,10 @@ Return one JSON object only, with this shape:
 }}
 
 Allowed kinds: fact, common, place, event.
-For place/event picks, search may be a useful search query.
+For place/event picks, search must be a concise Google Maps or Google Events
+query grounded in the transcript, including the city when known. These queries
+are executed by SerpApi only after this response succeeds. Do not invent venues
+or events; search for real options related to the conversation.
 For fact/common picks, search should be null.
 Use [] when there is nothing useful to save or suggest.
 Only use person IDs from the supplied list. Do not infer private facts.

@@ -15,7 +15,7 @@ from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException,
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from memory import notes, picks, serp, store
+from memory import notes, pipeline, store
 
 WEB = Path(__file__).resolve().parent.parent / "web"
 MAX_SELFIE_BYTES = 8_000_000
@@ -174,7 +174,7 @@ async def make_picks(who: str, text: str) -> None:
     try:
         known = await asyncio.to_thread(store.notes_for, list(present))
         people = {pid: {"name": p["name"], "notes": known.get(pid, [])} for pid, p in present.items()}
-        out = await asyncio.to_thread(picks.extract, who, text, people, history[-6:])
+        out = await asyncio.to_thread(pipeline.process, who, text, people, history[-6:])
     except Exception as e:  # one failed model call must not stop the stream
         print(f"picks failed: {e!r}")
         return
@@ -186,17 +186,6 @@ async def make_picks(who: str, text: str) -> None:
         await asyncio.to_thread(store.add_note, note["personId"], note["text"])
         this_call().people.setdefault(note["personId"], []).append(note["text"])
     for pick in out["picks"]:
-        if pick["kind"] in ("place", "event"):
-            if not pick.get("search"):
-                continue
-            try:
-                hit = await asyncio.to_thread(serp.lookup, pick["kind"], pick["search"])
-            except (serp.SerpApiError, ValueError) as e:
-                print(f"serpapi failed: {e}")
-                hit = None
-            if not hit:
-                continue  # Don't present a model-invented venue as a real search result.
-            pick |= hit
         if seen_recently(pick["title"], time.monotonic()):  # after SerpApi, so two searches landing on one place count once
             continue
         event = {
