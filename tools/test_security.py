@@ -72,7 +72,6 @@ def test_guests_on_the_wifi_can_open_the_enroll_page():
     assert TestClient(server.app, client=WIFI).get("/enroll").status_code == 200
 
 
-@pytest.mark.xfail(strict=True, reason="security-review #2: every route is open to the venue Wi-Fi")
 def test_the_wifi_cannot_read_people(monkeypatch):
     monkeypatch.setattr(store, "person", lambda pid: {"id": pid, "name": "Someone", "notes": []})
     assert TestClient(server.app, client=WIFI).get("/people/p_someone").status_code in (401, 403)
@@ -83,7 +82,6 @@ def test_the_overlay_can_open_its_socket():
         pass
 
 
-@pytest.mark.xfail(strict=True, reason="security-review #3: any web page open on this laptop can read /ws")
 def test_web_pages_cannot_open_the_overlay_socket():
     with pytest.raises(WebSocketDisconnect):
         with TestClient(server.app, client=LAPTOP).websocket_connect("/ws", headers={"origin": "https://example.com"}):
