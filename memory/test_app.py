@@ -7,11 +7,14 @@ from datetime import date, datetime
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from memory import app as server
 from memory import notes, picks, serp, store
 
 JORDAN = {"id": "p_jordan", "name": "Jordan Lee", "line": "", "met": "Met Sep 24"}
+LAPTOP = ("127.0.0.1", 50000)  # capture, the overlay and curl run on the laptop with the server
+WIFI = ("192.168.1.23", 50000)  # any other device on the venue Wi-Fi
 
 
 class FakeMuse:
@@ -50,7 +53,7 @@ def http(monkeypatch, tmp_path):
     monkeypatch.setattr(store, "notes_for", lambda pids, per_person=5: {})
     serp._lookup.cache_clear()
     serp._search.cache_clear()
-    with TestClient(server.app) as client:
+    with TestClient(server.app, client=LAPTOP) as client:
         yield client
 
 
@@ -119,6 +122,33 @@ def test_next_call_does_not_see_the_last_calls_insights_or_transcript(http, even
     http.post("/transcript", json=line("speaker_0", "New call starts"))
     wait_for(lambda: len(muse.prompts) == 2)
     assert "Last call's private line" not in muse.prompts[1]
+
+
+def test_wifi_devices_may_only_enroll_or_delete_themselves(http, monkeypatch):
+    monkeypatch.setattr(store, "delete_person", lambda pid, token: False)
+    phone = TestClient(server.app, client=WIFI)
+    for method, path in [("get", "/people/p_jordan"), ("post", "/listening"), ("post", "/calls/end"),
+                         ("post", "/transcript"), ("post", "/faces"), ("post", "/ask"), ("post", "/actions/a1")]:
+        assert getattr(phone, method)(path).status_code == 403, path
+    assert phone.get("/enroll").status_code == 200
+    deleted = phone.delete("/people/p_jordan", headers={"X-Delete-Token": "wrong"})
+    assert deleted.status_code == 403 and "delete link" in deleted.json()["detail"]  # reached the route's own token check
+
+
+def test_web_pages_on_this_laptop_are_refused_and_docs_are_off(http):
+    assert http.post("/calls/end", headers={"Origin": "https://example.com"}).status_code == 403
+    assert http.post("/calls/end").json() == {"note": None}  # capture, the overlay and curl send no Origin
+    assert [http.get(p).status_code for p in ("/docs", "/redoc", "/openapi.json")] == [404, 404, 404]
+
+
+def test_websocket_only_for_this_laptop(http):
+    for client, headers in [(http, {"Origin": "https://example.com"}), (TestClient(server.app, client=WIFI), {})]:
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect("/ws", headers=headers) as ws:
+                ws.receive_json()
+    for headers in ({}, {"Origin": "file://"}):  # Node/Python clients, and the overlay page
+        with http.websocket_connect("/ws", headers=headers) as ws:
+            assert ws.receive_json()["type"] == "listening"
 
 
 def test_insights_survive_a_failed_note_and_ignore_a_garbage_reply(http, events, monkeypatch):

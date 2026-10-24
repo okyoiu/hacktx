@@ -11,9 +11,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
-from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
+from starlette.requests import HTTPConnection
 
 from memory import notes, picks, pipeline, store
 
@@ -49,7 +50,22 @@ async def lifespan(_: FastAPI):
     worker.cancel()
 
 
-app = FastAPI(title="Hello Again memory", lifespan=lifespan)
+app = FastAPI(title="Hello Again memory", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+
+
+def from_this_laptop(conn: HTTPConnection) -> bool:
+    """Capture, the overlay and curl connect over loopback with no Origin (the overlay page sends file://); browsers
+    send their page's origin, so other Wi-Fi devices and web pages open on this laptop both fail."""
+    return conn.client is not None and conn.client.host in ("127.0.0.1", "::1") and conn.headers.get("origin") in (None, "file://")
+
+
+@app.middleware("http")
+async def guests_only_enroll(request: Request, call_next):
+    """Phones on the Wi-Fi may enroll and delete themselves; every other route is for this laptop only."""
+    guest = request.url.path == "/enroll" or (request.method == "DELETE" and request.url.path.startswith("/people/"))
+    if not guest and not from_this_laptop(request):
+        return JSONResponse({"detail": "Only the laptop running Hello Again can use that."}, 403)
+    return await call_next(request)
 
 
 @dataclass
@@ -126,6 +142,8 @@ async def push(event: dict) -> None:
 
 @app.websocket("/ws")
 async def overlay_socket(ws: WebSocket):
+    if not from_this_laptop(ws):  # the http middleware doesn't see WebSockets
+        return await ws.close(code=1008)
     await ws.accept()
     for event in (listening, latest_insights):  # catch up an overlay that starts mid-call
         if event:

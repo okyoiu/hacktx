@@ -124,7 +124,7 @@ def test_call_note_on_end_and_after_faces_go_idle(db, enroll, tmp_path, monkeypa
     }))
     box = {"trackId": 990001, "screenBox": [0, 0, 100, 100]}
 
-    with TestClient(server.app) as http:
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
         assert http.get(f"/people/{pid}").json()["name"] == name
         assert http.get("/people/p_nobody").status_code == 404
 
@@ -184,7 +184,7 @@ def test_call_end_summarises_only_recognized_people(db, enroll, tmp_path, monkey
         return json.dumps({"topic": "", "points": [], "actions": []})
 
     monkeypatch.setattr(picks, "chat", muse)
-    with TestClient(server.app) as http:
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
         http.post("/faces", json={"trackId": 990011, "screenBox": [0, 0, 100, 100], "facePrint": face.tolist()})
         stranger = http.post("/faces", json={"trackId": 990012, "screenBox": [200, 0, 100, 100], "facePrint": random_print().tolist()})
         assert stranger.json()["person"] is None  # not enrolled
