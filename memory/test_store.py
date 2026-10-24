@@ -1,5 +1,6 @@
 """store.py, and the endpoints that read it, against the real database. Run with: uv run --env-file .env pytest
 Every test makes its own people and deletes them afterwards; nothing else is touched."""
+import json
 import os
 import secrets
 import time
@@ -12,8 +13,6 @@ from fastapi.testclient import TestClient
 
 from memory import app as server
 from memory import notes, picks, store
-
-os.environ.setdefault("PGCONNECT_TIMEOUT", "3")  # skip fast instead of hanging when the host is unreachable
 
 
 def unit(v: np.ndarray) -> np.ndarray:
@@ -113,15 +112,15 @@ def test_person_returns_notes_newest_first(db, enroll):
 def test_call_note_on_end_and_after_faces_go_idle(db, enroll, tmp_path, monkeypatch):
     monkeypatch.setattr(notes, "NOTES", tmp_path)
     monkeypatch.setattr(server, "CALL_IDLE_SECONDS", 30)
-    monkeypatch.setattr(server, "call", None)
+    for name, value in {"call": None, "history": [], "fresh": [], "tracks": {}, "latest_insights": None}.items():
+        monkeypatch.setattr(server, name, value)
     face = random_print()
     pid, _ = enroll(face)
     name = store.person(pid)["name"]
-    title = "Marathon " + secrets.token_hex(3)  # unique, so repeat-pick suppression can't hide it
-    monkeypatch.setattr(picks, "extract", lambda *a: {
+    monkeypatch.setattr(picks, "chat", lambda prompt: json.dumps({
         "notes": [{"personId": pid, "text": "Training for a marathon"}],
-        "picks": [{"kind": "fact", "title": title, "detail": "Race in March", "search": None}],
-    })
+        "topic": "Running", "points": ["They both run"], "actions": [],
+    }))
     box = {"trackId": 990001, "screenBox": [0, 0, 100, 100]}
 
     with TestClient(server.app) as http:
@@ -131,9 +130,12 @@ def test_call_note_on_end_and_after_faces_go_idle(db, enroll, tmp_path, monkeypa
         assert http.post("/calls/end").json() == {"note": None}  # nothing happened, no file
         http.post("/faces", json=box | {"facePrint": face.tolist()})
         http.post("/transcript", json={"speaker": "You", "text": "Are you still running?", "final": True})
+        deadline = time.time() + 3
+        while not http.get(f"/people/{pid}").json()["notes"] and time.time() < deadline:
+            time.sleep(0.05)
         assert http.get(f"/people/{pid}").json()["notes"][0]["text"] == "Training for a marathon"
         text = Path(http.post("/calls/end").json()["note"]).read_text()
-        assert f"## {name}" in text and "- Training for a marathon" in text and f"**{title}**: Race in March (You)" in text
+        assert f"## {name}" in text and "- Training for a marathon" in text and "## Key points\n\n- They both run" in text
 
         def calls_written() -> int:
             return sum(f.read_text().count("# Call on") for f in tmp_path.glob("*.md"))

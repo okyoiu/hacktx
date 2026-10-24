@@ -1,4 +1,4 @@
-"""SerpApi lookups that turn a place or event pick into a real result."""
+"""SerpApi lookups: real places and events for actions, and Google web results for search."""
 import os
 from functools import lru_cache
 from threading import Lock
@@ -24,15 +24,30 @@ def lookup(kind: str, query: str) -> dict | None:
     query = " ".join(query.split())
     if not query:
         raise ValueError("SerpApi query must not be empty")
-    key = os.getenv("SERPAPI_KEY", "").strip()
-    if not key:
-        raise SerpApiError("Set SERPAPI_KEY in .env and restart the memory service")
+    key = _key()
     ll = os.getenv("DEMO_LL", "@30.2672,-97.7431,13z").strip()
     location = os.getenv("SERPAPI_LOCATION", "Austin, Texas, United States").strip()
     # Coalesce concurrent repeated queries instead of spending credits twice.
     with _lock:
         hit = _lookup(kind, query.casefold(), key, ll, location)
         return dict(hit) if hit else None
+
+
+def search(query: str) -> list[dict]:
+    """Top 3 Google web results as [{title, url, snippet}], cached and coalesced like lookup."""
+    query = " ".join(query.split())
+    if not query:
+        raise ValueError("SerpApi query must not be empty")
+    key = _key()
+    with _lock:
+        return [dict(r) for r in _search(query.casefold(), key)]
+
+
+def _key() -> str:
+    key = os.getenv("SERPAPI_KEY", "").strip()
+    if not key:
+        raise SerpApiError("Add SERPAPI_KEY to .env and restart the memory service")
+    return key
 
 
 @lru_cache(maxsize=256)
@@ -46,8 +61,20 @@ def _lookup(kind: str, query: str, key: str, ll: str, location: str) -> dict | N
         params["engine"] = "google_events"
         if location:
             params["location"] = location
+    return first(kind, _get(params))
+
+
+@lru_cache(maxsize=256)
+def _search(query: str, key: str) -> tuple[dict, ...]:
+    data = _get({"engine": "google", "q": query, "api_key": key, "hl": "en", "gl": "us"})
+    hits = [r for r in data.get("organic_results") or [] if isinstance(r, dict) and r.get("title") and r.get("link")]
+    return tuple({"title": r["title"], "url": r["link"], "snippet": r.get("snippet") or ""} for r in hits[:3])
+
+
+def _get(params: dict) -> dict:
+    """One SerpApi request; every failure becomes a SerpApiError without the key in it."""
     try:
-        r = httpx.get(URL, params=params, timeout=15)
+        r = httpx.get(URL, params=params, timeout=30)  # Google Events often takes 12 s or more
         r.raise_for_status()
         data = r.json()
     except httpx.HTTPStatusError as exc:
@@ -56,9 +83,12 @@ def _lookup(kind: str, query: str, key: str, ll: str, location: str) -> dict | N
         raise SerpApiError("SerpApi request failed or timed out; try again") from None
     except ValueError:
         raise SerpApiError("SerpApi returned invalid JSON") from None
-    if not isinstance(data, dict) or data.get("error"):
+    if not isinstance(data, dict):
         raise SerpApiError("SerpApi could not complete the search; check key, quota and query")
-    return first(kind, data)
+    # "No results" also comes back as an error, but on a search whose status is Success
+    if data.get("error") and (data.get("search_metadata") or {}).get("status") != "Success":
+        raise SerpApiError("SerpApi could not complete the search; check key, quota and query")
+    return data
 
 
 def first(kind: str, data: dict) -> dict | None:

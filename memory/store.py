@@ -19,7 +19,7 @@ def conn() -> psycopg.Connection:
     # shortcut: one shared connection; switch to psycopg_pool if requests start queuing.
     global _conn
     if _conn is None:
-        _conn = psycopg.connect(os.environ["DATABASE_URL"], autocommit=True)
+        _conn = psycopg.connect(os.environ["DATABASE_URL"], autocommit=True, connect_timeout=5)  # fail fast, never hang
         _conn.execute("create extension if not exists vector")
         register_vector(_conn)
         _conn.execute(Path(__file__).with_name("schema.sql").read_text())

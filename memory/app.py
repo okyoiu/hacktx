@@ -1,14 +1,15 @@
-"""Memory service: matches faces, turns Muse transcripts into top picks, and pushes both to the overlay.
+"""Memory service: matches faces, turns Muse transcripts into Live insights, answers AI requests, and pushes it all to the overlay.
 
 Run: uv run --env-file .env uvicorn memory.app:app --reload
 Keep it on localhost or your LAN; nothing here is authenticated except deleting a person.
 """
 import asyncio
-import time
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote_plus
 
 import numpy as np
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
@@ -19,22 +20,44 @@ from memory import notes, picks, serp, store
 
 WEB = Path(__file__).resolve().parent.parent / "web"
 MAX_SELFIE_BYTES = 8_000_000
-REPEAT_SECONDS = 300
 CALL_IDLE_SECONDS = 60  # a call ends this long after the last face was seen
+INSIGHTS_SECONDS = 8  # Muse Spark refreshes the insights at most this often
+MAX_ACTIONS_KEPT = 100  # actions from older insights stay clickable until this many newer ones exist
 
-app = FastAPI(title="Hello Again memory")
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
 clients: set[WebSocket] = set()
 tracks: dict[int, dict | None] = {}  # trackId -> card for the matched person (None = not enrolled)
 speakers: dict[str, str] = {}  # Muse speaker label -> display name
-history: list[str] = []  # recent lines, context for Muse Spark
-recent_titles: dict[str, float] = {}  # lowercased pick title -> when it was last pushed
+history: list[str] = []  # lines Muse Spark has already seen, context for the next refresh
+fresh: list[str] = []  # final lines since the last insights refresh
+listening: dict = {"type": "listening", "on": True, "startedAt": utc_now()}  # latest listening event
+latest_insights: dict | None = None  # latest insights event
+actions: dict[str, dict] = {}  # action id -> {kind, label, query, personId}
+wake: asyncio.Event | None = None  # set when fresh lines wait for Muse Spark; made per event loop in lifespan
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    global wake
+    wake = asyncio.Event()
+    worker = asyncio.create_task(insights_worker())
+    yield
+    worker.cancel()
+
+
+app = FastAPI(title="Hello Again memory", lifespan=lifespan)
 
 
 @dataclass
 class Call:
     started: datetime = field(default_factory=datetime.now)
     people: dict[str, list[str]] = field(default_factory=dict)  # recognized person id -> notes learned this call
-    picks: list[dict] = field(default_factory=list)  # pick events pushed this call
+    points: list[str] = field(default_factory=list)  # every distinct insight point, in order
+    responses: list[dict] = field(default_factory=list)  # finished response events
 
 
 call: Call | None = None  # None between calls
@@ -53,7 +76,9 @@ def end_call() -> asyncio.Future:
     if idle_timer:
         idle_timer.cancel()
     ended, call = call or Call(), None
-    return asyncio.get_running_loop().run_in_executor(None, notes.write, ended.started, ended.people, ended.picks)
+    return asyncio.get_running_loop().run_in_executor(
+        None, notes.write, ended.started, ended.people, ended.points, ended.responses
+    )
 
 
 def saw_face(card: dict | None) -> None:
@@ -78,6 +103,9 @@ async def push(event: dict) -> None:
 @app.websocket("/ws")
 async def overlay_socket(ws: WebSocket):
     await ws.accept()
+    for event in (listening, latest_insights):  # catch up an overlay that starts mid-call
+        if event:
+            await ws.send_json(event)
     clients.add(ws)
     try:
         while True:
@@ -129,7 +157,7 @@ async def face_gone(g: Gone):
     return {"ok": True}
 
 
-# --- transcript (from capture/transcribe.py) ---
+# --- transcript (from capture/transcribe.py) and the pause button ---
 
 class Line(BaseModel):
     speaker: str = Field(max_length=64)  # Muse diarization label, e.g. "speaker_0"
@@ -142,6 +170,10 @@ class SpeakerName(BaseModel):
     name: str = Field(min_length=1, max_length=80)
 
 
+class Listening(BaseModel):
+    on: bool
+
+
 @app.post("/speakers")
 async def name_speaker(s: SpeakerName):
     # shortcut: voices are named by hand; upgrade by matching who is talking on video
@@ -149,67 +181,145 @@ async def name_speaker(s: SpeakerName):
     return {"ok": True}
 
 
+@app.post("/listening")
+async def set_listening(body: Listening):
+    if body.on and not listening["on"] and call is None:
+        listening["startedAt"] = utc_now()  # resuming outside a call starts a fresh timer
+    listening["on"] = body.on
+    await push(listening)
+    return listening
+
+
 @app.post("/transcript")
-async def transcript(line: Line, tasks: BackgroundTasks):
+async def transcript(line: Line):
+    if not listening["on"]:
+        return {"ok": True, "ignored": True}  # paused: nothing is shown, kept or sent to Muse
     who = speakers.get(line.speaker, line.speaker)
     await push({"type": "caption", "speaker": who, "text": line.text, "final": line.final})
     if line.final and line.text.strip():
-        tasks.add_task(make_picks, who, line.text)
+        fresh.append(f"{who}: {line.text}")
+        wake.set()
     return {"ok": True}
 
 
-def seen_recently(title: str, now: float) -> bool:
-    """True if a pick with this title went out in the last REPEAT_SECONDS; otherwise record it as sent now."""
-    for k in [k for k, t in recent_titles.items() if now - t >= REPEAT_SECONDS]:
-        del recent_titles[k]
-    key = title.strip().lower()
-    if key in recent_titles:
-        return True
-    recent_titles[key] = now
-    return False
+async def insights_worker() -> None:
+    while True:
+        await wake.wait()
+        wake.clear()
+        await refresh_insights()
+        await asyncio.sleep(INSIGHTS_SECONDS)  # lines arriving meanwhile wait for the next refresh
 
 
-async def make_picks(who: str, text: str) -> None:
+async def refresh_insights() -> None:
+    """One Muse Spark call over the fresh lines: store notes about people, then push the whole insights state."""
+    global latest_insights
+    new = fresh[:]
+    fresh.clear()
     present = {p["id"]: p for p in tracks.values() if p}
     try:
         known = await asyncio.to_thread(store.notes_for, list(present))
         people = {pid: {"name": p["name"], "notes": known.get(pid, [])} for pid, p in present.items()}
-        out = await asyncio.to_thread(picks.extract, who, text, people, history[-6:])
+        out = await asyncio.to_thread(picks.extract, people, history[-12:], new)
     except Exception as e:  # one failed model call must not stop the stream
-        print(f"picks failed: {e!r}")
+        print(f"insights failed: {e!r}")
         return
     finally:
-        history.append(f"{who}: {text}")
+        history.extend(new)
         del history[:-20]
 
+    current = this_call()
     for note in out["notes"]:
         await asyncio.to_thread(store.add_note, note["personId"], note["text"])
-        this_call().people.setdefault(note["personId"], []).append(note["text"])
-    for pick in out["picks"]:
-        if pick["kind"] in ("place", "event"):
-            if not pick.get("search"):
-                continue
-            try:
-                hit = await asyncio.to_thread(serp.lookup, pick["kind"], pick["search"])
-            except (serp.SerpApiError, ValueError) as e:
-                print(f"serpapi failed: {e}")
-                hit = None
-            if not hit:
-                continue  # Don't present a model-invented venue as a real search result.
-            pick |= hit
-        if seen_recently(pick["title"], time.monotonic()):  # after SerpApi, so two searches landing on one place count once
-            continue
-        event = {
-            "type": "pick",
-            "id": uuid.uuid4().hex[:8],
-            "kind": pick["kind"],
-            "title": pick["title"],
-            "detail": pick["detail"],
-            "quote": text,
-            "speaker": who,
-        }
-        this_call().picks.append(event)
-        await push(event)
+        current.people.setdefault(note["personId"], []).append(note["text"])
+    current.points += [p for p in out["points"] if p not in current.points]
+    shown = []
+    for action in out["actions"]:
+        aid = "a" + uuid.uuid4().hex[:7]
+        actions[aid] = action
+        shown.append({"id": aid, "kind": action["kind"], "label": action["label"]})
+    while len(actions) > MAX_ACTIONS_KEPT:
+        del actions[next(iter(actions))]
+    latest_insights = {"type": "insights", "topic": out["topic"], "points": out["points"], "actions": shown}
+    await push(latest_insights)
+
+
+# --- AI response panel (overlay Ask AI and action clicks) ---
+
+class Ask(BaseModel):
+    question: str = Field(min_length=1, max_length=500)
+
+
+class NoAnswer(Exception):
+    """Ends a response as an error with this message for the user."""
+
+
+@app.post("/ask")
+async def ask(q: Ask, tasks: BackgroundTasks):
+    question = q.question.strip()
+    if not question:
+        raise HTTPException(422, "Type a question first.")
+    return await respond(tasks, question, "ask", question)
+
+
+@app.post("/actions/{aid}")
+async def run_action(aid: str, tasks: BackgroundTasks):
+    action = actions.get(aid)
+    if action is None:
+        raise HTTPException(404, "That action is no longer available. Pick one from the latest insights.")
+    return await respond(tasks, action["label"], action["kind"], action["personId"] or action["query"])
+
+
+async def respond(tasks: BackgroundTasks, query: str, kind: str, arg: str | None) -> dict:
+    """Push 'thinking' now and the answer after the HTTP reply; the overlay matches them by id."""
+    event = {"type": "response", "id": "r" + uuid.uuid4().hex[:7], "query": query,
+             "status": "thinking", "text": "", "sources": []}
+    await push(event)
+    present = {p["id"]: p["name"] for p in tracks.values() if p}
+    tasks.add_task(finish, event, kind, arg, present, history[-12:] + fresh)
+    return {"id": event["id"]}
+
+
+async def finish(event: dict, kind: str, arg: str | None, present: dict[str, str], lines: list[str]) -> None:
+    try:
+        text, sources = await asyncio.to_thread(answer, kind, arg, present, lines)
+        event = event | {"status": "done", "text": text, "sources": sources}
+        this_call().responses.append(event)
+    except (NoAnswer, picks.MuseError, serp.SerpApiError) as e:
+        event = event | {"status": "error", "text": str(e)}
+    except Exception as e:  # never leave the panel stuck on "thinking"
+        print(f"response failed: {e!r}")
+        event = event | {"status": "error", "text": "Something went wrong answering that. Try again."}
+    await push(event)
+
+
+def answer(kind: str, arg: str | None, present: dict[str, str], lines: list[str]) -> tuple[str, list[dict]]:
+    """Runs in a thread: the text and sources for one question or action."""
+    if kind == "recall":
+        return recall(arg), []
+    if kind in ("places", "events"):
+        hit = serp.lookup(kind[:-1], arg)
+        if not hit:
+            return f'Nothing found for "{arg}".', []
+        link = "https://www.google.com/maps/search/?api=1&query=" if kind == "places" else "https://www.google.com/search?q="
+        return f"{hit['title']}\n{hit['detail']}".strip(), [{"title": hit["title"], "url": link + quote_plus(hit["title"])}]
+    known = store.notes_for(list(present))
+    people = {pid: {"name": name, "notes": known.get(pid, [])} for pid, name in present.items()}
+    if kind == "search":
+        results = serp.search(arg)
+        if not results:
+            return f'No web results for "{arg}".', []
+        sources = [{"title": r["title"], "url": r["url"]} for r in results]
+        return picks.answer("search", arg, people, lines, results), sources
+    return picks.answer(kind, arg or "", people, lines), []
+
+
+def recall(pid: str) -> str:
+    person = store.person(pid)
+    if person is None:
+        raise NoAnswer("That person is no longer enrolled, so there's nothing to recall.")
+    out = [f"{person['name']}, first met {notes.day(person['firstMet'])}."]
+    out += [f"- {n['text']}" for n in person["notes"]] or ["No notes about them yet."]
+    return "\n".join(out)
 
 
 @app.post("/calls/end")
