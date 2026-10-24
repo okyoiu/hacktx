@@ -27,8 +27,11 @@ Use [] when the line has nothing worth keeping. Only use ids from the list."""
 
 @lru_cache(maxsize=1)
 def client() -> OpenAI:
+    key = os.getenv("MODEL_API_KEY")
+    if not key:
+        raise RuntimeError("MODEL_API_KEY is empty: add your Meta Model API key to .env (see README)")
     # Meta Model API is OpenAI-compatible: same SDK, different base URL
-    return OpenAI(base_url="https://api.meta.ai/v1", api_key=os.environ["MODEL_API_KEY"])
+    return OpenAI(base_url="https://api.meta.ai/v1", api_key=key)
 
 
 def extract(speaker: str, text: str, people: dict[str, dict], history: list[str]) -> dict:
