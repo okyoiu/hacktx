@@ -39,9 +39,8 @@ async def run(device: int | str | None) -> None:
     to_muse = resampler(input_rate)
 
     def on_audio(indata, frames, when, status):
-        pcm = to_muse(bytes(indata))
-        if pcm:  # the resampler buffers a little at the start
-            loop.call_soon_threadsafe(audio.put_nowait, pcm)
+        # keep the real-time audio callback light: resampling happens in send_audio
+        loop.call_soon_threadsafe(audio.put_nowait, bytes(indata))
 
     async with websockets.connect(URL) as ws, httpx.AsyncClient(base_url=os.getenv("MEMORY_URL", "http://localhost:8000")) as http:
         await ws.send(json.dumps({
@@ -60,7 +59,9 @@ async def run(device: int | str | None) -> None:
 
         async def send_audio():
             while True:
-                await ws.send(await audio.get())
+                pcm = to_muse(await audio.get())
+                if pcm:  # the resampler holds back a few ms at the start
+                    await ws.send(pcm)
 
         async def read_events():
             # shortcut: a turn takes the most recent speaker label; overlapping turns can be mislabeled
