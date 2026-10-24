@@ -2,7 +2,7 @@
 //  - cards: full-screen, transparent and click-through; glass name cards sit beside faces
 //  - dock:  small "Top picks" panel; its own window so macOS/Windows can blur what is behind it (real glass)
 // `npm run mock` replays shared/mocks/overlay-demo.jsonl instead of listening to the memory service.
-const { app, BrowserWindow, ipcMain, screen } = require('electron')
+const { app, BrowserWindow, ipcMain, screen, systemPreferences } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
 
@@ -63,6 +63,26 @@ app.whenReady().then(() => {
 // A card turns clickable while the pointer is over it (e.g. its "Copy invite link" button).
 ipcMain.on('click-through', (e, on) => {
   BrowserWindow.fromWebContents(e.sender)?.setIgnoreMouseEvents(on, { forward: true })
+})
+
+// The dock fades when the conversation goes quiet. CSS opacity can't reach the OS blur layer, so fade the
+// whole window instead (Windows and macOS; Linux ignores window opacity).
+const IDLE_OPACITY = 0.3
+let fadeTimer
+ipcMain.on('dock-idle', (e, idle) => {
+  const win = BrowserWindow.fromWebContents(e.sender)
+  if (!win) return
+  const to = idle ? IDLE_OPACITY : 1
+  clearInterval(fadeTimer)
+  if (systemPreferences.getAnimationSettings().prefersReducedMotion) return win.setOpacity(to)
+  const from = win.getOpacity()
+  const ms = idle ? 800 : 200
+  const start = Date.now()
+  fadeTimer = setInterval(() => {
+    const t = Math.min(1, (Date.now() - start) / ms)
+    win.setOpacity(from + (to - from) * t)
+    if (t === 1) clearInterval(fadeTimer)
+  }, 16)
 })
 
 app.on('window-all-closed', () => app.quit())

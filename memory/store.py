@@ -75,6 +75,21 @@ def delete_person(pid: str, token: str) -> bool:
     return True
 
 
+def person(pid: str) -> dict | None:
+    """Name, first-met date and every note, newest first; None if unknown or their consent has run out."""
+    row = conn().execute(
+        """select p.name, p.first_met from people p join consents c on c.person_id = p.id
+           where p.id = %s and c.expires_at >= current_date""",
+        (pid,),
+    ).fetchone()
+    if row is None:
+        return None
+    notes = conn().execute(
+        "select text, created_at from notes where person_id = %s order by created_at desc, id desc", (pid,)
+    ).fetchall()
+    return {"id": pid, "name": row[0], "firstMet": row[1], "notes": [{"text": t, "createdAt": at} for t, at in notes]}
+
+
 def add_note(pid: str, text: str) -> None:
     conn().execute("insert into notes (person_id, text) values (%s, %s)", (pid, text))
 
