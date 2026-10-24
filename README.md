@@ -27,7 +27,7 @@ guest's phone ─ web/enroll.html ───────────────�
 
 1. `cp .env.example .env` and fill in `MODEL_API_KEY` ([dev.meta.ai](https://dev.meta.ai/docs/overview)), `SERPAPI_KEY` and `DATABASE_URL`.
 2. Python: `uv sync`. It installs Python 3.12 and everything else; the first run downloads PyTorch and takes a few minutes. InsightFace compiles on install, so on a Mac run `xcode-select --install` first if you haven't.
-3. Database: create a Tiger Data service and paste its connection string into `DATABASE_URL` (pgvector is available there). Local fallback: `docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=postgres pgvector/pgvector:pg17`. Tables are created on first start.
+3. Database: create a Tiger Data service and paste its connection string into `DATABASE_URL` (pgvector is available there). Local fallback: `docker run -d --name hello-again-db -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=postgres pgvector/pgvector:pg17`. Tables are created on first start.
 4. Overlay: `cd overlay && npm install`.
 
 ## Run it
@@ -35,7 +35,7 @@ guest's phone ─ web/enroll.html ───────────────�
 One terminal each:
 
 ```sh
-uv run --env-file .env uvicorn memory.app:app --host 0.0.0.0 --port 8000   # B
+uv run --env-file .env uvicorn memory.app:app --host 127.0.0.1 --port 8000   # B: this laptop only
 cd overlay && npm start                                                     # C
 uv run --env-file .env python -m capture.faces --region 0,38,1100,700       # A: call window x,y,w,h in screen points
 uv run --env-file .env python -m capture.transcribe --device "BlackHole 2ch" # A: --list-devices to see inputs
@@ -62,6 +62,7 @@ The look is pinned by [`docs/ui-reference.png`](docs/ui-reference.png): dark smo
 
 - **Three glass pieces.** A **control bar** (pause/resume, live waveform, call timer, `Ask AI ⌘↵`, `Show/Hide ⌘\`), a **Live insights** panel (topic, a few points, `Show transcript`, copy, and an **Actions** list), and an **AI response** panel (the question as a chip, copy, close, the answer and its sources).
 - **Name cards beside faces stay**, restyled to the same glass. Faces we can't name yet keep the thinking sparkle and "Recalling…", never an "unknown" label.
+- **Enroll from the call, no photo needed.** Hovering a "Recalling…" pill reveals **Remember them**: type their name and confirm they said yes, and the face print capture already has from the call is saved. Nothing about an unknown face is stored before that; its print lives only in the server's memory while it's on screen.
 - **Computer vision is never shown to users.** No boxes, track numbers or scores in the product; `tools/cv_check.py` is for debugging only.
 - **Only the panels and the control bar take clicks.** Name cards are click-through. Actions highlight on hover; everything clickable shows a pointer.
 - **Motion is part of the product.** Panels and cards blur in, the sparkle turns while the AI is thinking, the waveform moves while listening. Everything respects reduce-motion.
@@ -100,6 +101,7 @@ The old `pick` event is retired: places and events from the conversation become 
 | `POST /listening` | `{on: bool}` → emits `listening` | overlay pause button |
 | `POST /ask` | `{question}` (≤ 500 characters) → `{id}`, then `response` events | overlay `Ask AI` |
 | `POST /actions/{id}` | none → `{id}`, then `response` events | overlay action click |
+| `POST /faces/{trackId}/remember` | `{name, consent: true}` → `{id, deleteToken}`; saves the print of the face on screen in that track, then pushes its updated `face` event; `409` if that face has left | overlay "Remember them" |
 | `POST /calls/end` | none → `{note}`, the path of the end-of-call note | overlay or you |
 | `GET /people/{id}` | none → name, first met, notes | anyone |
 | `GET /enroll`, `POST /enroll` | form: `name`, `consent`, `selfie` → `{id, deleteToken}` | guest's phone |
