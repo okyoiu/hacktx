@@ -1,5 +1,6 @@
 """Insights, pause and AI responses through the real endpoints, with fake Muse Spark and SerpApi: no keys or database."""
 import json
+import threading
 import time
 from datetime import date, datetime
 
@@ -120,6 +121,74 @@ def test_next_call_does_not_see_the_last_calls_insights_or_transcript(http, even
     assert "Last call's private line" not in muse.prompts[1]
 
 
+def test_insights_survive_a_failed_note_and_ignore_a_garbage_reply(http, events, monkeypatch):
+    server.tracks[1] = JORDAN
+    muse = FakeMuse({"notes": [{"personId": "p_jordan", "text": "Moved"}], "topic": "Move", "points": ["Moved"], "actions": []})
+    monkeypatch.setattr(picks, "chat", muse)
+    failures = iter([RuntimeError("person deleted mid-call")])
+
+    def add_note(pid, text):
+        if error := next(failures, None):
+            raise error
+
+    monkeypatch.setattr(store, "add_note", add_note)
+    http.post("/transcript", json=line("speaker_0", "First"))
+    wait_for(lambda: len(muse.prompts) == 1)
+    http.post("/transcript", json=line("speaker_0", "Second"))
+    wait_for(lambda: server.latest_insights is not None)  # the worker lived through the failed insert
+    good = server.latest_insights
+
+    monkeypatch.setattr(picks, "chat", lambda prompt: "no json at all")
+    http.post("/transcript", json=line("speaker_0", "Third"))
+    wait_for(lambda: server.history[-1:] == ["speaker_0: Third"])
+    assert server.latest_insights is good  # a garbage reply doesn't blank the panel
+
+
+def test_call_ending_while_muse_thinks_drops_the_late_result(http, events, monkeypatch):
+    gate = threading.Event()
+    muse = FakeMuse({"topic": "Old call", "points": ["Old point"], "actions": []})
+    monkeypatch.setattr(picks, "chat", lambda prompt: gate.wait(3) and muse(prompt))
+    http.post("/transcript", json=line("speaker_0", "Goodbye everyone"))
+    wait_for(lambda: server.fresh == [])  # the worker took the line and waits on Muse
+    http.post("/transcript", json=line("speaker_0", "Bye!"))  # leaves the worker's wake flag set
+    http.post("/calls/end")
+    gate.set()
+    time.sleep(server.INSIGHTS_SECONDS * 3)
+
+    assert len(muse.prompts) == 1  # no empty refresh for the lines the ended call took away
+    assert server.latest_insights is None and server.history == [] and server.call is None
+    assert [e for e in events if e["type"] == "insights"] == []
+
+
+def test_call_timer_starts_with_the_call_and_late_answers_open_no_call(http, events, monkeypatch):
+    monkeypatch.setattr(picks, "chat", FakeMuse())
+    http.post("/transcript", json=line("speaker_0", "Hi!"))  # the first line starts a call
+    wait_for(lambda: [e for e in events if e["type"] == "listening"])
+    started = [e for e in events if e["type"] == "listening"]
+    assert len(started) == 1 and started[0]["startedAt"] != "2026-10-24T20:00:00Z"
+    assert server.listening["startedAt"] == started[0]["startedAt"]
+
+    http.post("/calls/end")
+    http.post("/ask", json={"question": "Anything?"})  # answered after the call ended
+    assert server.call is None
+
+
+def test_call_note_keeps_the_latest_ten_points(http, events, monkeypatch):
+    refreshes = []
+
+    def muse(prompt: str) -> str:
+        refreshes.append(prompt)
+        n = len(refreshes)
+        return json.dumps({"topic": "t", "points": [f"point {n}.{i}" for i in range(3)], "actions": []})
+
+    monkeypatch.setattr(picks, "chat", muse)
+    for i in range(4):
+        http.post("/transcript", json=line("speaker_0", f"line {i}"))
+        wait_for(lambda: len(refreshes) == i + 1)
+    wait_for(lambda: server.latest_insights and server.latest_insights["points"][0] == "point 4.0")
+    assert len(server.call.points) == 10 and server.call.points[-1] == "point 4.2"
+
+
 def test_pause_ignores_transcript_and_resume_restarts_timer_only_between_calls(http, events):
     paused = http.post("/listening", json={"on": False}).json()
     assert paused == {"type": "listening", "on": False, "startedAt": "2026-10-24T20:00:00Z"} and events == [paused]
@@ -129,7 +198,7 @@ def test_pause_ignores_transcript_and_resume_restarts_timer_only_between_calls(h
     resumed = http.post("/listening", json={"on": True}).json()
     assert resumed["on"] and resumed["startedAt"] != paused["startedAt"] and events[-1] == resumed
 
-    server.this_call()  # a call is in progress: the timer keeps counting through a pause
+    server.call = server.Call()  # a call is in progress: the timer keeps counting through a pause
     server.listening["startedAt"] = "2026-10-24T20:05:00Z"
     http.post("/listening", json={"on": False})
     assert http.post("/listening", json={"on": True}).json()["startedAt"] == "2026-10-24T20:05:00Z"
@@ -158,6 +227,7 @@ def test_every_action_kind_and_ask_answer_and_land_in_the_call_note(http, events
         "notes": [{"text": "Started climbing"}, {"text": "Moved to Austin"}],
     })
     server.tracks[1] = JORDAN
+    server.call = server.Call()  # answers are written into the note of the call in progress
     server.actions.update({
         "a_define": {"kind": "define", "label": "What is bouldering?", "query": "bouldering", "personId": None},
         "a_search": {"kind": "search", "label": "Search climbing gyms", "query": "climbing gyms austin", "personId": None},
@@ -199,6 +269,7 @@ def test_every_action_kind_and_ask_answer_and_land_in_the_call_note(http, events
     text = open(note).read()
     assert "## AI responses" in text and "### Where should we eat?" in text
     assert "Sources: [Ledge](https://www.google.com/maps/search/?api=1&query=Ledge)" in text
+    assert "Remind me who Jordan is" not in text  # recall only repeats the database, and its person may delete themselves
 
 
 def test_missing_keys_end_as_errors_and_never_crash(http, events, monkeypatch):

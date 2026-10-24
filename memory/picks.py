@@ -91,7 +91,7 @@ Return one JSON object only, with this shape:
 }}
 
 Only include people from the list, and leave out anyone the transcript says nothing about.
-Do not infer private facts.
+Write only about that person; don't describe anyone else in the call. Do not infer private facts.
 """
 SUMMARY_LINES = 500
 

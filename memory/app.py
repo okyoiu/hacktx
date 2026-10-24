@@ -22,6 +22,7 @@ MAX_SELFIE_BYTES = 8_000_000
 CALL_IDLE_SECONDS = 60  # a call ends this long after the last face was seen
 INSIGHTS_SECONDS = 8  # Muse Spark refreshes the insights at most this often
 MAX_ACTIONS_KEPT = 100  # actions from older insights stay clickable until this many newer ones exist
+NOTE_POINTS = 10  # Muse rephrases points every refresh, so the call note keeps only the latest few
 
 
 def utc_now() -> str:
@@ -55,18 +56,24 @@ app = FastAPI(title="Hello Again memory", lifespan=lifespan)
 class Call:
     started: datetime = field(default_factory=datetime.now)
     people: dict[str, list[str]] = field(default_factory=dict)  # recognized person id -> notes learned this call
-    points: list[str] = field(default_factory=list)  # every distinct insight point, in order
+    points: list[str] = field(default_factory=list)  # the latest NOTE_POINTS distinct insight points, in order
     responses: list[dict] = field(default_factory=list)  # finished response events
     lines: list[str] = field(default_factory=list)  # every final transcript line, "who: text"
 
 
 call: Call | None = None  # None between calls
 idle_timer: asyncio.TimerHandle | None = None
+background: set[asyncio.Task] = set()  # pushes started from sync code, kept referenced until sent
 
 
 def this_call() -> Call:
     global call
-    call = call or Call()
+    if call is None:
+        call = Call()
+        listening["startedAt"] = utc_now()  # the control bar's call timer starts with the call
+        task = asyncio.get_running_loop().create_task(push(dict(listening)))
+        background.add(task)
+        task.add_done_callback(background.discard)
     return call
 
 
@@ -225,7 +232,10 @@ async def insights_worker() -> None:
     while True:
         await wake.wait()
         wake.clear()
-        await refresh_insights()
+        try:
+            await refresh_insights()
+        except Exception as e:  # a failed model call or note insert must not stop the stream
+            print(f"insights failed: {e!r}")
         await asyncio.sleep(INSIGHTS_SECONDS)  # lines arriving meanwhile wait for the next refresh
 
 
@@ -234,23 +244,25 @@ async def refresh_insights() -> None:
     global latest_insights
     new = fresh[:]
     fresh.clear()
+    if not new:
+        return  # the call they belonged to has ended
+    owner = call  # the call these lines belong to
     present = {p["id"]: p for p in tracks.values() if p}
     try:
         known = await asyncio.to_thread(store.notes_for, list(present))
         people = {pid: {"name": p["name"], "notes": known.get(pid, [])} for pid, p in present.items()}
         out = await asyncio.to_thread(picks.extract, people, history[-12:], new)
-    except Exception as e:  # one failed model call must not stop the stream
-        print(f"insights failed: {e!r}")
-        return
     finally:
-        history.extend(new)
-        del history[:-20]
+        if call is owner:  # a call that ended meanwhile took its transcript with it
+            history.extend(new)
+            del history[:-20]
 
-    current = this_call()
     for note in out["notes"]:
         await asyncio.to_thread(store.add_note, note["personId"], note["text"])
-        current.people.setdefault(note["personId"], []).append(note["text"])
-    current.points += [p for p in out["points"] if p not in current.points]
+        owner.people.setdefault(note["personId"], []).append(note["text"])
+    if call is not owner or not (out["topic"] or out["points"] or out["actions"]):
+        return  # the call ended while Muse thought, or the reply was unusable: leave the panel as it is
+    owner.points = (owner.points + [p for p in out["points"] if p not in owner.points])[-NOTE_POINTS:]
     shown = []
     for action in out["actions"]:
         aid = "a" + uuid.uuid4().hex[:7]
@@ -302,7 +314,8 @@ async def finish(event: dict, kind: str, arg: str | None, present: dict[str, str
     try:
         text, sources = await asyncio.to_thread(answer, kind, arg, present, lines)
         event = event | {"status": "done", "text": text, "sources": sources}
-        this_call().responses.append(event)
+        if call and kind != "recall":  # recall only repeats the database, about someone who may delete themselves
+            call.responses.append(event)
     except (NoAnswer, picks.MuseError, pipeline.SerpApiError) as e:
         event = event | {"status": "error", "text": str(e)}
     except Exception as e:  # never leave the panel stuck on "thinking"
