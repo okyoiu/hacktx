@@ -63,7 +63,6 @@ This is the demo. You need one other person on Zoom.
 1. **Before the call,** make the Zoom window big and use gallery view. **Don't wear headphones,** so the laptop mic hears both of you.
 2. **Join the call.** A **"Recalling…"** pill appears next to their face.
 3. **Remember them, with their OK.** Ask "Okay if this remembers you?" If yes, hover the pill, click **Remember them**, type their name, tick **They said yes**, Save. The pill becomes their name card. No photo needed. (They can also enroll themselves, see below.)
-   > **Rolling out:** the server side of Remember them is in; the button arrives with the next overlay update. Until it's in `main`, enroll them on this laptop (option 2 below) with a screenshot of their video, taken with their OK.
 4. **Talk for 2–3 minutes** about real things: where they live, work, plans, a place you'd like to go. **Live insights** fills in a topic, points and actions. Click an action and the answer appears in **AI response**. **Show transcript** shows the captions. Press **⌘↵** to ask the AI anything.
 5. **Leave the call.** About **60 seconds** after the last face disappears, the call ends by itself, and Muse saves what you talked about for each person (about 10 seconds later). To skip the wait: `curl -X POST localhost:8000/calls/end`. A readable note also lands in `notes/` (git-ignored, because it's about real people).
 6. **Rejoin.** Their card now says **"Last time: …"**. Click **"Remind me who [name] is"** for everything saved about them.
