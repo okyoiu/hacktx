@@ -14,6 +14,8 @@ import httpx
 import sounddevice as sd
 import websockets
 
+from capture.speakers import UNLABELED
+
 URL = "wss://api.meta.ai/v1/asr/realtime"
 RATE = 24_000  # PCM_24KHZ: 16-bit mono little-endian
 FRAME = 1_920  # 80 ms per frame, as in Meta's example
@@ -46,7 +48,7 @@ async def run(device: str | None) -> None:
 
         async def read_events():
             # shortcut: a turn takes the most recent speaker label; overlapping turns can be mislabeled
-            speaker = "speaker"
+            speaker = UNLABELED
             async for raw in ws:
                 event = json.loads(raw)
                 kind = event.get("type")
