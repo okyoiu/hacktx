@@ -9,6 +9,7 @@ Private glass overlay for Teams/Zoom calls: names people who opted in, shows Top
 | Capture (Person A) | `capture/` | `agent/capture` |
 | Memory (Person B) | `memory/` | `agent/memory` |
 | Overlay (Person C) | `overlay/`, `web/` | `agent/overlay` |
+| Security (cybersecurity expert) | reviews everything, fixes only in `tools/` and tests | `agent/security` |
 | Coordinator (main session) | everything shared, merges | `main` |
 
 - Work only in your own folder.
@@ -29,3 +30,12 @@ Private glass overlay for Teams/Zoom calls: names people who opted in, shows Top
 - `node --check overlay/*.js` for overlay changes
 - Overlay UI follows README "Overlay UI rules": click-through by default, one action per card shown on hover, thinking sparkle instead of "unknown".
 - Electron windows draw on top of the user's real screen: run `npm run mock` briefly and close it.
+
+## Skills every agent uses
+
+Say which skill you are using when you start using it ("Using ponytail…", "Using superpowers:test-driven-development…").
+
+- **ponytail** for every code change: the smallest complete change, code a teammate understands at a glance, a comment only for a non-obvious why, and one small test for new logic.
+- **superpowers** where they fit: `test-driven-development` for new logic, `systematic-debugging` for any bug or failing test, `verification-before-completion` before saying "done", `requesting-code-review` before handing work to the coordinator.
+- **impeccable** for any UI work (`overlay/`, `web/`); `docs/ui-reference.png` is the pinned look.
+- **cybersecurity** (this repo's own skill, `.claude/skills/cybersecurity/`) before you finish anything that touches face prints, consent, notes, keys, server routes, uploads, Electron, or AI/search text.
