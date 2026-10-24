@@ -84,16 +84,18 @@ Return one JSON object only, with this shape:
   "people": [
     {{
       "personId": "an ID from the people list",
-      "about": "Who they are: a few short facts",
-      "lastTime": "What you talked about this time, 1-2 short lines"
+      "about": "Who they are: a few short facts, or \\"\\" if the transcript reveals little about them",
+      "lastTime": "What you talked about together this time, 1-2 short lines"
     }}
   ]
 }}
 
-Only include people from the list, and leave out anyone the transcript says nothing about.
+Include every person in the list, exactly once. Everyone needs a lastTime, even someone who mostly
+listened or asked questions: say what the conversation with them was about.
 Write only about that person; don't describe anyone else in the call. Do not infer private facts.
 """
 SUMMARY_LINES = 500
+TOGETHER = "You were on a call together."  # lastTime for anyone Muse leaves out, so their card still says something
 
 
 class MuseError(RuntimeError):
@@ -191,40 +193,36 @@ def summarise(people: dict[str, dict], lines: list[str]) -> list[dict]:
 
 
 def parse_summary(reply: str, known_ids: set[str]) -> list[dict]:
-    """Validated [{personId, about, lastTime}], at most one per known person."""
+    """Validated [{personId, about, lastTime}]: exactly one per known person; about may be empty."""
+    entries = []
     match = re.search(r"\{.*\}", reply, re.S)
-    if not match:
-        return []
+    if match:
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict) and isinstance(data.get("people"), list):
+            entries = data["people"]
 
-    try:
-        data = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return []
-
-    if not isinstance(data, dict) or not isinstance(data.get("people"), list):
-        return []
-
-    out = []
-    seen = set()
-    for entry in data["people"]:
+    found = {}
+    for entry in entries:
         if not isinstance(entry, dict):
             continue
 
         pid = entry.get("personId")
-        about = entry.get("about")
-        last = entry.get("lastTime")
+        about = entry.get("about") or ""
+        last = entry.get("lastTime") or ""
 
-        if pid not in known_ids or pid in seen:
+        if pid not in known_ids or pid in found:
             continue
         if not isinstance(about, str) or not isinstance(last, str):
             continue
 
-        about, last = about.strip(), last.strip()
-        if about and last:
-            seen.add(pid)
-            out.append({"personId": pid, "about": about[:300], "lastTime": last[:240]})
+        found[pid] = {"personId": pid, "about": about.strip()[:300], "lastTime": last.strip()[:240] or TOGETHER}
 
-    return out
+    # everyone in the call gets a last-time line, even when Muse leaves them out
+    missing = [{"personId": pid, "about": "", "lastTime": TOGETHER} for pid in sorted(known_ids - found.keys())]
+    return list(found.values()) + missing
 
 
 def parse(reply: str, known_ids: set[str]) -> dict:

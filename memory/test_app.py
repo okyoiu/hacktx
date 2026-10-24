@@ -252,7 +252,7 @@ def test_every_action_kind_and_ask_answer_and_land_in_the_call_note(http, events
     monkeypatch.setattr(serp.httpx, "get", fake_serpapi)
     monkeypatch.setattr(store, "person", lambda pid: {
         "id": pid, "name": "Jordan Lee", "firstMet": date(2025, 9, 24),
-        "encounters": [{"metAt": datetime(2026, 10, 2, 18, 0).astimezone(), "about": "Engineer who climbs", "lastTime": "Planned the move."},
+        "encounters": [{"metAt": datetime(2026, 10, 2, 18, 0).astimezone(), "about": "", "lastTime": "Planned the move."},
                        {"metAt": datetime(2025, 9, 24, 18, 0).astimezone(), "about": "Engineer", "lastTime": "Met at a meetup."}],
         "notes": [{"text": "Started climbing"}, {"text": "Moved to Austin"}],
     })
@@ -284,7 +284,7 @@ def test_every_action_kind_and_ask_answer_and_land_in_the_call_note(http, events
     assert place["sources"] == [{"title": "Ledge", "url": "https://www.google.com/maps/search/?api=1&query=Ledge"}]
     assert run("/actions/a_events")["text"] == 'Nothing found for "climbing meetup".'
     assert run("/actions/a_recall")["text"] == (
-        "Jordan Lee, first met Sep 24, 2025.\nAbout: Engineer who climbs\n"
+        "Jordan Lee, first met Sep 24, 2025.\nAbout: Engineer\n"  # the latest about that isn't empty
         "Met Oct 2, 2026: Planned the move.\nMet Sep 24, 2025: Met at a meetup.\n- Started climbing\n- Moved to Austin"
     )
     assert run("/actions/a_helpful")["text"] == "Answer from Muse"

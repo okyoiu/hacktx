@@ -360,8 +360,8 @@ def recall(pid: str) -> str:
     if person is None:
         raise NoAnswer("That person is no longer enrolled, so there's nothing to recall.")
     out = [f"{person['name']}, first met {notes.day(person['firstMet'])}."]
-    if person["encounters"]:
-        out.append(f"About: {person['encounters'][0]['about']}")
+    if about := next((e["about"] for e in person["encounters"] if e["about"]), None):  # latest one Muse could write
+        out.append(f"About: {about}")
     out += [f"Met {notes.day(e['metAt'].astimezone())}: {e['lastTime']}" for e in person["encounters"]]
     out += [f"- {n['text']}" for n in person["notes"]] or ["No notes about them yet."]
     return "\n".join(out)
