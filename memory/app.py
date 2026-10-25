@@ -541,10 +541,8 @@ def forget(pid: str, request: Request, x_delete_token: str | None = Header(defau
     mine = from_this_laptop(request)  # the dashboard needs no token; a phone on the Wi-Fi does
     if not mine and x_delete_token is None:
         raise HTTPException(403, "That delete link doesn't match. Nothing was deleted.")
-    who = store.person(pid)  # the name has to be read before the row is gone
-    if not store.delete_person(pid, None if mine else x_delete_token):
+    if not store.delete_person(pid, None if mine else x_delete_token):  # also clears them from notes/
         raise HTTPException(404 if mine else 403, "Nobody with that id." if mine else "That delete link doesn't match. Nothing was deleted.")
-    notes.forget(pid, who["name"] if who else None)
     for t, card in tracks.items():  # not named on screen, and not sent to Muse, from now on
         if card and card["id"] == pid:
             tracks[t] = None

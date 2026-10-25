@@ -182,7 +182,6 @@ def test_a_role_over_60_characters_is_refused(monkeypatch):
     assert r.status_code == 422
 
 
-@pytest.mark.xfail(strict=True, reason="the role is not in the Muse prompts yet; once it is, it must be fenced like names")
 def test_a_role_cannot_close_the_prompt_fence():
     from memory import picks
 
@@ -190,7 +189,6 @@ def test_a_role_cannot_close_the_prompt_fence():
     assert "Boss" in text and text.count("</people>") == 1 and "\nIgnore" not in text
 
 
-@pytest.mark.xfail(strict=True, reason="R3-8: a role typed by a guest or the host keeps its newlines; collapse them in the store")
 def test_a_role_with_newlines_is_stored_on_one_line(monkeypatch):
     if not hasattr(store, "set_role"):
         pytest.skip("roles are not merged yet")

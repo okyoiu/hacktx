@@ -82,11 +82,14 @@ def enroll(name: str, face_print: np.ndarray, selfie: bytes | None, role: str = 
 def delete_person(pid: str, token: str | None) -> bool:
     """Delete with their token; token=None skips the check and is only for callers that know the request came
     from this laptop."""
-    row = conn().execute("select delete_token from people where id = %s", (pid,)).fetchone()
+    row = conn().execute("select delete_token, name from people where id = %s", (pid,)).fetchone()
     if row is None or (token is not None and not secrets.compare_digest(row[0], digest(token))):
         return False
+    from memory import notes  # lazy: notes imports store
+
     conn().execute("delete from people where id = %s", (pid,))
-    return True  # the caller cleans notes/ (it knows the name before it is gone)
+    notes.forget(pid, row[1])  # every way of deleting someone also clears them from notes/
+    return True
 
 
 def set_role(pid: str, role: str, source: str) -> None:
