@@ -115,13 +115,14 @@ def set_role(pid: str, role: str, source: str) -> None:
 def people() -> list[dict]:
     """Everyone with valid consent, most recently met first, for the dashboard."""
     rows = conn().execute(
-        """select p.id, p.name, p.role, p.first_met,
+        """select p.id, p.name, p.role, p.first_met, p.how_met,
                   coalesce((select max(met_at) from encounters where person_id = p.id), p.first_met::timestamptz) as last_met,
                   (select last_time from encounters where person_id = p.id order by met_at desc, id desc limit 1)
            from people p join consents c on c.person_id = p.id
            where c.expires_at >= current_date
            order by last_met desc, p.first_met desc, p.id""").fetchall()
-    return [{"id": i, "name": n, "role": r, "firstMet": f, "lastMet": m, "lastTime": t} for i, n, r, f, m, t in rows]
+    return [{"id": i, "name": n, "role": r, "howMet": h, "firstMet": f, "lastMet": m, "lastTime": t}
+            for i, n, r, f, h, m, t in rows]
 
 
 def rename(pid: str, name: str) -> None:
@@ -131,7 +132,7 @@ def rename(pid: str, name: str) -> None:
 def person(pid: str) -> dict | None:
     """Name, first-met date, every encounter and note, newest first; None if unknown or their consent has run out."""
     row = conn().execute(
-        """select p.name, p.first_met, p.role from people p join consents c on c.person_id = p.id
+        """select p.name, p.first_met, p.role, p.how_met from people p join consents c on c.person_id = p.id
            where p.id = %s and c.expires_at >= current_date""",
         (pid,),
     ).fetchone()
@@ -150,6 +151,7 @@ def person(pid: str) -> dict | None:
         "id": pid,
         "name": row[0],
         "role": row[2],
+        "howMet": row[3],
         "firstMet": row[1],
         "encounters": [{"metAt": at, "about": about, "lastTime": last} for at, about, last in encounters],
         "notes": [{"text": t, "createdAt": at} for t, at in notes],
@@ -178,6 +180,11 @@ def key_fact(pid: str) -> str | None:
         "select about from encounters where person_id = %s and about <> '' order by met_at desc, id desc limit 1", (pid,)
     ).fetchone()
     return row[0] if row else latest_note(pid)
+
+
+def set_how_met(pid: str, line: str) -> None:
+    """Written once, at the first encounter; never rewritten."""
+    conn().execute("update people set how_met = %s where id = %s and how_met = ''", (line, pid))
 
 
 def add_facts(pid: str, texts: list[str]) -> None:

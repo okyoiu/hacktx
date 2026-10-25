@@ -412,3 +412,24 @@ def test_muses_facts_are_kept_apart_from_notes_never_repeat_and_go_with_the_pers
 
     assert store.delete_person(pid, token)
     assert db.execute("select count(*) from facts where person_id = %s", (pid,)).fetchone()[0] == 0
+
+
+def test_how_we_met_is_written_once_from_the_first_calls_date_app_and_topic(db, enroll, tmp_path, monkeypatch):
+    monkeypatch.setattr(notes, "NOTES", tmp_path)
+    pid, _ = enroll(random_print())
+    monkeypatch.setattr(picks, "chat", lambda prompt, seconds=None: json.dumps({"people": [{"personId": pid, "lastTime": "Chat."}]}))
+    first = server.Call(started=datetime(2026, 10, 25, 14, 0), people={pid: []}, lines=["x: hi"], app="zoom.us", topic="A HackTX demo of Hello Again")
+    server.remember_encounters(first)
+    assert store.person(pid)["howMet"] == "Oct 25, 2026 on Zoom: A HackTX demo of Hello Again"
+    later = server.Call(started=datetime(2026, 11, 2, 9, 0), people={pid: []}, lines=["x: hi"], app="FaceTime", topic="Other")
+    server.remember_encounters(later)
+    assert store.person(pid)["howMet"] == "Oct 25, 2026 on Zoom: A HackTX demo of Hello Again"  # never rewritten
+    assert "How we met: Oct 25, 2026 on Zoom" in (tmp_path / "people" / f"{pid}.md").read_text()
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
+        assert next(p for p in http.get("/people").json() if p["id"] == pid)["howMet"].startswith("Oct 25, 2026 on Zoom")
+        assert http.get(f"/people/{pid}").json()["howMet"].startswith("Oct 25, 2026 on Zoom")
+
+    other, _ = enroll(random_print())
+    monkeypatch.setattr(picks, "chat", lambda prompt, seconds=None: json.dumps({"people": [{"personId": other, "lastTime": "Chat."}]}))
+    server.remember_encounters(server.Call(started=datetime(2026, 10, 26, 9, 0), people={other: []}, lines=["x: hi"]))
+    assert store.person(other)["howMet"] == "Oct 26, 2026 on a call"  # no app followed, no topic

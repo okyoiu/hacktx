@@ -38,6 +38,9 @@ create table if not exists encounters (
 alter table people add column if not exists role text not null default '';
 alter table people add column if not exists role_source text not null default 'muse';
 
+-- one line about the first call together; written once
+alter table people add column if not exists how_met text not null default '';
+
 -- plain things Muse noticed a person say about themselves ("Loves F1"); the user's own notes stay in `notes`
 create table if not exists facts (
   id bigserial primary key,

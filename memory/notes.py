@@ -92,7 +92,7 @@ def write_person(pid: str) -> Path | None:
     path = private_folders() / f"{pid}.md"
     about = next((e["about"] for e in p["encounters"] if e["about"]), "")
     out = [f"# {one_line(p['name'])}", "", f"Who they are to you: {one_line(p['role']) or 'not set'}", "",
-           f"First met {day(p['firstMet'])}.", ""]
+           f"First met {day(p['firstMet'])}." + (f" How we met: {one_line(p['howMet'])}" if p.get("howMet") else ""), ""]
     if about:
         out += ["## About", "", one_line(about), ""]
     out += ["## Conversations", ""]

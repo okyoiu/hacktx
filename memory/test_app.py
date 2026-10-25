@@ -759,3 +759,18 @@ def test_live_bullets_add_this_calls_facts_to_the_card_and_skip_when_nothing_is_
 
     http.post("/calls/end")
     assert server.snippets == {}
+
+
+def test_the_call_remembers_the_followed_app_and_its_last_topic_for_how_we_met(http, events, monkeypatch):
+    seen = []
+    monkeypatch.setattr(server, "remember_encounters", lambda ended: seen.append((ended.app, ended.topic)) or {})
+    monkeypatch.setattr(picks, "chat", FakeMuse({"topic": "A HackTX demo", "points": ["x"], "actions": []}))
+    http.post("/window", json={"app": "zoom.us", "rect": [0, 0, 800, 600]})
+    server.tracks[1] = JORDAN
+    http.post("/faces", json={"trackId": 1, "screenBox": [0, 0, 5, 5]})
+    http.post("/transcript", json=line("speaker_0", "We are demoing Hello Again today."))
+    wait_for(lambda: server.latest_insights is not None)
+    http.post("/window", json={"app": None, "rect": None})  # the window closes before the call is ended
+    http.post("/calls/end")
+    wait_for(lambda: seen)
+    assert seen == [("zoom.us", "A HackTX demo")]
