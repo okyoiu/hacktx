@@ -46,7 +46,7 @@ def fake_serpapi(url, params, timeout):
 def http(monkeypatch, tmp_path):
     """A fresh server: no call, transcript, insights or faces, and listening."""
     state = {"call": None, "history": [], "fresh": [], "actions": {}, "latest_insights": None, "tracks": {}, "unknown": {},
-             "speakers": {}, "clients": set(), "last_transcript_at": None, "last_refresh": None, "latest_window": None, "latest_recap": None, "thread": [], "thread_epoch": 0, "debug_scores": {}, "listening": {"type": "listening", "on": True, "startedAt": "2026-10-24T20:00:00Z"}}
+             "speakers": {}, "clients": set(), "last_transcript_at": None, "last_refresh": None, "latest_window": None, "latest_recap": None, "thread": [], "thread_epoch": 0, "live": {}, "snippets": {}, "boxes": {}, "debug_scores": {}, "listening": {"type": "listening", "on": True, "startedAt": "2026-10-24T20:00:00Z"}}
     for name, value in state.items():
         monkeypatch.setattr(server, name, value)
     monkeypatch.setattr(server, "INSIGHTS_SECONDS", 0.3)
@@ -703,3 +703,59 @@ def test_an_answer_that_arrives_after_new_does_not_join_the_new_thread(http, eve
     http.post("/ask", json={"question": "Slow one"})
     wait_for(lambda: any(e.get("status") == "done" for e in events))
     assert server.thread == []
+
+
+def test_live_bullets_add_this_calls_facts_to_the_card_and_skip_when_nothing_is_new(http, events, monkeypatch):
+    monkeypatch.setattr(server, "LIVE_BULLET_SECONDS", 0.2)
+    monkeypatch.setattr(store, "person", lambda pid: {"id": pid, "name": "Jordan Lee", "role": "Your team lead",
+                                                       "firstMet": date(2026, 10, 1)} if pid == "p_jordan" else None)
+    monkeypatch.setattr(store, "last_time", lambda pid: "Talked about his move.")
+    monkeypatch.setattr(store, "latest_note", lambda pid: None)
+    monkeypatch.setattr(store, "key_fact", lambda pid: "Starts a fintech job Monday")
+    replies, live_prompts = [], []
+
+    def muse(prompt: str, seconds=None) -> str:
+        if "just spoke" in prompt:
+            live_prompts.append(prompt)
+            return json.dumps({"snippets": replies.pop(0)})
+        return json.dumps({"topic": "", "points": [], "actions": []})
+
+    monkeypatch.setattr(picks, "chat", muse)
+    base = ["Your team lead", "Last time: Talked about his move.", "Starts a fintech job Monday"]
+    server.tracks[1] = JORDAN
+    http.post("/faces", json={"trackId": 1, "screenBox": [5, 6, 70, 80]})
+    http.post("/speakers", json={"label": "speaker_0", "name": "Jordan Lee"})
+    faces = lambda: [e for e in events if e["type"] == "face" and e["person"] and len(e["person"].get("bullets", [])) > 3]
+
+    def say(label: str, text: str) -> None:
+        http.post("/transcript", json=line(label, text))
+
+    replies.append(["This call: Took up climbing", "this call: Lives in Austin", "This call: Third one is too many"])
+    say("speaker_0", "I just took up climbing and I live in Austin now.")
+    say("speaker_1", "Somebody unrecognised talks a lot as well, many many words here.")  # not a known person: never checked
+    time.sleep(0.25)
+    say("speaker_0", "Mostly bouldering on the weekends with friends.")
+    wait_for(lambda: len(faces()) == 1)
+    shown = faces()[0]
+    assert shown["screenBox"] == [5, 6, 70, 80] and shown["trackId"] == 1
+    assert shown["person"]["bullets"] == base + ["This call: Took up climbing", "This call: Lives in Austin"]  # 5 at most
+    assert len(live_prompts) == 1 and "Somebody unrecognised" not in live_prompts[0] and "bouldering" in live_prompts[0]
+    assert server.tracks[1]["bullets"] == shown["person"]["bullets"]  # later frames keep them
+
+    replies.append([])  # said nothing new: no snippet, no new face event
+    say("speaker_0", "Okay.")
+    time.sleep(0.25)
+    say("speaker_0", "Yes, sure.")  # too few words since the last check: Muse isn't even asked
+    time.sleep(0.1)
+    assert len(live_prompts) == 1 and len(faces()) == 1
+
+    say("speaker_0", "We are planning a long road trip to Colorado this summer, then.")
+    time.sleep(0.25)
+    say("speaker_0", "It should take about two weeks in total, I think so.")
+    wait_for(lambda: len(live_prompts) == 2)
+    time.sleep(0.2)
+    assert len(faces()) == 1  # Muse had nothing new
+    assert "This call: Took up climbing" in live_prompts[1]  # it is told what is already noted
+
+    http.post("/calls/end")
+    assert server.snippets == {}

@@ -34,6 +34,8 @@ ENROLLS_PER_MINUTE = 5  # POST /enroll attempts per IP address; each one runs th
 # otherwise hold a response on "thinking" or stall Live insights for minutes. The abandoned thread finishes on its own.
 OUTBOUND_SECONDS = 45
 THREAD_TURNS = 6  # question/answer turns of an Ask AI chat that follow-ups can see
+LIVE_BULLET_SECONDS = 60  # check what a person has said at most this often
+LIVE_MIN_WORDS = 8  # fewer words than this since the last check is not worth a Muse call
 NOTE_POINTS = 10  # Muse rephrases points every refresh, so the call note keeps only the latest few
 
 
@@ -49,6 +51,9 @@ history: list[str] = []  # lines Muse Spark has already seen, context for the ne
 fresh: list[str] = []  # final lines since the last insights refresh
 listening: dict = {"type": "listening", "on": True, "startedAt": utc_now()}  # latest listening event
 latest_insights: dict | None = None  # latest insights event
+live: dict[str, dict] = {}  # person id -> {since, lines}: what they said since the last live-bullets check
+snippets: dict[str, list[str]] = {}  # person id -> this call's "This call: …" bullets (at most 2)
+boxes: dict[int, list[float]] = {}  # trackId -> latest screen box, to re-send a face event
 thread: list[tuple[str, str]] = []  # the Ask AI chat so far: (question, answer), the last THREAD_TURNS turns
 thread_epoch = 0  # bumped whenever the thread is cleared
 latest_recap: dict | None = None  # recap of the call that just ended, until the next call starts
@@ -120,6 +125,8 @@ def end_call() -> asyncio.Future:
         idle_timer.cancel()
     ended, call = call or Call(), None
     clear_thread()
+    live.clear()
+    snippets.clear()
     insights = latest_insights
     latest_insights = None  # the next call, and overlays connecting later, start clean
     last_refresh = None  # the next call's first insights don't wait out this call's interval
@@ -243,7 +250,8 @@ def card(person: dict) -> dict:
         "role": person["role"],
         "line": f"Last time: {last}" if last else store.latest_note(person["id"]) or "",
         "met": f"Met {met:%b} {met.day}",
-        "bullets": [b for b in (person["role"], f"Last time: {last}" if last else "", fact) if b],
+        "bullets": [b for b in (person["role"], f"Last time: {last}" if last else "", fact) if b]
+        + snippets.get(person["id"], []),
     }
 
 
@@ -277,6 +285,7 @@ async def faces(t: FaceTrack):
             unknown[t.trackId] = {"print": t.facePrint}
         if t.trackId in unknown:
             unknown[t.trackId]["box"] = t.screenBox
+    boxes[t.trackId] = t.screenBox
     saw_face(tracks[t.trackId])
     await push({"type": "face", "trackId": t.trackId, "screenBox": t.screenBox, "person": tracks[t.trackId]})
     if debugging:
@@ -311,6 +320,7 @@ async def face_gone(g: Gone):
     tracks.pop(g.trackId, None)
     unknown.pop(g.trackId, None)
     debug_scores.pop(g.trackId, None)
+    boxes.pop(g.trackId, None)
     await push({"type": "face_gone", "trackId": g.trackId})
     return {"ok": True}
 
@@ -393,7 +403,43 @@ async def transcript(line: Line):
         fresh.append(f"{who}: {line.text}")
         this_call().lines.append(f"{who}: {line.text}")
         wake.set()
+        for shown in {c["id"]: c for c in tracks.values() if c}.values():
+            if shown["name"] == who:
+                note_said(shown["id"], who, line.text)
     return {"ok": True}
+
+
+def note_said(pid: str, name: str, text: str) -> None:
+    """Collect what a recognized person says; once LIVE_BULLET_SECONDS have passed, check it for new facts."""
+    now = time.monotonic()
+    entry = live.setdefault(pid, {"since": now, "lines": []})
+    entry["lines"].append(text)
+    if now - entry["since"] >= LIVE_BULLET_SECONDS:
+        lines, entry["lines"], entry["since"] = entry["lines"], [], now
+        if sum(len(l.split()) for l in lines) >= LIVE_MIN_WORDS:
+            task = asyncio.get_running_loop().create_task(live_bullets(pid, name, lines, call))
+            background.add(task)
+            task.add_done_callback(background.discard)
+
+
+async def live_bullets(pid: str, name: str, lines: list[str], owner: Call | None) -> None:
+    """Ask Muse for new "This call: …" facts and re-send that person's card with them as extra bullets."""
+    try:
+        new = await asyncio.wait_for(asyncio.to_thread(picks.live_snippets, name, lines, snippets.get(pid, [])), OUTBOUND_SECONDS)
+        if not new or call is not owner:  # nothing new, or the call ended meanwhile
+            return
+        snippets[pid] = (snippets.get(pid, []) + [n for n in new if n not in snippets.get(pid, [])])[-2:]
+        person = await asyncio.to_thread(store.person, pid)
+        if person is None:  # deleted themselves while Muse thought
+            snippets.pop(pid, None)
+            return
+        for t, shown in list(tracks.items()):
+            if shown and shown["id"] == pid:
+                tracks[t] = await asyncio.to_thread(card, person)
+                if t in boxes:
+                    await push({"type": "face", "trackId": t, "screenBox": boxes[t], "person": tracks[t]})
+    except Exception as e:  # a failed check just means no new bullets
+        print(f"live bullets skipped: {e!r}")
 
 
 async def insights_worker() -> None:
