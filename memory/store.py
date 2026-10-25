@@ -92,10 +92,10 @@ def delete_person(pid: str, token: str | None) -> bool:
 
 def set_role(pid: str, role: str, source: str) -> None:
     """A user's role always wins; Muse's suggestion only fills in or replaces an earlier suggestion.
-    The user clearing the role (empty) hands it back to Muse."""
+    A role the user cleared (empty) stays empty: it is theirs, so Muse never suggests one again."""
     conn().execute(
         "update people set role = %s, role_source = %s where id = %s and (%s = 'user' or role_source <> 'user')",
-        (role, "user" if source == "user" and role else "muse", pid, source),
+        (role, source, pid, source),
     )
 
 

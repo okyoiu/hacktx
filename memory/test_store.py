@@ -174,7 +174,9 @@ def test_dashboard_lists_edits_and_deletes_people_from_this_laptop(db, enroll, m
         assert server.tracks[1]["name"] == "New Name" and server.tracks[1]["bullets"][0] == "Your team lead"
         store.set_role(a, "Muse guess", "muse")
         assert store.person(a)["role"] == "Your team lead"  # a role set in the dashboard is the user's
-        assert http.patch(f"/people/{a}", json={"role": ""}).json()["role"] == ""  # clearing hands it back to Muse
+        assert http.patch(f"/people/{a}", json={"role": ""}).json()["role"] == ""
+        store.set_role(a, "Muse tries again", "muse")
+        assert store.person(a)["role"] == ""  # a cleared label stays cleared: no label until you type one
         assert http.patch(f"/people/{a}", json={"role": "r" * 61}).status_code == 422
         assert http.patch(f"/people/{a}", json={"name": " "}).status_code == 422
         assert http.patch("/people/p_nobody", json={"role": "x"}).status_code == 404

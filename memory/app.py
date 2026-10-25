@@ -500,7 +500,7 @@ async def edit_person(pid: str, body: PersonEdit):
         raise HTTPException(404, "Nobody with that id (or their consent has run out).")
     if body.name is not None:
         await asyncio.to_thread(store.rename, pid, body.name)
-    if body.role is not None:  # what you type here is yours: Muse won't replace it (clearing it lets Muse suggest again)
+    if body.role is not None:  # what you type here is yours: Muse won't replace it
         await asyncio.to_thread(store.set_role, pid, body.role, "user")
     updated = await asyncio.to_thread(store.person, pid)
     await asyncio.to_thread(notes.write_person, pid)
