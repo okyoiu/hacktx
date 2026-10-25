@@ -161,7 +161,7 @@ def rename(pid: str, name: str) -> None:
 def person(pid: str) -> dict | None:
     """Name, first-met date, every encounter and note, newest first; None if unknown or their consent has run out."""
     row = conn().execute(
-        """select p.name, p.first_met, p.role, p.how_met from people p join consents c on c.person_id = p.id
+        """select p.name, p.first_met, p.role, p.how_met, c.scope from people p join consents c on c.person_id = p.id
            where p.id = %s and c.expires_at >= current_date""",
         (pid,),
     ).fetchone()
@@ -182,6 +182,7 @@ def person(pid: str) -> dict | None:
         "name": row[0],
         "role": row[2],
         "howMet": row[3],
+        "scope": row[4],
         "firstMet": row[1],
         **seen_fields([(at, spoke, topic, ctx) for at, _, _, spoke, topic, ctx in encounters]),
         "encounters": [{"metAt": at, "about": about, "lastTime": last} for at, about, last, *_ in encounters],

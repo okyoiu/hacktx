@@ -527,3 +527,29 @@ def test_a_person_whose_role_is_me_is_marked_self_on_cards_and_in_the_list(db, e
         assert listed == {pid: True, other: False}
         http.patch(f"/people/{pid}", json={"role": "Your friend"})
         assert next(p for p in http.get("/people").json() if p["id"] == pid)["self"] is False
+
+
+def test_person_detail_returns_how_we_met_and_context(db, enroll):
+    pid, _ = enroll(random_print())
+    store.set_how_met(pid, "Oct 25, 2026 on Zoom: a demo")
+    store.add_encounter(pid, datetime.now().astimezone(), "x", "Chat.", "Demo", True, "personal")
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
+        got = http.get(f"/people/{pid}").json()
+    assert got["howMet"] == "Oct 25, 2026 on Zoom: a demo" and got["context"] == "personal"
+
+
+def test_consent_scope_has_the_new_default_without_selfie_and_old_rows_are_migrated_once(db, enroll):
+    new = ["facePrint", "name", "voice", "notes", "facts", "connector"]
+    pid, _ = enroll(random_print())
+    assert db.execute("select scope from consents where person_id = %s", (pid,)).fetchone()[0] == new
+    old, _ = enroll(random_print())
+    custom, _ = enroll(random_print())
+    db.execute("update consents set scope = '{facePrint,selfie,notes}' where person_id = %s", (old,))
+    db.execute("update consents set scope = '{facePrint}' where person_id = %s", (custom,))
+    schema = Path(store.__file__).with_name("schema.sql").read_text()
+    db.execute(schema)
+    db.execute(schema)  # a second start changes nothing more
+    assert [db.execute("select scope from consents where person_id = %s", (p,)).fetchone()[0] for p in (old, custom)] == [new, ["facePrint"]]
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
+        assert http.get(f"/people/{pid}").json()["scope"] == new
+    assert "selfie" not in db.execute("select column_default from information_schema.columns where table_name = 'consents' and column_name = 'scope'").fetchone()[0]
