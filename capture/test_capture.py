@@ -29,16 +29,17 @@ def window(owner, x, y, w, h):
     return {"kCGWindowOwnerName": owner, "kCGWindowBounds": {"X": x, "Y": y, "Width": w, "Height": h}}
 
 
-def test_pick_takes_the_biggest_window_of_the_apps_asked_for():
-    windows = [
+def test_pick_takes_the_frontmost_big_window_of_the_apps_asked_for():
+    windows = [  # macOS lists windows front to back
         window("Finder", 0, 0, 3000, 2000),
         window("zoom.us", 900, 40, 200, 60),  # meeting toolbar
-        window("zoom.us", 10, 38.5, 1100, 700),
         window("Google Chrome", 0, 0, 1400, 900),
+        window("zoom.us", 10, 38.5, 1100, 700),
     ]
     assert pick(windows, ["zoom.us"]) == ("zoom.us", (10, 38, 1100, 700))
     assert pick(windows, ["ZOOM"]) == ("zoom.us", (10, 38, 1100, 700))
-    assert pick(windows, CALL_APPS) == ("Google Chrome", (0, 0, 1400, 900))
+    assert pick(windows, CALL_APPS) == ("Google Chrome", (0, 0, 1400, 900))  # Chrome is in front of Zoom
+    assert pick(windows[:2], ["zoom.us"]) == ("zoom.us", (900, 40, 200, 60))  # only a toolbar: better than nothing
     assert pick([window("Microsoft Teams classic", 5, 30, 1200, 800)], CALL_APPS)[0] == "Microsoft Teams classic"
 
 
@@ -112,16 +113,15 @@ def test_screen_frames_started_before_any_call_waits_quietly_then_follows(monkey
             raise SystemExit("couldn't list windows: no permission")
         return look
 
-    looks = iter([None, None, "unreadable", ("Google Chrome", (1, 2, 30, 20)), ("Google Chrome", (1, 2, 30, 20)), None])
+    looks = iter([None, None, "unreadable", ("Google Chrome", (1, 2, 30, 20)), ("zoom.us", (5, 6, 30, 20)), None])
     monkeypatch.setattr(faces, "call_window", lookup)
     frames = faces.screen_frames(None, follow=["zoom.us", "Google Chrome"])
     got = [next(frames) for _ in range(6)]
     assert [f is None for f, _ in got] == [True, True, True, False, False, True]
-    assert seen[3] == ["zoom.us", "Google Chrome"] and seen[4] == ["Google Chrome"]  # sticks to the app it found...
-    assert seen[5] == ["Google Chrome"]  # ...until that window is gone, then looks at every call app again
+    assert all(apps == ["zoom.us", "Google Chrome"] for apps in seen)  # always every call app: the frontmost one wins
     assert capsys.readouterr().out.splitlines() == [  # one line per change, not per frame
         "waiting for a call window", "couldn't list windows: no permission", "following the Google Chrome window",
-        "waiting for a call window"]
+        "following the zoom.us window", "waiting for a call window"]
 
 
 def test_a_print_is_only_computed_for_the_face_that_asks_for_one():
