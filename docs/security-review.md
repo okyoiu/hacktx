@@ -200,3 +200,15 @@ async def guests_only_enroll(request: Request, call_next):
 - `#6` is mostly addressed by the uncommitted work: `<people>`/`<transcript>`/`<results>` fences that strip `<>`, a prompt line saying fenced text is never instructions, and `MAX_NOTES_PER_CALL = 3`. All three prompts now contain the words my strict xfail looks for, so it should flip to passing once this merges; delete its marker then.
 - `3400d7c`: sandbox, context isolation and `nodeIntegration: false` are explicit; `webviewTag` is off and attaching one is blocked; the CSP adds `object-src`, `base-uri` and `form-action` `'none'`; every IPC channel checks that the sender is a `file://` page (a missing `senderFrame` fails closed); `api` calls must match the anchored `ROUTES` regex and a 2,000-character object body; `copy` takes only strings up to 20,000 characters; `openExternal` is http(s) only via `new URL`.
 - Capture's uncommitted `faces.py` and test changes: still only local fakes and InsightFace samples.
+
+### Pass 3 (final: `/review/memory` `db26a1a` plus uncommitted token hashing; `/review/capture` and `/review/overlay` uncommitted work)
+
+- **#6 fixed in `db26a1a`** (fences, prompt wording, 3 new notes per person per call). R2-3 above is the only gap left.
+- **#11 fixed in the uncommitted `memory/store.py`:** tokens are stored as SHA-256 and compared with `secrets.compare_digest`. A plain hash is enough because the token is 128 random bits. The one-time `schema.sql` upgrade is guarded by `length(delete_token) <> 64`, so it runs once and a second start does nothing. Delete the xfail marker for #11 when it merges.
+- **#9 is still open:** nothing in `memory/` or `web/` checks an invite code. It needs a new `.env` value (`ENROLL_CODE`), so it is the coordinator's call (see the Report).
+- **Still open, small:** R2-1 (names left in other notes sections and in files written before the id marker), R2-2, R2-3, R2-4, and the Electron pin in #10.
+- Capture and overlay's uncommitted changes were read as far as they existed at this point; nothing new that touches faces, keys, routes or HTML sinks.
+
+### Round 2 verdict
+
+Nothing high or critical is open. Before the demo: #9 if enrolling happens on a shared Wi-Fi (otherwise use the hotspot), plus delete the old files in `notes/` once. The rest is low.
