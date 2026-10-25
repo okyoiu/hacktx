@@ -36,6 +36,7 @@ OUTBOUND_SECONDS = 45
 THREAD_TURNS = 6  # question/answer turns of an Ask AI chat that follow-ups can see
 LIVE_BULLET_SECONDS = 60  # check what a person has said at most this often
 LIVE_MIN_WORDS = 8  # fewer words than this since the last check is not worth a Muse call
+MAX_BULLETS = 5  # a card past this gets a shorter "Met …" line, then fewer facts
 NOTE_POINTS = 10  # Muse rephrases points every refresh, so the call note keeps only the latest few
 
 
@@ -263,15 +264,20 @@ def card(person: dict) -> dict:
     """The face-event card for a store.match or store.person result."""
     met = person["firstMet"]
     last = store.last_time(person["id"])
-    fact = store.key_fact(person["id"])
+    how, facts = store.card_extras(person["id"])
+    last_bullet = f"Last time: {last}" if last else ""
+    live = snippets.get(person["id"], [])
+    met_bullet = f"Met {how}" if how else ""
+    if sum(map(bool, (person["role"], last_bullet, met_bullet))) + len(facts) + len(live) > MAX_BULLETS:
+        met_bullet = f"Met {how.split(':')[0]}" if how else ""  # just the date and app
+        facts = facts[:max(0, MAX_BULLETS - len(live) - sum(map(bool, (person["role"], last_bullet, met_bullet))))]
     return {
         "id": person["id"],
         "name": person["name"],
         "role": person["role"],
         "line": f"Last time: {last}" if last else store.latest_note(person["id"]) or "",
         "met": f"Met {met:%b} {met.day}",
-        "bullets": [b for b in (person["role"], f"Last time: {last}" if last else "", fact) if b]
-        + snippets.get(person["id"], []),
+        "bullets": [b for b in (person["role"], *facts, last_bullet, met_bullet) if b] + live,
     }
 
 

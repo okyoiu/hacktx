@@ -143,18 +143,32 @@ def test_a_role_you_typed_is_never_replaced_by_muses_suggestion(db, enroll):
         db.execute("delete from people where id = %s", (typed,))
 
 
-def test_face_card_has_role_last_time_and_a_key_fact_as_at_most_three_bullets(db, enroll):
+def test_face_card_bullets_run_role_facts_last_time_how_we_met_then_this_calls_snippets(db, enroll, monkeypatch):
     face = random_print()
     pid, _ = enroll(face)
+    monkeypatch.setattr(server, "snippets", {})
     assert server.card_for(face.tolist())["bullets"] == [] and server.card_for(face.tolist())["role"] == ""
+    store.add_note(pid, "My own note")  # the user's notes are not card bullets
+    assert server.card_for(face.tolist())["bullets"] == []
+
     store.set_role(pid, "Your team lead", "user")
-    store.add_note(pid, "Has a dog named Biscuit")
-    card = server.card_for(face.tolist())
-    assert card["bullets"] == ["Your team lead", "Has a dog named Biscuit"]  # no call yet: the note is the key fact
-    store.add_encounter(pid, datetime.now().astimezone(), "Starts a fintech job Monday", "Talked about his move.")
+    store.add_facts(pid, ["Loves F1"])
+    store.add_facts(pid, ["Has two kids"])
+    store.add_facts(pid, ["Moving to Austin in May"])
+    store.add_encounter(pid, datetime.now().astimezone(), "x", "Talked about his move.")
+    store.set_how_met(pid, "Oct 25, 2026 on Zoom: a HackTX demo call")
     card = server.card_for(face.tolist())
     assert card["role"] == "Your team lead" and card["line"] == "Last time: Talked about his move."
-    assert card["bullets"] == ["Your team lead", "Last time: Talked about his move.", "Starts a fintech job Monday"]
+    assert card["bullets"] == ["Your team lead", "Moving to Austin in May", "Has two kids",  # newest facts first, two at most
+                               "Last time: Talked about his move.", "Met Oct 25, 2026 on Zoom: a HackTX demo call"]
+
+    server.snippets[pid] = ["This call: Took up climbing", "This call: Lives in Austin"]  # more than 5: shorter "Met", fewer facts
+    card = server.card_for(face.tolist())
+    assert card["bullets"] == ["Your team lead", "Last time: Talked about his move.", "Met Oct 25, 2026 on Zoom",
+                               "This call: Took up climbing", "This call: Lives in Austin"]
+    server.snippets[pid] = ["This call: Took up climbing"]
+    assert server.card_for(face.tolist())["bullets"] == ["Your team lead", "Moving to Austin in May", "Last time: Talked about his move.",
+                                                         "Met Oct 25, 2026 on Zoom", "This call: Took up climbing"]
 
 
 def test_dashboard_lists_edits_and_deletes_people_from_this_laptop(db, enroll, monkeypatch):

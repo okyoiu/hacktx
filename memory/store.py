@@ -174,12 +174,11 @@ def last_time(pid: str) -> str | None:
     return row[0] if row else None
 
 
-def key_fact(pid: str) -> str | None:
-    """One thing worth remembering about them: what Muse wrote they're about, else their newest note."""
-    row = conn().execute(
-        "select about from encounters where person_id = %s and about <> '' order by met_at desc, id desc limit 1", (pid,)
-    ).fetchone()
-    return row[0] if row else latest_note(pid)
+def card_extras(pid: str, facts: int = 2) -> tuple[str, list[str]]:
+    """What a card shows beyond role and last time: how we met, and the newest facts."""
+    how = conn().execute("select how_met from people where id = %s", (pid,)).fetchone()
+    rows = conn().execute("select text from facts where person_id = %s order by created_at desc, id desc limit %s", (pid, facts)).fetchall()
+    return (how[0] if how else ""), [r[0] for r in rows]
 
 
 def set_how_met(pid: str, line: str) -> None:
