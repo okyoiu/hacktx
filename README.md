@@ -186,7 +186,7 @@ The old `pick` event is retired: places and events from the conversation become 
 ## Files it keeps on this laptop
 
 - `notes/<date-time>.md`: one note per call (who was there, insights, answers).
-- `notes/people/<name>.md`: one file per person, rewritten after every call: who they are to you, what they're about, and every past conversation, newest first. It's the readable copy of what the dashboard shows. Deleting someone deletes their file.
+- `notes/people/<person id>.md`: one file per person (the name is inside; IDs keep names out of file paths), rewritten after every call: who they are to you, what they're about, and every past conversation, newest first. It's the readable copy of what the dashboard shows. Deleting someone deletes their file.
 - Both are git-ignored, because they're about real people.
 
 ## Known limits
