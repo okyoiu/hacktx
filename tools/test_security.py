@@ -303,13 +303,18 @@ def test_the_guest_pages_know_nothing_about_debug():
     assert "debug" not in (ROOT / "web/enroll.html").read_text().lower()
 
 
-@pytest.mark.xfail(strict=True, reason="POST /window is not built yet; the rect must be null or 4 finite, bounded numbers")
 def test_window_rect_is_validated(monkeypatch):
     laptop = TestClient(server.app, client=LAPTOP)
+
+    def post(rect, app="zoom.us"):
+        # built by hand: the test client refuses to encode NaN, and a real client could send it
+        body = json.dumps({"app": app, "rect": rect}, allow_nan=True)
+        return laptop.post("/window", content=body, headers={"content-type": "application/json"})
+
     for bad in ("x", [0, 0, 1], [0, 0, 1, 2, 3], [0, 0, "a", 1], [0, 0, 1, None], [0, 0, 1e9, 1], [0, 0, -5, 10], [float("nan"), 0, 1, 1]):
-        assert laptop.post("/window", json={"rect": bad}).status_code == 422, bad
-    assert laptop.post("/window", json={"rect": [100, 80, 1200, 800]}).status_code == 200
-    assert laptop.post("/window", json={"rect": None}).status_code == 200
+        assert post(bad).status_code == 422, bad
+    assert post([100, 80, 1200, 800]).status_code == 200
+    assert post(None, None).status_code == 200
 
 
 def test_the_wifi_and_web_pages_cannot_post_the_window():
@@ -334,7 +339,6 @@ def test_the_app_build_never_packs_secrets_or_data():
     assert "codesign" not in code or "'--sign', '-'" in code
 
 
-@pytest.mark.xfail(strict=True, reason="R5-6: the recap kept for a late overlay still names someone who deleted themselves")
 def test_a_deleted_person_leaves_the_stored_recap(monkeypatch):
     recap = {"type": "recap", "topic": "", "points": [], "actions": [], "people": [{"id": "p_zed", "name": "Zed", "role": "", "lastTime": "x"}]}
     monkeypatch.setattr(server, "latest_recap", recap, raising=False)
@@ -344,7 +348,6 @@ def test_a_deleted_person_leaves_the_stored_recap(monkeypatch):
     assert "p_zed" not in json.dumps(server.latest_recap)
 
 
-@pytest.mark.xfail(strict=True, reason="R5-9: a NaN box is accepted, then breaks the push and drops every connected overlay")
 def test_a_nan_box_is_refused_and_does_not_drop_the_overlay(monkeypatch):
     class Overlay:
         async def send_json(self, event):
@@ -360,7 +363,6 @@ def test_a_nan_box_is_refused_and_does_not_drop_the_overlay(monkeypatch):
     assert r.status_code == 422 and ws in server.clients
 
 
-@pytest.mark.xfail(strict=True, reason="R8-1a: Muse's topic keeps its newlines, and it reaches card bullets and the how-we-met line")
 def test_a_muse_topic_is_one_line():
     from memory import picks
 

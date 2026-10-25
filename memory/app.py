@@ -18,6 +18,7 @@ from typing import Annotated
 import numpy as np
 import psycopg
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, StringConstraints
 from starlette.requests import HTTPConnection
@@ -108,6 +109,12 @@ app.include_router(connector.router)  # read-only, bearer key; the one set of ro
 
 
 FORWARDED = ("x-forwarded-for", "x-forwarded-host", "x-real-ip", "forwarded", "cf-connecting-ip", "cf-ray", "true-client-ip")
+
+
+@app.exception_handler(RequestValidationError)
+async def invalid(_: Request, exc: RequestValidationError):
+    """422 without echoing the input back: a NaN or a face print in the error would not even serialize."""
+    return JSONResponse({"detail": [{"loc": e["loc"], "msg": e["msg"], "type": e["type"]} for e in exc.errors()]}, 422)
 
 
 def from_this_laptop(conn: HTTPConnection) -> bool:
@@ -275,16 +282,19 @@ async def overlay_socket(ws: WebSocket):
 
 # --- faces (from capture/faces.py) ---
 
+Number = Annotated[float, Field(allow_inf_nan=False)]  # NaN would make the next push fail and drop every overlay
+
+
 class Debug(BaseModel):
-    personBox: list[float] = Field(min_length=4, max_length=4)
-    faceBox: list[float] | None = Field(default=None, min_length=4, max_length=4)
-    fps: float
+    personBox: list[Number] = Field(min_length=4, max_length=4)
+    faceBox: list[Number] | None = Field(default=None, min_length=4, max_length=4)
+    fps: Number
 
 
 class FaceTrack(BaseModel):
     trackId: int
-    screenBox: list[float] = Field(min_length=4, max_length=4)  # x, y, width, height in screen points
-    facePrint: list[float] | None = Field(default=None, min_length=512, max_length=512)
+    screenBox: list[Number] = Field(min_length=4, max_length=4)  # x, y, width, height in screen points
+    facePrint: list[Number] | None = Field(default=None, min_length=512, max_length=512)
     debug: Debug | None = None  # only sent by capture in developer mode
 
 
@@ -362,14 +372,14 @@ class Window(BaseModel):
 
 def good_rect(rect: list | None) -> bool:
     nums = isinstance(rect, list) and len(rect) == 4 and all(type(n) in (int, float) and math.isfinite(n) for n in rect)
-    return rect is None or (nums and rect[2] > 0 and rect[3] > 0)
+    return rect is None or (nums and rect[2] > 0 and rect[3] > 0 and all(abs(n) <= 20000 for n in rect))  # screen points, with room to spare
 
 
 @app.post("/window")
 async def set_window(w: Window):
     global latest_window
     if not good_rect(w.rect):
-        raise HTTPException(422, "rect must be null or [x, y, w, h] as finite numbers with w and h above 0")
+        raise HTTPException(422, "rect must be null or [x, y, w, h] as finite numbers up to 20000 in size, with w and h above 0")
     if (w.app is None) != (w.rect is None) or (w.app is not None and not 0 < len(w.app.strip()) <= 100):
         raise HTTPException(422, "app and rect must both be null, or an app name (up to 100 characters) with its rect")
     latest_window = {"type": "window", "app": w.app and w.app.strip(), "rect": w.rect}
@@ -762,13 +772,21 @@ async def edit_person(pid: str, body: PersonEdit):
 
 
 @app.delete("/people/{pid}")
-def forget(pid: str, request: Request, x_delete_token: str | None = Header(default=None)):
+async def forget(pid: str, request: Request, x_delete_token: str | None = Header(default=None)):
     mine = from_this_laptop(request)  # the dashboard needs no token; a phone on the Wi-Fi does
     if not mine and x_delete_token is None:
         raise HTTPException(403, "That delete link doesn't match. Nothing was deleted.")
-    if not store.delete_person(pid, None if mine else x_delete_token):  # also clears them from notes/
+    if not await asyncio.to_thread(store.delete_person, pid, None if mine else x_delete_token):  # also clears them from notes/
         raise HTTPException(404 if mine else 403, "Nobody with that id." if mine else "That delete link doesn't match. Nothing was deleted.")
-    for t, card in tracks.items():  # not named on screen, and not sent to Muse, from now on
+    if call:
+        call.people.pop(pid, None)  # not in this call's note, summary or recap from now on
+    if latest_recap:
+        latest_recap["people"] = [p for p in latest_recap["people"] if p["id"] != pid]
+    snippets.pop(pid, None)
+    live.pop(pid, None)
+    for t, card in list(tracks.items()):  # their card comes off the screen, and nothing about them goes to Muse again
         if card and card["id"] == pid:
-            tracks[t] = None
+            for state in (tracks, unknown, boxes, debug_scores):
+                state.pop(t, None)
+            await push({"type": "face_gone", "trackId": t})
     return {"deleted": pid}

@@ -237,7 +237,8 @@ def test_deleting_yourself_mid_call_removes_your_card_and_keeps_insights_flowing
     server.tracks.update({1: JORDAN, 2: None})
     monkeypatch.setattr(store, "delete_person", lambda pid, token: True)
     assert http.delete("/people/p_jordan", headers={"X-Delete-Token": "t"}).status_code == 200
-    assert server.tracks == {1: None, 2: None}  # no longer named on screen or sent to Muse
+    assert server.tracks == {2: None}  # no longer on screen (face_gone) or sent to Muse; the stranger's track stays
+    assert [e["trackId"] for e in events if e["type"] == "face_gone"] == [1]
 
     muse = FakeMuse({"notes": [{"personId": "p_gone", "text": "Moved"}], "topic": "Move", "points": ["Moved"], "actions": []})
     monkeypatch.setattr(picks, "chat", muse)
@@ -464,6 +465,7 @@ def test_a_hanging_muse_or_serpapi_ends_as_an_error_and_insights_recover(http, e
 
 
 def test_call_ends_by_itself_when_no_face_has_been_seen_for_the_idle_time(http, events, monkeypatch):
+    monkeypatch.setattr(store, "match", lambda p: None)  # no database needed
     monkeypatch.setattr(server, "CALL_IDLE_SECONDS", 0.3)
     monkeypatch.setattr(picks, "chat", FakeMuse())
     http.post("/faces", json={"trackId": 1, "screenBox": [0, 0, 10, 10], "facePrint": [0.1] * 512})
@@ -765,6 +767,10 @@ def test_live_bullets_add_this_calls_facts_to_the_card_and_skip_when_nothing_is_
 
 
 def test_the_call_remembers_the_followed_app_and_its_last_topic_for_how_we_met(http, events, monkeypatch):
+    monkeypatch.setattr(store, "person", lambda pid: None)  # no database needed
+    monkeypatch.setattr(store, "card_extras", lambda pid, facts=2: ("", [], NEVER))
+    monkeypatch.setattr(store, "last_time", lambda pid: None)
+    monkeypatch.setattr(store, "latest_note", lambda pid: None)
     seen = []
     monkeypatch.setattr(server, "remember_encounters", lambda ended: seen.append((ended.app, ended.topic)) or {})
     monkeypatch.setattr(picks, "chat", FakeMuse({"topic": "A HackTX demo", "points": ["x"], "actions": []}))
@@ -837,3 +843,44 @@ def test_startup_lines_say_ok_when_everything_is_there(monkeypatch, tmp_path):
     lines = asyncio.run(server.startup_checks())
     assert lines == ["database: reachable", "Muse key: set", "SerpApi key: set", "notes folder: writable"]
     assert not (tmp_path / "notes" / ".write-test").exists()
+
+
+def test_window_numbers_are_bounded(http):
+    assert http.post("/window", json={"app": "zoom.us", "rect": [-20000, 0, 20000, 20000]}).status_code == 200
+    for bad in ([0, 0, 20001, 10], [20001, 0, 10, 10], [0, -20001, 10, 10]):
+        assert http.post("/window", json={"app": "zoom.us", "rect": bad}).status_code == 422, bad
+
+
+def test_nan_or_infinite_numbers_are_refused_without_echoing_them_and_the_overlay_stays(http, events, monkeypatch):
+    monkeypatch.setattr(store, "match", lambda p: None)
+
+    def post(path, body):
+        return http.post(path, content=body, headers={"content-type": "application/json"})
+
+    debug = '"debug":{"personBox":[0,0,1,1],"faceBox":null,"fps":%s}'
+    for body in ('{"trackId":1,"screenBox":[NaN,0,1,1]}', '{"trackId":1,"screenBox":[0,0,Infinity,1]}',
+                 '{"trackId":1,"screenBox":[0,0,1,1],' + debug % "NaN" + "}"):
+        r = post("/faces", body)
+        assert r.status_code == 422 and "NaN" not in r.text and "Infinity" not in r.text, body
+    assert post("/faces", '{"trackId":1,"screenBox":[0,0,1,1],"facePrint":[%s]}' % ",".join(["NaN"] * 512)).status_code == 422
+    assert events == [] and http.post("/faces", json={"trackId": 1, "screenBox": [0, 0, 1, 1], "facePrint": [0.1] * 512}).status_code == 200
+
+
+def test_deleting_someone_mid_call_takes_them_out_of_the_call_the_recap_and_the_screen(http, events, monkeypatch):
+    jordan_card = JORDAN | {"bullets": [], **NEVER}
+    server.tracks.update({1: jordan_card, 2: dict(jordan_card), 3: {"id": "p_maya", "name": "Maya"}})
+    server.boxes.update({1: [0, 0, 5, 5], 2: [9, 0, 5, 5]})
+    server.snippets["p_jordan"] = ["This call: x"]
+    server.live["p_jordan"] = {"since": 0, "lines": ["hi"]}
+    server.call = server.Call(people={"p_jordan": ["a note"], "p_maya": []})
+    server.latest_recap = {"type": "recap", "topic": "", "points": [], "actions": [], "people": [
+        {"id": "p_jordan", "name": "Jordan Lee", "role": "", "lastTime": "x"}, {"id": "p_maya", "name": "Maya", "role": "", "lastTime": "y"}]}
+    monkeypatch.setattr(store, "delete_person", lambda pid, token: True)
+
+    assert http.delete("/people/p_jordan").status_code == 200
+    assert list(server.call.people) == ["p_maya"] and [p["id"] for p in server.latest_recap["people"]] == ["p_maya"]
+    assert set(server.tracks) == {3} and server.boxes == {} and "p_jordan" not in server.snippets and "p_jordan" not in server.live
+    assert sorted(e["trackId"] for e in events if e["type"] == "face_gone") == [1, 2]
+    with http.websocket_connect("/ws") as ws:  # an overlay that connects now is told about Maya only
+        assert ws.receive_json()["type"] == "listening"
+        assert [p["id"] for p in ws.receive_json()["people"]] == ["p_maya"]
