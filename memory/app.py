@@ -47,6 +47,8 @@ history: list[str] = []  # lines Muse Spark has already seen, context for the ne
 fresh: list[str] = []  # final lines since the last insights refresh
 listening: dict = {"type": "listening", "on": True, "startedAt": utc_now()}  # latest listening event
 latest_insights: dict | None = None  # latest insights event
+last_refresh: float | None = None  # when the last insights refresh started (monotonic); None = the next one is immediate
+last_transcript_at: str | None = None  # when the last line was accepted, for the control bar's status dot
 actions: dict[str, dict] = {}  # action id -> {kind, label, query, personId}
 wake: asyncio.Event | None = None  # set when fresh lines wait for Muse Spark; made per event loop in lifespan
 
@@ -105,11 +107,12 @@ def this_call() -> Call:
 
 def end_call() -> asyncio.Future:
     """Close the current call and write its note in a thread; the future resolves to the note's path or None."""
-    global call, latest_insights
+    global call, latest_insights, last_refresh
     if idle_timer:
         idle_timer.cancel()
     ended, call = call or Call(), None
     latest_insights = None  # the next call, and overlays connecting later, start clean
+    last_refresh = None  # the next call's first insights don't wait out this call's interval
     history.clear()
     unknown.clear()  # strangers' prints never outlive the call
     fresh.clear()
@@ -122,7 +125,7 @@ def remember_encounters(ended: Call) -> None:
     """Runs in a thread: store Muse Spark's about/last-time summary for each recognized person of a finished call."""
     try:
         # store.person drops anyone who deleted themselves or whose consent ran out; unenrolled faces never got here
-        people = {p["id"]: {"name": p["name"], "notes": [n["text"] for n in p["notes"][:5]]}
+        people = {p["id"]: {"name": p["name"], "role": p["role"], "notes": [n["text"] for n in p["notes"][:5]]}
                   for p in map(store.person, ended.people) if p}
         if not people or not ended.lines:
             return  # the finally below still refreshes their files
@@ -276,6 +279,18 @@ async def name_speaker(s: SpeakerName):
     return {"ok": True}
 
 
+@app.get("/health")
+async def health():
+    """What the control bar's status dot shows: is the database up, are the keys set, is the mic feeding us."""
+    try:
+        await asyncio.wait_for(asyncio.to_thread(lambda: store.conn().execute("select 1")), 3)
+        db = "ok"
+    except Exception:  # down, unreachable or slow: all the same to the dot
+        db = "error"
+    return {"db": db, "muse": bool(os.getenv("MODEL_API_KEY")), "serpapi": bool(os.getenv("SERPAPI_KEY")),
+            "listening": listening["on"], "lastTranscriptAt": last_transcript_at}
+
+
 @app.post("/listening")
 async def set_listening(body: Listening):
     if body.on and not listening["on"] and call is None:
@@ -287,8 +302,10 @@ async def set_listening(body: Listening):
 
 @app.post("/transcript")
 async def transcript(line: Line):
+    global last_transcript_at
     if not listening["on"]:
         return {"ok": True, "ignored": True}  # paused: nothing is shown, kept or sent to Muse
+    last_transcript_at = utc_now()
     who = speakers.get(line.speaker, line.speaker)
     await push({"type": "caption", "speaker": who, "text": line.text, "final": line.final})
     if line.final and line.text.strip():
@@ -299,14 +316,17 @@ async def transcript(line: Line):
 
 
 async def insights_worker() -> None:
+    global last_refresh
     while True:
         await wake.wait()
         wake.clear()
+        if last_refresh is not None:  # the first refresh of a call goes out at once, later ones keep the pace
+            await asyncio.sleep(max(0, last_refresh + INSIGHTS_SECONDS - time.monotonic()))
+        last_refresh = time.monotonic()  # paced from the start, so Muse's own delay doesn't add to the wait
         try:
             await refresh_insights()
         except Exception as e:  # a failed model call or note insert must not stop the stream
             print(f"insights failed: {e!r}")
-        await asyncio.sleep(INSIGHTS_SECONDS)  # lines arriving meanwhile wait for the next refresh
 
 
 async def refresh_insights() -> None:
@@ -320,7 +340,7 @@ async def refresh_insights() -> None:
     present = {p["id"]: p for p in tracks.values() if p}
     try:
         known = await asyncio.to_thread(store.notes_for, list(present))
-        people = {pid: {"name": p["name"], "notes": known.get(pid, [])} for pid, p in present.items()}
+        people = {pid: {"name": p["name"], "role": p.get("role", ""), "notes": known.get(pid, [])} for pid, p in present.items()}
         out = await asyncio.wait_for(asyncio.to_thread(picks.extract, people, history[-12:], new), OUTBOUND_SECONDS)
     finally:
         if call is owner:  # a call that ended meanwhile took its transcript with it
@@ -521,7 +541,7 @@ def forget(pid: str, request: Request, x_delete_token: str | None = Header(defau
     mine = from_this_laptop(request)  # the dashboard needs no token; a phone on the Wi-Fi does
     if not mine and x_delete_token is None:
         raise HTTPException(403, "That delete link doesn't match. Nothing was deleted.")
-    if not store.delete_person(pid, None if mine else x_delete_token):
+    if not store.delete_person(pid, None if mine else x_delete_token):  # also clears them from notes/
         raise HTTPException(404 if mine else 403, "Nobody with that id." if mine else "That delete link doesn't match. Nothing was deleted.")
     for t, card in tracks.items():  # not named on screen, and not sent to Muse, from now on
         if card and card["id"] == pid:

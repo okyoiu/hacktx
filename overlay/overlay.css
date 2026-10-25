@@ -94,6 +94,12 @@ kbd {
   font-family: inherit; font-size: 13px; font-weight: 500; line-height: 1; color: var(--ink-2);
 }
 
+.health { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--known); }
+.health[data-state="warn"] { background: #FFD27A; }
+.hint {
+  position: fixed; left: 50%; bottom: 48px; translate: -50% 0; max-width: 420px; padding: 10px 16px; border-radius: 14px;
+  font-size: 14px; text-align: center; text-wrap: balance; animation: panel-in 0.5s var(--ease) backwards;
+}
 .warn { font-size: 13px; font-weight: 650; white-space: nowrap; color: #FFD27A; }
 body[data-view="all"] .bar { width: auto; }
 

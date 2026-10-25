@@ -19,6 +19,7 @@
   </svg>
 
   <div id="cards" aria-live="polite"></div>
+  <p class="hint glass" id="hint" hidden>Join a call. Hello Again appears when it sees someone you know.</p>
 
   <header id="bar" class="bar glass" hidden>
     <button class="pause" id="pause" type="button" aria-label="Pause listening">
@@ -26,9 +27,11 @@
       <svg class="i-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.2v9.6a.8.8 0 0 0 1.2.7l7.4-4.8a.8.8 0 0 0 0-1.4L6.2 2.5A.8.8 0 0 0 5 3.2Z"/></svg>
     </button>
     <span class="wave" id="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+    <span class="health" id="health" data-state="ok" role="img" aria-label="Everything is running"></span>
     <span class="timer" id="timer" role="timer" aria-label="Call time">00:00</span>
     <span class="warn" id="warn" role="status" hidden></span>
     <button class="key-btn" id="askBtn" type="button" aria-keyshortcuts="Meta+Enter">Ask AI <kbd class="mod">⌘</kbd><kbd>↵</kbd></button>
+    <button class="key-btn" id="endBtn" type="button">End call</button>
     <button class="key-btn" id="peopleBtn" type="button" aria-keyshortcuts="Meta+Shift+P">People</button>
     <button class="key-btn" id="hideBtn" type="button" aria-keyshortcuts="Meta+Backslash">Show/Hide <kbd class="mod">⌘</kbd><kbd>\</kbd></button>
   </header>
@@ -45,7 +48,7 @@
       </button>
     </header>
     <div id="insightsBody">
-      <p class="empty" id="insightsEmpty">Insights show up here once the conversation gets going.</p>
+      <p class="empty" id="insightsEmpty">Listening…</p>
       <h2 class="topic" id="topic" hidden></h2>
       <ul class="points" id="points"></ul>
       <h3 class="actions-title" id="actionsTitle" hidden>Actions</h3>

@@ -2,8 +2,8 @@
 
 Run: uv run --env-file .env python -m capture.faces --region 0,38,1100,700
 The region is the call window as x,y,width,height in screen points (on a Mac: the numbers Cmd+Shift+4 shows).
-On a Mac, --app zoom.us (or FaceTime, 'Google Chrome', …) follows that app's window instead, even when you move it;
-with neither, it follows the largest window of a known call app (capture/window.py), waiting quietly until one appears.
+On a Mac, --app zoom.us (or FaceTime, 'Google Chrome', …) follows that app's frontmost window instead, even when you move it;
+with neither, it follows the frontmost window of a known call app (capture/window.py), waiting quietly until one appears.
 Without a live call: --video call.mp4 reads a recording instead; its pixels stand in for screen points.
 It also names Muse's voices from whose lips move (capture/speakers.py) and tells memory with POST /speakers.
 Nothing here shows frames or boxes to anyone; tools/cv_check.py is the debug view.
@@ -22,7 +22,7 @@ import mss
 import numpy as np
 from ultralytics import YOLO
 
-from capture.embed import faces_in, mouths_in
+from capture.embed import add_print, find_faces, mouths_in, warm_up
 from capture.speakers import Namer, listen
 from capture.window import CALL_APPS, call_window
 
@@ -36,19 +36,19 @@ def screen_frames(region: tuple[int, int, int, int] | None, follow: list[str] | 
     While there is no such window (not started yet, or the user left the call) it yields (None, ...) instead and keeps
     looking, logging one line when that changes."""
     checked = time.time() if region else 0  # no region yet: look right away
-    apps, shown = follow, None
+    shown = None
     with mss.MSS() as screen:
         while True:
             if follow and time.time() - checked > FOLLOW_EVERY:
-                # shortcut: follows the app's largest window, so a bigger second window of the same app (another browser
-                # window) takes over; follow kCGWindowNumber instead if that bites
+                # shortcut: follows the frontmost call window, so a browser window in front of Zoom takes over even if it
+                # isn't a call; match on the window title too if that bites
                 why = "waiting for a call window"
                 try:
-                    found = call_window(apps)
+                    found = call_window(follow)
                 except SystemExit as e:  # the window list isn't readable (no osascript, no permission): keep waiting
                     found, why = None, str(e)
                 checked = time.time()
-                region, apps = (found[1], [found[0]]) if found else (None, follow)  # stick with the app we found
+                region = found[1] if found else None
                 state = f"following the {found[0]} window" if found else why
                 if state != shown:
                     print(state)
@@ -93,7 +93,7 @@ def assign(faces: list, boxes: dict[int, list[float]]) -> dict[int, object]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--region", help="call window as x,y,width,height in screen points")
-    ap.add_argument("--app", help="macOS: follow this app's largest window, e.g. zoom.us, FaceTime, 'Google Chrome'")
+    ap.add_argument("--app", help="macOS: follow this app's frontmost window, e.g. zoom.us, FaceTime, 'Google Chrome'")
     ap.add_argument("--video", help="read frames from this video file instead of the screen")
     ap.add_argument("--fps", type=float, default=5)
     args = ap.parse_args()
@@ -110,6 +110,8 @@ def main() -> None:
         frames = screen_frames(None, follow=[args.app] if args.app else list(CALL_APPS))
 
     model = YOLO("yolo26n.pt")  # downloads on first run
+    warm_up()
+    model(np.zeros((64, 64, 3), np.uint8), verbose=False)
     memory_url = os.getenv("MEMORY_URL", "http://localhost:8000")
     http = httpx.Client(base_url=memory_url, timeout=10)
     printed: set[int] = set()  # track ids whose face print the memory service already has
@@ -136,7 +138,9 @@ def main() -> None:
             now = time.monotonic()
             wanting = {t for t in boxes.keys() - printed if now - tried.get(t, -RETRY) >= RETRY}
             if wanting:
-                found = assign(faces_in(frame), boxes)  # one full InsightFace pass gives prints and lips
+                found = assign(find_faces(frame), boxes)  # one InsightFace pass gives every face's lips
+                for tid in wanting & found.keys():
+                    add_print(frame, found[tid])  # prints only for people who need one
                 tried.update(dict.fromkeys(wanting, now))
             elif namer.wants_lips([p["id"] for p in people.values()], now):
                 found = assign(mouths_in(frame), boxes)

@@ -1,11 +1,11 @@
 // Small rules shared by main.js and the renderer (loaded as a plain script), tested in logic.test.js.
 
 // The only memory API calls the overlay makes; main refuses anything else. Action ids are short words.
-const ROUTES = /^\/(listening|ask|actions\/[\w-]+|faces\/\d+\/remember)$/
+const ROUTES = /^\/(listening|ask|actions\/[\w-]+|faces\/\d+\/remember|calls\/end)$/
 
 // What each method may call. The People dashboard reads, renames and deletes people; ids are short words.
 const PERSON = /^\/people\/[\w-]+$/
-const CALLS = { POST: ROUTES, GET: /^\/people(\/[\w-]+)?$/, PATCH: PERSON, DELETE: PERSON }
+const CALLS = { POST: ROUTES, GET: /^\/(people(\/[\w-]+)?|health)$/, PATCH: PERSON, DELETE: PERSON }
 
 // A name typed into "Remember them": trimmed, single-spaced, at most 80 characters like the enroll page.
 function cleanName(raw) {
@@ -59,12 +59,12 @@ function webUrl(url) {
 // ---------- what each panel shows ----------
 
 // Control bar: offline wins, then the pause state. The timer shows the call time, "Not sent" after a failed
-// pause, and "Offline" without a connection.
+// pause or the toast after End call (`flash`), and "Offline" without a connection.
 function barState(connected, listeningOn) {
   return !connected ? 'offline' : listeningOn ? 'live' : 'paused'
 }
-function timerText({ connected, notSent, startedAt, now }) {
-  return notSent ? 'Not sent' : connected ? elapsed(startedAt, now) : 'Offline'
+function timerText({ connected, flash, startedAt, now }) {
+  return flash || (connected ? elapsed(startedAt, now) : 'Offline')
 }
 
 // Live insights: at most 3 points and 4 actions, whatever the service sends.
@@ -148,4 +148,19 @@ function inviteLink(base, code) {
   }
 }
 
-if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver, cleanName, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
+// GET /health: the dot is green, or amber with the reasons. The server may send {problems: [...]} or a map of
+// check -> ok; a server that can't be reached, or a part the launcher lost, counts too.
+// shortcut: the exact /health shape isn't in the README yet, upgrade this once it is.
+function healthProblems(health, launchWarningText = '') {
+  const problems = []
+  if (!health || health.error) problems.push('The memory server is not answering')
+  else if (Array.isArray(health.problems)) problems.push(...health.problems.filter((p) => typeof p === 'string'))
+  else for (const [check, ok] of Object.entries(health.checks || health)) if (ok === false || ok === 'down' || ok === 'error') problems.push(`${check} is not working`)
+  if (launchWarningText) problems.push(`${launchWarningText} stopped`)
+  return problems
+}
+
+// What Live insights says before its first insight.
+const insightsEmptyText = (listeningOn) => (listeningOn === false ? 'Paused. Resume to keep listening.' : 'Listening…')
+
+if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver, cleanName, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }

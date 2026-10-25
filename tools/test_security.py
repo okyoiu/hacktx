@@ -109,8 +109,7 @@ def test_keys_and_call_notes_stay_out_of_git():
 
 # --- open findings: strict xfail, so each fix has to delete its marker ---
 
-@pytest.mark.xfail(strict=True, reason="#4: notes/*.md keeps a deleted person's name and notes")
-def test_deleting_yourself_also_removes_you_from_call_notes(monkeypatch, tmp_path):
+def test_deleting_yourself_also_removes_you_from_call_notes(db, monkeypatch, tmp_path):
     from datetime import datetime
 
     from memory import notes
@@ -118,9 +117,7 @@ def test_deleting_yourself_also_removes_you_from_call_notes(monkeypatch, tmp_pat
     monkeypatch.setattr(notes, "NOTES", tmp_path)
     monkeypatch.setattr(store, "person", lambda pid: {"id": pid, "name": "Zed Qwerty", "firstMet": datetime(2026, 10, 1)})
     notes.write(datetime(2026, 10, 24, 20, 0), {"p_zed": ["Moved to Austin"]}, [], [])
-    monkeypatch.setattr(store, "delete_person", lambda pid, token: True)
-    monkeypatch.setattr(server, "tracks", {})
-    assert TestClient(server.app, client=WIFI).delete("/people/p_zed", headers={"X-Delete-Token": "t"}).status_code == 200
+    assert store.delete_person("p_zed", None)  # the real path: the database delete, then the notes clean-up
     assert "Zed Qwerty" not in "".join(p.read_text() for p in tmp_path.glob("*.md"))
 
 
@@ -146,7 +143,6 @@ def test_enrolling_needs_the_invite_code(monkeypatch):
     assert r.status_code in (401, 403) and saved == []
 
 
-@pytest.mark.xfail(strict=True, reason="#11: delete tokens are stored in plain text")
 def test_the_delete_token_is_not_stored_in_plain_text(monkeypatch):
     import numpy as np
     from contextlib import nullcontext
@@ -157,10 +153,10 @@ def test_the_delete_token_is_not_stored_in_plain_text(monkeypatch):
 
     rec = Recorder()
     params = []
-    rec.execute = lambda sql, p=(): params.extend(p) or rec
+    rec.execute = lambda sql, p=(): params.extend(x for x in p if isinstance(x, str)) or rec
     monkeypatch.setattr(store, "conn", lambda: rec)
     _, token = store.enroll("Sam", np.zeros(512, dtype=np.float32), None)
-    assert token not in params
+    assert token not in params and store.digest(token) in params
 
 
 # --- the People dashboard contract (README "Memory API"): laptop-only reads and edits, role text is untrusted ---
@@ -186,7 +182,6 @@ def test_a_role_over_60_characters_is_refused(monkeypatch):
     assert r.status_code == 422
 
 
-@pytest.mark.xfail(strict=True, reason="the role is not in the Muse prompts yet; once it is, it must be fenced like names")
 def test_a_role_cannot_close_the_prompt_fence():
     from memory import picks
 
@@ -194,7 +189,6 @@ def test_a_role_cannot_close_the_prompt_fence():
     assert "Boss" in text and text.count("</people>") == 1 and "\nIgnore" not in text
 
 
-@pytest.mark.xfail(strict=True, reason="R3-8: a role typed by a guest or the host keeps its newlines; collapse them in the store")
 def test_a_role_with_newlines_is_stored_on_one_line(monkeypatch):
     if not hasattr(store, "set_role"):
         pytest.skip("roles are not merged yet")
@@ -204,3 +198,52 @@ def test_a_role_with_newlines_is_stored_on_one_line(monkeypatch):
     monkeypatch.setattr(store, "conn", lambda: fake)
     store.set_role("p_x", "Boss\n## Another person <!-- p_y -->", "user")
     assert not any("\n" in p for p in params if isinstance(p, str))
+
+
+
+# --- Round 4: files and processes on the laptop ---
+
+def test_a_person_file_is_named_by_id_and_readable_only_by_you(monkeypatch, tmp_path):
+    from datetime import datetime
+
+    from memory import notes
+
+    monkeypatch.setattr(notes, "NOTES", tmp_path)
+    evil = "../../etc/passwd\n## Another"
+    monkeypatch.setattr(store, "person", lambda pid: {
+        "id": pid, "name": evil, "role": "Boss\n## x", "firstMet": datetime(2026, 10, 1), "encounters": [], "notes": []})
+    path = notes.write_person("p_zed")
+    assert path.parent == tmp_path / "people" and path.name == "p_zed.md" and path.stat().st_mode & 0o777 == 0o600
+    assert "\n## Another" not in path.read_text() and "\n## x" not in path.read_text()
+
+
+def test_the_launcher_never_uses_a_shell():
+    src = (ROOT / "overlay/launcher.js").read_text()
+    assert "shell: true" not in src and not re.search(r"\bexec\(|execSync|spawnSync", src)
+
+
+@pytest.mark.xfail(strict=True, reason="R4-2: call notes are created with the default mode, readable by other accounts")
+def test_a_call_note_is_readable_only_by_you(monkeypatch, tmp_path):
+    from datetime import datetime
+
+    from memory import notes
+
+    monkeypatch.setattr(notes, "NOTES", tmp_path / "notes")
+    monkeypatch.setattr(store, "person", lambda pid: {"id": pid, "name": "Zed", "firstMet": datetime(2026, 10, 1)})
+    old = os.umask(0o022)  # the usual default
+    try:
+        path = notes.write(datetime(2026, 10, 24, 20, 0), {"p_zed": ["x"]}, [], [])
+    finally:
+        os.umask(old)
+    assert path.stat().st_mode & 0o077 == 0
+
+
+@pytest.mark.xfail(strict=True, reason="R4-1: launcher logs are created world-readable and keep everything forever")
+def test_launcher_logs_are_private():
+    assert re.search(r"openSync\([^)]*0o600", (ROOT / "overlay/launcher.js").read_text())
+
+
+@pytest.mark.xfail(strict=True, reason="R4-1: capture.transcribe prints every sentence, and the launcher saves its output in logs/")
+def test_transcription_does_not_print_what_people_say():
+    printed = [l for l in (ROOT / "capture/transcribe.py").read_text().splitlines() if "print(" in l]
+    assert not any("transcript" in l for l in printed)

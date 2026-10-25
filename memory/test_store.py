@@ -104,9 +104,10 @@ def test_deleting_yourself_or_expiring_removes_your_section_from_call_notes(db, 
     people = [{**store.person(p), "learned": [f"fact about {p}"]} for p in (a, b, c)]
     path = tmp_path / "call.md"
     path.write_text(notes.render(datetime(2026, 10, 24, 15, 30), people, [], []))
-    store.delete_person(a, "wrong-token")
+    phone = TestClient(server.app, client=("192.168.1.9", 50000))
+    assert phone.delete(f"/people/{a}", headers={"X-Delete-Token": "wrong-token"}).status_code == 403
     assert f"fact about {a}" in path.read_text()  # a refused delete changes nothing
-    store.delete_person(a, ta)
+    assert phone.delete(f"/people/{a}", headers={"X-Delete-Token": ta}).status_code == 200
     db.execute("update consents set expires_at = current_date - 1 where person_id = %s", (b,))
     store.purge_expired()
     text = path.read_text()
@@ -208,7 +209,7 @@ def test_call_note_on_end_and_after_faces_go_idle(db, enroll, tmp_path, monkeypa
     face = random_print()
     pid, _ = enroll(face)
     name = store.person(pid)["name"]
-    monkeypatch.setattr(picks, "chat", lambda prompt: json.dumps({
+    monkeypatch.setattr(picks, "chat", lambda prompt, seconds=None: json.dumps({
         "notes": [{"personId": pid, "text": "Training for a marathon"}],
         "topic": "Running", "points": ["They both run"], "actions": [],
     }))
@@ -266,7 +267,7 @@ def test_call_end_summarises_only_recognized_people(db, enroll, tmp_path, monkey
     store.set_role(quiet, "Your friend", "user")
     prompts = []
 
-    def muse(prompt: str) -> str:
+    def muse(prompt: str, seconds=None) -> str:
         prompts.append(prompt)
         if "A video call just ended" in prompt:
             return json.dumps({"people": [
@@ -293,7 +294,7 @@ def test_call_end_summarises_only_recognized_people(db, enroll, tmp_path, monkey
 
         summary = next(p for p in prompts if "A video call just ended" in p)
         roster = summary.split("<people>\n")[1].split("\n</people>")[0]
-        assert roster.splitlines() == [f"{pid}: {name} (nothing yet)", f"{quiet}: {quiet_name} (nothing yet)"]  # no stranger
+        assert roster.splitlines() == [f"{pid}: {name} (nothing yet)", f"{quiet}: {quiet_name}, Your friend (nothing yet)"]  # no stranger; roles are shown
         assert f"{name}: My race is in March." in summary
         got = http.get(f"/people/{pid}").json()["encounters"]
         assert [(e["about"], e["lastTime"]) for e in got] == [("Runner training for a marathon", "Talked about the March race.")]
@@ -379,5 +380,5 @@ def test_person_file_is_private_complete_named_by_id_and_goes_with_the_person(db
     db.execute("update people set name = 'Renamed' where id = %s", (pid,))
     assert notes.write_person(pid) == path and "# Renamed" in path.read_text()  # same file after a rename
 
-    store.delete_person(pid, token)
+    notes.forget(pid, "Renamed")  # what the delete route does after store.delete_person
     assert list((tmp_path / "people").iterdir()) == []
