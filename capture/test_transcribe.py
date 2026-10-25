@@ -1,6 +1,11 @@
+import asyncio
+import json
+
+import sounddevice as sd
 import numpy as np
 import pytest
 
+from capture import transcribe
 from capture.transcribe import RATE, resampler
 
 
@@ -19,3 +24,79 @@ def test_mic_audio_reaches_muse_at_24khz(input_rate):
 def test_24khz_mic_passes_through_untouched():
     data = np.arange(100, dtype=np.int16).tobytes()
     assert resampler(RATE)(data) == data
+
+
+class FakeWS:  # stands in for Muse's WebSocket
+    def __init__(self, ack, events=()):
+        self.ack, self.events = ack, events
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        pass
+
+    async def send(self, data):
+        pass
+
+    async def recv(self):
+        return json.dumps(self.ack)
+
+    async def __aiter__(self):
+        for event in self.events:
+            yield json.dumps(event)
+
+
+class FakeMic:
+    def __init__(self, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        pass
+
+
+def test_keeps_listening_through_no_mic_a_rejection_and_the_end_of_a_session(monkeypatch, capsys):
+    monkeypatch.setenv("MODEL_API_KEY", "fake")
+    monkeypatch.setattr(transcribe.sd, "RawInputStream", FakeMic)
+    mics = iter([sd.PortAudioError("no input device"), None, None, None, None])
+
+    def query(device, kind):
+        if isinstance(m := next(mics), Exception):
+            raise m
+        return {"default_samplerate": RATE}
+
+    sessions = iter([
+        FakeWS({"type": "error", "message": "bad key"}),
+        FakeWS({"type": "ack", "sessionId": "s1"}, [{"type": "speechComplete", "transcript": "hello"}]),  # then Muse hangs up
+        OSError("network down"),
+        FakeWS({"type": "ack", "sessionId": "s2"}),
+    ])
+
+    def connect(url):
+        if isinstance(s := next(sessions), Exception):
+            raise s
+        return s
+
+    lines, waits = [], []
+
+    async def post(http, line):
+        lines.append(line)
+
+    async def sleep(seconds):
+        waits.append(seconds)
+        if len(waits) == 5:
+            raise StopAsyncIteration
+
+    monkeypatch.setattr(transcribe.sd, "query_devices", query)
+    monkeypatch.setattr(transcribe.websockets, "connect", connect)
+    monkeypatch.setattr(transcribe, "post", post)
+    monkeypatch.setattr(transcribe.asyncio, "sleep", sleep)
+    with pytest.raises(StopAsyncIteration):
+        asyncio.run(transcribe.keep_listening(None))
+    assert waits == [2, 4, 2, 2, 2]  # no mic, rejection (wait doubles), a clean end resets it, network drop, clean end
+    assert lines == [{"speaker": "speaker", "text": "hello", "final": True}]
+    out = capsys.readouterr().out
+    assert "no input device" in out and "bad key" in out and "network down" in out and "starting a new one" in out
