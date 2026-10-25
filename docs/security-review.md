@@ -189,3 +189,14 @@ async def guests_only_enroll(request: Request, call_next):
 - **Capture `faces.py` (uncommitted):** when the call window is gone it now yields no frame and clears every card, instead of capturing the old screen region. That is a privacy gain: it no longer reads whatever app sits where the call was. The loop is still paced by the `fps` sleep (`faces.py:160`), so no busy loop.
 - **Capture tests:** use InsightFace's bundled `t1` image and a local fake server on `127.0.0.1`; no real people.
 - **Overlay `e718d21`:** names are read and written through `textContent`/`dataset`, the speaker string is only compared, and quiet cards hide names (less on screen, not more). No new IPC or network use.
+
+### Pass 2 (`/review/overlay` `3400d7c`; `/review/memory` uncommitted `app.py`, `picks.py`)
+
+**R2-3. Low: Muse-chosen search terms are not fenced (uncommitted `memory/picks.py:answer`).** `fence()` wraps people, transcript and web results, but `query` in the `define` and `search` tasks comes from a model that read the transcript, so it is still unfenced text inside the prompt. Smallest fix: `TASKS` formats it as `"{query}"` already; run it through `" ".join(re.sub(r"[<>]", "", query).split())` and cap it at 200 characters. The host's own typed question (`ask`) is trusted and needs nothing.
+
+**R2-4. Low: add a permission check handler (`3400d7c`, `overlay/main.js`).** `setPermissionRequestHandler` denies prompts, but Electron also asks `setPermissionCheckHandler` (for example "is camera allowed?"). One line, `session.setPermissionCheckHandler(() => false)`, closes it.
+
+**Checked and fine:**
+- `#6` is mostly addressed by the uncommitted work: `<people>`/`<transcript>`/`<results>` fences that strip `<>`, a prompt line saying fenced text is never instructions, and `MAX_NOTES_PER_CALL = 3`. All three prompts now contain the words my strict xfail looks for, so it should flip to passing once this merges; delete its marker then.
+- `3400d7c`: sandbox, context isolation and `nodeIntegration: false` are explicit; `webviewTag` is off and attaching one is blocked; the CSP adds `object-src`, `base-uri` and `form-action` `'none'`; every IPC channel checks that the sender is a `file://` page (a missing `senderFrame` fails closed); `api` calls must match the anchored `ROUTES` regex and a 2,000-character object body; `copy` takes only strings up to 20,000 characters; `openExternal` is http(s) only via `new URL`.
+- Capture's uncommitted `faces.py` and test changes: still only local fakes and InsightFace samples.
