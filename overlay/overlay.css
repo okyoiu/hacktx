@@ -55,7 +55,8 @@ body[data-view="all"].idle .panel { opacity: 0.3; transition-duration: 0.8s; }
 /* ---------- control bar ---------- */
 .bar { display: flex; align-items: center; gap: 10px; height: 56px; padding: 0 9px 0 12px; -webkit-app-region: drag; user-select: none; }
 body[data-view="bar"] .bar { height: 100%; }
-.logo { flex: none; width: 22px; height: 22px; margin-right: -2px; border-radius: 6px; } /* the app icon, as a small mark */
+/* the app icon as a small mark; a rim and a touch of light so a dark tile reads on dark glass */
+.logo { flex: none; width: 22px; height: 22px; margin-right: -2px; border-radius: 6px; box-shadow: 0 0 0 1px var(--rim); filter: brightness(1.25); }
 
 .pause {
   flex: none; display: grid; place-items: center; width: 32px; height: 32px; padding: 0;

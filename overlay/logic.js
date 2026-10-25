@@ -296,7 +296,7 @@ const area = (a, b) => Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math
 
 // The open name card beside a face, in screen points, for keeping panels off it (the renderer places the
 // real card the same way, so this is where it is).
-const CARD_SIZE = { width: 208, height: 210 }
+const CARD_SIZE = { width: 208, height: 248 } // an open card with five bullets
 const PILL_SIZE = { width: 132, height: 36 } // a "Recalling…" pill
 function cardRect([x, y, w, h], screen, known = true) {
   const size = known ? CARD_SIZE : PILL_SIZE

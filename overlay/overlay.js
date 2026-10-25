@@ -6,7 +6,7 @@ const q = new URLSearchParams(location.search)
 const view = q.get('view') || 'all'
 const shows = (part) => view === 'all' || view === part
 const origin = { x: +q.get('ox') || 0, y: +q.get('oy') || 0 } // the cards window's top-left in screen points
-const CARD = { width: 208, gap: 12, open: 210 } // open: room for a name and five bullets
+const CARD = { width: 208, gap: 12, open: 248 } // open: room for a name and five bullets (CARD_SIZE in logic.js)
 const KIND_EMOJI = { define: '📘', search: '🌐', places: '📍', events: '📅', recall: '👋', followups: '💬', helpful: '✨' }
 const calm = matchMedia('(prefers-reduced-motion: reduce)')
 const DEBUG = q.get('debug') === '1' // developer mode: only main.js sets this, and only when started with `npm run dev`

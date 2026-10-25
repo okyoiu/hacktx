@@ -321,7 +321,7 @@ test('Ask AI stays in its spot when it covers nothing, else moves to a free area
   const under = askPlace({ work: WORK, spot: { x: 400, y: 40 }, faces: [], blocks: [strip], panel })
   assert.equal(overlap({ ...under, ...panel }, strip), 0, 'never under the control strip')
   const card = cardRect([1000, 150, 200, 250], { x: 0, y: 0, width: 1440, height: 900 })
-  assert.deepEqual(card, { x: 1212, y: 150, width: 208, height: 210 }, 'the card sits to the right of its face')
+  assert.deepEqual(card, { x: 1212, y: 150, width: 208, height: 248 }, 'the card sits to the right of its face')
   const offCard = askPlace({ work: WORK, spot: { x: 968, y: 100 }, faces: [], blocks: [], cards: [card], panel })
   assert.equal(overlap({ ...offCard, ...panel }, card), 0, 'name cards are kept clear too')
 })
