@@ -7,7 +7,7 @@ const view = q.get('view') || 'all'
 const ISLAND_PARTS = ['bar', 'insights', 'response', 'recap'] // all drawn by the island window
 const shows = (part) => view === 'all' || view === part || (view === 'island' && ISLAND_PARTS.includes(part))
 const origin = { x: +q.get('ox') || 0, y: +q.get('oy') || 0 } // the cards window's top-left in screen points
-const CARD = { width: 300, gap: 12, open: 244 } // open: the name, role, the facts row and three bullets (CARD_SIZE in logic.js)
+const CARD = { width: 340, gap: 12, open: 300 } // open: the name, role, the facts row and three bullets (CARD_SIZE in logic.js)
 const KIND_EMOJI = { define: '📘', search: '🌐', places: '📍', events: '📅', recall: '👋', followups: '💬', helpful: '✨' }
 const calm = matchMedia('(prefers-reduced-motion: reduce)')
 const DEBUG = q.get('debug') === '1' // developer mode: only main.js sets this, and only when started with `npm run dev`
@@ -153,7 +153,7 @@ function avoidFor(card) {
 }
 // A closed tag is placed by its own size (so it hugs its face); an open card by its full size. A known card's
 // closed height is its row, never the body still folding away.
-const TAG_HEIGHT = 28
+const TAG_HEIGHT = 30
 function cardSize(card) {
   if (card.classList.contains('open')) return { width: CARD.width, height: CARD.open }
   const known = card.classList.contains('known')
@@ -161,7 +161,7 @@ function cardSize(card) {
 }
 function position(card) {
   const size = cardSize(card)
-  const { left, top } = cardPlace({ face: localFace(JSON.parse(card.dataset.face)), card: size, screen: { width: innerWidth, height: innerHeight }, avoid: avoidFor(card), gap: CARD.gap })
+  const { left, top } = cardPlace({ face: localFace(JSON.parse(card.dataset.face)), card: size, screen: { width: innerWidth, height: innerHeight }, avoid: avoidFor(card), gap: CARD.gap, margin: 16 })
   card.dataset.place = JSON.stringify([left, top])
   card.style.transform = `translate(${left}px, ${top}px)`
 }
@@ -278,10 +278,17 @@ function openRemember(card) {
   const role = el('input', 'name-field')
   Object.assign(role, { type: 'text', maxLength: 60, placeholder: 'Who are they to you? (optional)', autocomplete: 'off', spellcheck: false })
   role.setAttribute('aria-label', 'Who are they to you?')
+  // what they agree to, read aloud ("Is that okay?") before the tick; the second tick is optional
+  const points = el('ul', 'points-read')
+  points.append(...REMEMBER_POINTS.map((p) => el('li', null, p)))
   const consent = el('input')
   consent.type = 'checkbox'
   const yes = el('label', 'yes')
   yes.append(consent, el('span', null, 'They said yes'))
+  const connector = el('input')
+  connector.type = 'checkbox'
+  const muse = el('label', 'yes')
+  muse.append(connector, el('span', null, 'Optional: my Muse app may read their notes'))
   const save = el('button', 'save', 'Save')
   save.type = 'submit'
   save.disabled = true
@@ -298,7 +305,7 @@ function openRemember(card) {
   const note = el('p', 'note')
   note.setAttribute('role', 'status')
   const form = el('form', 'remember-form')
-  form.append(name, role, yes, actions, note)
+  form.append(name, role, points, yes, muse, actions, note)
   card.replaceChildren(head, form)
 
   const ready = () => (save.disabled = !canSave(name.value, consent.checked))
@@ -312,11 +319,11 @@ function openRemember(card) {
   form.addEventListener('submit', async (e) => {
     e.preventDefault()
     if (save.disabled) return
-    for (const control of [name, role, consent, save]) control.disabled = true
+    for (const control of [name, role, consent, connector, save]) control.disabled = true
     save.textContent = 'Saving…'
     note.textContent = ''
     card.dataset.saving = 'true'
-    const { error, status } = await api(`/faces/${Number(card.dataset.track)}/remember`, rememberBody(name.value, role.value))
+    const { error, status } = await api(`/faces/${Number(card.dataset.track)}/remember`, rememberBody(name.value, role.value, connector.checked))
     delete card.dataset.saving
     if (!card.classList.contains('remembering')) return // already their name card
     const result = rememberResult({ error, status }, card.dataset.gone)
@@ -324,7 +331,7 @@ function openRemember(card) {
     if (result.kind === 'error') {
       note.textContent = result.text
       save.textContent = 'Save'
-      name.disabled = role.disabled = consent.disabled = false
+      name.disabled = role.disabled = consent.disabled = connector.disabled = false
       return ready()
     }
     // the server now pushes this face's updated `face` event, which morphs the form into their name card

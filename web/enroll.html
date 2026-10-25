@@ -46,17 +46,16 @@
 <body>
 <main>
   <h1>Remember each other?</h1>
-  <p>People who use Hello Again on calls with you will see your name and a few notes next to your face. Nobody else in the call sees anything, and you can delete it all at any time.</p>
+  <p>Hello Again runs on the host's laptop. It will remember you for one year, or until you delete it. Only the host sees this on their screen; a screen share can show it.</p>
 
   <form class="box" id="form" novalidate>
-    <div>
-      <strong>What gets saved</strong>
-      <ul>
-        <li>A face print made from the selfie you take here (the photo itself isn't kept)</li>
-        <li>Notes from calls you're both in, written by Meta's Muse from what's said on those calls</li>
-      </ul>
-    </div>
-    <p>Everything is deleted after one year, or right away when you ask.</p>
+    <ul id="keeps">
+      <li><strong>Your face:</strong> it saves numbers made from your face so it can recognise you on calls. It does not keep your photo.</li>
+      <li><strong>Your name</strong> and, if the host adds one, who you are to them.</li>
+      <li><strong>Your voice:</strong> on a call, the audio is sent to Meta's Muse to turn it into text. This happens for everyone on the call.</li>
+      <li><strong>What you say:</strong> Meta's Muse reads it and writes notes, short facts (like "Loves F1"), how you met, and a summary and topic for each call. The host sees these next to your face and in their People list.</li>
+      <li><strong>Delete:</strong> you can delete all of it at any time with the link you get after you agree.</li>
+    </ul>
 
     <label for="name">Your name
       <input id="name" name="name" type="text" autocomplete="name" required maxlength="80">
@@ -73,7 +72,11 @@
     </div>
     <label class="check" for="consent">
       <input id="consent" type="checkbox" required>
-      <span>I agree to let Hello Again recognize my face and keep notes about our calls.</span>
+      <span>I agree to all of the above.</span>
+    </label>
+    <label class="check" for="connector">
+      <input id="connector" type="checkbox">
+      <span><em>(optional)</em> Also let the host's Muse app read my notes (the connector): my name, notes and facts, from their laptop.</span>
     </label>
     <button type="submit" id="submit">Agree and enroll</button>
     <p class="msg" id="msg" role="status"></p>
@@ -183,6 +186,7 @@
     const body = new FormData()
     body.append('name', name)
     body.append('consent', 'true')
+    if ($('connector').checked) body.append('connector', '1') // the optional Muse-app tick, stored as a scope (security R12-1)
     const code = new URLSearchParams(location.search).get('code') // from the invite link
     if (code) body.append('code', code)
     body.append('selfie', file, file.name || 'selfie.jpg')

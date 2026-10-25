@@ -125,6 +125,12 @@ test('a card shows at most 5 bullets (the server appends "This call: …"), fall
   assert.deepEqual(bulletsOf({ bullets: [], role: '', line: '' }), [])
 })
 
+test('Remember them sends connector: true only when the optional Muse-app tick is on', () => {
+  assert.deepEqual(rememberBody('Maya Chen', '', true), { name: 'Maya Chen', consent: true, connector: true })
+  assert.deepEqual(rememberBody('Maya Chen', ''), { name: 'Maya Chen', consent: true })
+  assert.ok(!('connector' in rememberBody('Maya Chen', '', false)))
+})
+
 test('Remember them sends the optional role only when typed, at most 60 characters', () => {
   assert.deepEqual(rememberBody(' Maya  Chen ', ''), { name: 'Maya Chen', consent: true })
   assert.deepEqual(rememberBody('Maya', '  Your   team lead '), { name: 'Maya', consent: true, role: 'Your team lead' })
@@ -321,7 +327,7 @@ test('Ask AI stays in its spot when it covers nothing, else moves to a free area
   const under = askPlace({ work: WORK, spot: { x: 400, y: 40 }, faces: [], blocks: [strip], panel })
   assert.equal(overlap({ ...under, ...panel }, strip), 0, 'never under the control strip')
   const card = cardRect([800, 150, 200, 250], { x: 0, y: 0, width: 1440, height: 900 })
-  assert.deepEqual(card, { x: 1012, y: 150, width: 300, height: 244 }, 'the card sits to the right of its face')
+  assert.deepEqual(card, { x: 1012, y: 150, width: 340, height: 300 }, 'the card sits to the right of its face')
   const offCard = askPlace({ work: WORK, spot: { x: 968, y: 100 }, faces: [], blocks: [], cards: [card], panel })
   assert.equal(overlap({ ...offCard, ...panel }, card), 0, 'name cards are kept clear too')
 })

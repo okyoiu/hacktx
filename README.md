@@ -70,6 +70,8 @@ Other controls: **pause** in the control bar stops listening (nothing is sent to
 
 Anyone can delete themselves from the link they get after enrolling.
 
+**People on the call who are not enrolled** agreed to nothing: their voice still goes to Meta's Muse to become text, and their words still go into the live prompts and the transcript (nothing is stored for them and no face print is kept). The host is responsible for telling the call that Hello Again is listening.
+
 ## If something's not working
 
 | Problem | Fix |
