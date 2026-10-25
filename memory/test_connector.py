@@ -126,3 +126,81 @@ def test_calls_route_needs_the_key_asks_the_store_for_connector_people_only_and_
     monkeypatch.setenv("MUSE_CONNECTOR_KEY", KEY)
     doc = web.get("/connector/openapi.json", headers=auth()).json()["paths"]["/connector/calls"]["get"]
     assert "last meeting" in doc["description"] and "recap" in doc["summary"]
+
+
+# --- MCP ---
+
+def rpc(web, method, params=None, key=KEY, **extra):
+    body = {"jsonrpc": "2.0", "method": method, **({"id": 1} if "id" not in extra else {}), **extra}
+    if params is not None:
+        body["params"] = params
+    return web.post("/connector/mcp", json=body, headers=auth(key) if key else {})
+
+
+def tool_json(reply):
+    return json.loads(reply.json()["result"]["content"][0]["text"])
+
+
+def test_mcp_needs_the_key_and_get_says_to_post(web, monkeypatch):
+    assert rpc(web, "ping", key=None).status_code == 401 and rpc(web, "ping", key="wrong").status_code == 401
+    assert rpc(web, "ping").status_code == 200
+    got = web.get("/connector/mcp", headers=auth())
+    assert got.status_code == 405 and "POST JSON-RPC here" in got.json()["error"] and got.headers["allow"] == "POST"
+    assert web.get("/connector/mcp").status_code == 401
+    monkeypatch.delenv("MUSE_CONNECTOR_KEY")
+    assert rpc(web, "ping").status_code == 404
+
+
+def test_mcp_initialize_notifications_and_errors(web):
+    init = rpc(web, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "muse", "version": "1"}}).json()
+    assert init == {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}},
+                                                          "serverInfo": {"name": "hello-again", "version": "1.0.0"}}}
+    note = web.post("/connector/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"}, headers=auth())
+    assert note.status_code == 202 and note.content == b""
+    assert rpc(web, "nope").json()["error"]["code"] == -32601
+    assert web.post("/connector/mcp", content="{not json", headers=auth() | {"content-type": "application/json"}).json()["error"]["code"] == -32700
+    assert web.post("/connector/mcp", json=[1], headers=auth()).json()[0]["error"]["code"] == -32600
+    assert web.post("/connector/mcp", json={"method": "ping"}, headers=auth()).json()["error"]["code"] == -32600  # no jsonrpc field
+    batch = web.post("/connector/mcp", json=[{"jsonrpc": "2.0", "id": 7, "method": "ping"}, {"jsonrpc": "2.0", "method": "notifications/initialized"}], headers=auth())
+    assert batch.json() == [{"jsonrpc": "2.0", "id": 7, "result": {}}]
+
+
+def test_mcp_tools_list_and_calls_return_the_same_data_as_the_routes(web, monkeypatch):
+    tools = rpc(web, "tools/list").json()["result"]["tools"]
+    assert [t["name"] for t in tools] == ["list_people", "get_person", "recent_calls"] and all(t["inputSchema"]["type"] == "object" for t in tools)
+    assert tools[1]["inputSchema"]["required"] == ["id"]
+
+    listed = rpc(web, "tools/call", {"name": "list_people", "arguments": {}})
+    assert listed.json()["result"]["content"][0]["type"] == "text" and tool_json(listed) == web.get("/connector/people", headers=auth()).json()
+    assert tool_json(rpc(web, "tools/call", {"name": "list_people"})) == tool_json(listed)  # arguments may be left out
+    one = rpc(web, "tools/call", {"name": "get_person", "arguments": {"id": "p_jordan"}})
+    assert tool_json(one) == web.get("/connector/people/p_jordan", headers=auth()).json()
+    for text in (listed.text, one.text):
+        assert "print" not in text.lower() and "token" not in text.lower()
+    gone = rpc(web, "tools/call", {"name": "get_person", "arguments": {"id": "p_nobody"}}).json()["result"]
+    assert gone["isError"] is True and "Nobody" in gone["content"][0]["text"]  # a tool error, not a protocol error
+
+    asked = []
+    monkeypatch.setattr(store, "calls", lambda limit, scope=None: asked.append((limit, scope)) or [{"topic": "Demo"}])
+    assert tool_json(rpc(web, "tools/call", {"name": "recent_calls", "arguments": {"limit": 3}})) == [{"topic": "Demo"}] and asked == [(3, "connector")]
+    rpc(web, "tools/call", {"name": "recent_calls"})
+    assert asked[-1] == (5, "connector")
+
+
+def test_mcp_bad_params_are_32602(web):
+    bad = [{"name": "nope"}, {"name": "get_person", "arguments": {}}, {"name": "get_person", "arguments": {"id": 5}},
+           {"name": "recent_calls", "arguments": {"limit": 0}}, {"name": "recent_calls", "arguments": {"limit": "5"}},
+           {"name": "recent_calls", "arguments": {"limit": True}}, {"name": "list_people", "arguments": "x"}, {}, "x"]
+    for params in bad:
+        assert rpc(web, "tools/call", params).json()["error"]["code"] == -32602, params
+
+
+def test_the_tunnel_reaches_mcp_with_the_key_only(monkeypatch):
+    monkeypatch.setenv("MUSE_CONNECTOR_KEY", KEY)
+    monkeypatch.setattr(connector, "failures", [])
+    tunnel = {"X-Forwarded-For": "198.51.100.7", "CF-Connecting-IP": "198.51.100.7"}
+    body = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as laptop:
+        assert laptop.post("/connector/mcp", json=body, headers=tunnel).status_code == 401
+        assert laptop.post("/connector/mcp", json=body, headers=tunnel | auth()).json()["result"] == {}
+        assert laptop.post("/listening", json={"on": False}, headers=tunnel | auth()).status_code == 403  # nothing else opens
