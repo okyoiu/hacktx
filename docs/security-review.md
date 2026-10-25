@@ -158,3 +158,89 @@ async def guests_only_enroll(request: Request, call_next):
 - Windows behavior;
 - the Muse realtime protocol beyond what capture sends;
 - the overlay's uncommitted `overlay.js` beyond HTML sinks and links (it was changing while I read it).
+
+---
+
+## Round 2
+
+2026-10-25, Security agent. Skills used: cybersecurity, `/security-review` pass over the merged `sandbox/base` (`29ce149`), `pip-audit`, `npm audit`. Pass 1 of the review reads `/review/capture` (`144a9f8` plus uncommitted `faces.py`), `/review/memory` (`3a97bbb`) and `/review/overlay` (`e718d21`).
+
+**Status of round 1:** #1, #2, #3 (README and middleware), #5, #7, #8 are fixed on `sandbox/base`. #4 is fixed on `/review/memory` (`3a97bbb`, not merged yet). #6, #9 and #11 are open, and each now has a strict xfail in `tools/test_security.py` (as does #4, until `3a97bbb` merges). #10: `npm audit --omit=dev` now reports 0 vulnerabilities, though `overlay/package.json:13` still pins Electron 44.6.0; bump it anyway when convenient.
+
+**Tools:** `pip-audit` and `npm audit --omit=dev` found nothing. The secrets-in-history grep matched only the skill's own example pattern, so no keys in history.
+
+### New findings, most severe first
+
+#### R2-1. Low: `notes/*.md` still keeps a deleted person's name outside their own section (`3a97bbb`)
+
+- **Where:** `memory/notes.py:forget`, which removes only the `## name <!-- id -->` section.
+- **Risk:** the same person's name can still appear in other people's bullets, in "Key points" and in "AI responses" (for example "Zed is moving to Austin"). Note files written before the id marker existed have no marker, so they are never cleaned.
+- **Smallest fix:** accept it and say so on the enroll page ("call notes on the host's laptop may still mention you"), or also drop lines containing the person's name. Tell the host to delete old `notes/` files once.
+
+#### R2-2. Low: a name can carry another person's marker (`3a97bbb`)
+
+- **Where:** `memory/notes.py:render`. `<!-- p_x -->` typed into an enrollment name goes into the section header, so when `p_x` deletes themselves, the attacker's own section goes too.
+- **Risk:** harmless (it only removes the attacker's own section, and ids are not secret anyway), but the marker is the sole link between a section and a person.
+- **Smallest fix:** strip `<!--` and `-->` from the name in `render` (one `.replace`).
+
+### Reviewed and fine
+
+- **`3a97bbb`:** `re.escape` on the id, no path built from user text, section ends at the next heading so AI answers (`###`) under their own `##` are untouched, and `store.delete_person` calls `forget` only after the token check passes.
+- **Capture `faces.py` (uncommitted):** when the call window is gone it now yields no frame and clears every card, instead of capturing the old screen region. That is a privacy gain: it no longer reads whatever app sits where the call was. The loop is still paced by the `fps` sleep (`faces.py:160`), so no busy loop.
+- **Capture tests:** use InsightFace's bundled `t1` image and a local fake server on `127.0.0.1`; no real people.
+- **Overlay `e718d21`:** names are read and written through `textContent`/`dataset`, the speaker string is only compared, and quiet cards hide names (less on screen, not more). No new IPC or network use.
+
+### Pass 2 (`/review/overlay` `3400d7c`; `/review/memory` uncommitted `app.py`, `picks.py`)
+
+**R2-3. Low: Muse-chosen search terms are not fenced (uncommitted `memory/picks.py:answer`).** `fence()` wraps people, transcript and web results, but `query` in the `define` and `search` tasks comes from a model that read the transcript, so it is still unfenced text inside the prompt. Smallest fix: `TASKS` formats it as `"{query}"` already; run it through `" ".join(re.sub(r"[<>]", "", query).split())` and cap it at 200 characters. The host's own typed question (`ask`) is trusted and needs nothing.
+
+**R2-4. Low: add a permission check handler (`3400d7c`, `overlay/main.js`).** `setPermissionRequestHandler` denies prompts, but Electron also asks `setPermissionCheckHandler` (for example "is camera allowed?"). One line, `session.setPermissionCheckHandler(() => false)`, closes it.
+
+**Checked and fine:**
+- `#6` is mostly addressed by the uncommitted work: `<people>`/`<transcript>`/`<results>` fences that strip `<>`, a prompt line saying fenced text is never instructions, and `MAX_NOTES_PER_CALL = 3`. All three prompts now contain the words my strict xfail looks for, so it should flip to passing once this merges; delete its marker then.
+- `3400d7c`: sandbox, context isolation and `nodeIntegration: false` are explicit; `webviewTag` is off and attaching one is blocked; the CSP adds `object-src`, `base-uri` and `form-action` `'none'`; every IPC channel checks that the sender is a `file://` page (a missing `senderFrame` fails closed); `api` calls must match the anchored `ROUTES` regex and a 2,000-character object body; `copy` takes only strings up to 20,000 characters; `openExternal` is http(s) only via `new URL`.
+- Capture's uncommitted `faces.py` and test changes: still only local fakes and InsightFace samples.
+
+### Pass 3 (final: `/review/memory` `db26a1a` plus uncommitted token hashing; `/review/capture` and `/review/overlay` uncommitted work)
+
+- **#6 fixed in `db26a1a`** (fences, prompt wording, 3 new notes per person per call). R2-3 above is the only gap left.
+- **#11 fixed in the uncommitted `memory/store.py`:** tokens are stored as SHA-256 and compared with `secrets.compare_digest`. A plain hash is enough because the token is 128 random bits. The one-time `schema.sql` upgrade is guarded by `length(delete_token) <> 64`, so it runs once and a second start does nothing. Delete the xfail marker for #11 when it merges.
+- **#9 is still open:** nothing in `memory/` or `web/` checks an invite code. It needs a new `.env` value (`ENROLL_CODE`), so it is the coordinator's call (see the Report).
+- **Still open, small:** R2-1 (names left in other notes sections and in files written before the id marker), R2-2, R2-3, R2-4, and the Electron pin in #10.
+- Capture and overlay's uncommitted changes were read as far as they existed at this point; nothing new that touches faces, keys, routes or HTML sinks.
+
+### Round 2 verdict
+
+Nothing high or critical is open. Before the demo: #9 if enrolling happens on a shared Wi-Fi (otherwise use the hotspot), plus delete the old files in `notes/` once. The rest is low.
+
+---
+
+## Round 3: the People dashboard, roles, per-person files and one-launch (contract review)
+
+2026-10-25, Security agent. Reviewed against the README contract merged from `contract-update`; none of it is built in `/review/*` yet, so these are requirements for the builders, each with a test or a check for the next pass. Tests already in `tools/test_security.py`: Wi-Fi cannot `GET /people` or `PATCH`; no delete without a token from Wi-Fi or from a browser page on the laptop (strict xfails: role over 60 characters refused, role fenced in prompts).
+
+| # | Surface | Must hold | Smallest way |
+|---|---|---|---|
+| R3-1 | `GET /people`, `PATCH /people/{id}` | Laptop-only. Already so, because the middleware denies everything except `/enroll` and `DELETE /people/*`. Keep them out of the guest list. | Add nothing to `guest` in `memory/app.py:73`. |
+| R3-2 | `DELETE /people/{id}` without a token | The middleware lets every `DELETE /people/*` through, so the route itself must decide: no token is accepted only when `from_this_laptop(request)` is true (loopback and no browser `Origin`). Checking the client address alone would let any web page open on the laptop delete people. | In `forget`, `if not from_this_laptop(request): require the token`. Make `x_delete_token` optional. Never trust `X-Forwarded-For`. |
+| R3-3 | Role label | 60 characters max on every entry point (`/remember`, `/enroll`, `PATCH`); control characters and newlines stripped (`" ".join(role.split())`); `<` and `>` removed before it goes in any prompt (use `picks.fence`); a Muse-suggested role is validated the same way and never replaces one typed by a person (a `role_typed` flag, not a string comparison). A guest on `/enroll` can set a role that later shows to the host on a card, so show it with `textContent` only. | Reuse `fence`/`parse` limits; one shared `clean_role()`. |
+| R3-4 | `notes/people/<name>.md` | Path from the person id, not the name (`notes/people/p_1a2b.md`), or a slug limited to `[a-z0-9-]` and checked with `path.resolve().is_relative_to(PEOPLE_DIR)`. Names like `../../x`, `.`, `CON`, an empty name or a 300-character name must not escape or fail. Files `0600`, directories `0700`. Names, roles and notes written into markdown lose newlines so they cannot fake headings or another person's section (as `notes.render` already does). Delete removes the file; so does `purge_expired`, and `notes.forget` still cleans call notes. | `os.open(path, O_WRONLY\|O_CREAT\|O_TRUNC, 0o600)` and the id as file name. |
+| R3-5 | One launch (the app starts processes) | Start children with an argument list and `shell: false`, never a string with user text. Keys stay in the environment of the child, never in `argv` (visible in `ps`). Logs in `logs/` (git-ignored) hold no transcript text, face prints, names or keys, and are `0600`. The database container publishes `127.0.0.1:5432` only, and the server binds `127.0.0.1` (this reopens #1 and #2 if forgotten). If the app asks Docker to create the container, the password must not be the default for a Tiger-style shared setup. Children stop on quit. | Check the `spawn` calls and `docker run` arguments in `overlay/main.js` on the next pass. |
+| R3-6 | Dashboard window | Same Electron rules as the others: sandbox, `ours(e)` sender check, routes only through the anchored `ROUTES` regex (it must be extended for `GET /people`, `PATCH`, `DELETE`; keep the `\d`/`[\w-]` ids), delete needs the in-window confirm, texts via `textContent`. | Extend `ROUTES` and `validCall` with the exact new routes, not a wildcard. |
+| R3-7 | Pop-up bullets | `bullets` are built from notes that came from speech: at most 3, each short, shown with `textContent`. | Cap in the server when building the `face` event. |
+
+### Round 3, code pass 1 (`/review/memory` `832d3bf`, `d63e340` plus uncommitted `GET/PATCH/DELETE /people`; `/review/overlay` `252f8a0`, `1a21bbb`, `f84d3a6`)
+
+**Built and fine:**
+- `GET /people` and `PATCH` stay laptop-only (not in the guest list). `PATCH` takes a pydantic model with role 60 and name 80, strip only.
+- `DELETE` decides in the route with `from_this_laptop(request)`, so Origin is checked. A browser page on the laptop or a phone without a token gets 403, and a phone with a wrong token gets the same 403 whether or not the id exists. My test covers this.
+- Roles are length-limited on `/remember`, `/enroll` and `PATCH`. Muse's suggestion cannot replace a typed one (`role_source`), is whitespace-collapsed and capped at 60 in `parse_summary`.
+- Overlay: all dashboard text goes in with `textContent`; ids go through `encodeURIComponent` and the anchored `[\w-]+` route regexes, so no path tricks; methods are checked against an own-property table; delete needs an in-window confirm and is sent from the main process, so it carries no Origin and the laptop rule lets it through; the dashboard window has the same sandbox, sender check and content protection as the others.
+
+**New findings:**
+- **R3-8, Low: a typed role keeps newlines and control characters.** `memory/app.py` (`Remember`, `PersonEdit`, `/enroll` form) only strips the ends; Muse's role is collapsed but a guest's or host's is not. Anyone can enroll with a role like `Boss\n## Other <!-- p_y -->`, which will be written into `notes/people/` files and shown first on a pop-up. Smallest fix: `role = " ".join(role.split())` at the top of `store.set_role` and `store.enroll` (strict xfail added).
+- **R3-9, Low: a guest chooses the first bullet on the host's screen, and a speaker can steer Muse's suggested role.** A phone can enroll with the role "Your CEO", and anyone saying "I'm your boss" on the call can get that suggested. Both only show as text, and a role the host typed is never replaced. Smallest fix: in the summary prompt add "suggest a role only from what the user says about that person", and consider showing a guest-set role with a small "says" prefix.
+- **R3-10, Low: `store.delete_person(pid, None)` skips the token check.** Its only caller is `forget`, guarded by `from_this_laptop`. Keep it that way; if a second caller appears, split it into its own `delete_person_here()`.
+- **R3-3 still open:** the role is not in the Muse prompts yet (the fence xfail stays). When it is added, go through `picks.fence`.
+
+**Not built yet, so still on the checklist:** `notes/people/<id>.md` files (R3-4) and the one-launch process starter (R3-5). `/review/capture` has only the window-lost `face_gone` change, which sends no new data.

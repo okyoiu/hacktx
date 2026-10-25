@@ -98,6 +98,96 @@ def test_delete_needs_the_right_token(db, enroll):
     assert store.delete_person(pid, token) is False
 
 
+def test_deleting_yourself_or_expiring_removes_your_section_from_call_notes(db, enroll, tmp_path, monkeypatch):
+    monkeypatch.setattr(notes, "NOTES", tmp_path)
+    (a, ta), (b, _), (c, _) = enroll(random_print()), enroll(random_print()), enroll(random_print())
+    people = [{**store.person(p), "learned": [f"fact about {p}"]} for p in (a, b, c)]
+    path = tmp_path / "call.md"
+    path.write_text(notes.render(datetime(2026, 10, 24, 15, 30), people, [], []))
+    store.delete_person(a, "wrong-token")
+    assert f"fact about {a}" in path.read_text()  # a refused delete changes nothing
+    store.delete_person(a, ta)
+    db.execute("update consents set expires_at = current_date - 1 where person_id = %s", (b,))
+    store.purge_expired()
+    text = path.read_text()
+    assert f"fact about {a}" not in text and f"fact about {b}" not in text and f"fact about {c}" in text
+
+
+def test_delete_tokens_are_stored_hashed_and_old_plain_ones_upgrade(db, enroll):
+    pid, token = enroll(random_print())
+    assert db.execute("select delete_token from people where id = %s", (pid,)).fetchone()[0] == store.digest(token)
+    assert store.delete_person(pid, store.digest(token)) is False  # the stored hash is not a key
+
+    old, _ = enroll(random_print())
+    db.execute("update people set delete_token = 'plain-old-token' where id = %s", (old,))
+    schema = (Path(store.__file__).with_name("schema.sql")).read_text()
+    db.execute(schema)
+    db.execute(schema)  # running it again changes nothing
+    assert db.execute("select delete_token from people where id = %s", (old,)).fetchone()[0] == store.digest("plain-old-token")
+    assert store.delete_person(old, "plain-old-token") is True
+
+
+def test_a_role_you_typed_is_never_replaced_by_muses_suggestion(db, enroll):
+    typed, _ = store.enroll("Test " + secrets.token_hex(3), random_print(), None, "Your team lead")
+    guessed, _ = enroll(random_print())  # no role given
+    try:
+        assert store.person(typed)["role"] == "Your team lead" and store.person(guessed)["role"] == ""
+        for pid in (typed, guessed):
+            store.set_role(pid, "Recruiter at Meta", "muse")
+        assert [store.person(p)["role"] for p in (typed, guessed)] == ["Your team lead", "Recruiter at Meta"]
+        store.set_role(guessed, "Your friend", "user")  # the dashboard edit wins, and later suggestions can't undo it
+        store.set_role(guessed, "Someone else", "muse")
+        assert store.person(guessed)["role"] == "Your friend"
+    finally:
+        db.execute("delete from people where id = %s", (typed,))
+
+
+def test_face_card_has_role_last_time_and_a_key_fact_as_at_most_three_bullets(db, enroll):
+    face = random_print()
+    pid, _ = enroll(face)
+    assert server.card_for(face.tolist())["bullets"] == [] and server.card_for(face.tolist())["role"] == ""
+    store.set_role(pid, "Your team lead", "user")
+    store.add_note(pid, "Has a dog named Biscuit")
+    card = server.card_for(face.tolist())
+    assert card["bullets"] == ["Your team lead", "Has a dog named Biscuit"]  # no call yet: the note is the key fact
+    store.add_encounter(pid, datetime.now().astimezone(), "Starts a fintech job Monday", "Talked about his move.")
+    card = server.card_for(face.tolist())
+    assert card["role"] == "Your team lead" and card["line"] == "Last time: Talked about his move."
+    assert card["bullets"] == ["Your team lead", "Last time: Talked about his move.", "Starts a fintech job Monday"]
+
+
+def test_dashboard_lists_edits_and_deletes_people_from_this_laptop(db, enroll, monkeypatch):
+    (a, _), (b, tb) = enroll(random_print()), enroll(random_print())
+    store.add_encounter(a, datetime(2026, 10, 1, 12).astimezone(), "x", "Talked about Austin.")
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http, TestClient(server.app, client=("192.168.1.9", 50000)) as phone:
+        listed = [p for p in http.get("/people").json() if p["id"] in (a, b)]
+        assert len(listed) == 2
+        by_id = {p["id"]: p for p in listed}
+        assert by_id[a]["lastTime"] == "Talked about Austin." and by_id[a]["lastMet"].startswith("2026-10-01")
+        assert by_id[b]["lastTime"] is None and by_id[b]["role"] == ""
+        order = [p["id"] for p in http.get("/people").json()]
+        assert order.index(b) < order.index(a)  # b was only enrolled now; its first-met is later than a's last call
+
+        server.tracks[1] = {"id": a, "name": "old"}
+        edited = http.patch(f"/people/{a}", json={"role": " Your team lead ", "name": " New Name "})
+        assert edited.status_code == 200 and (edited.json()["name"], edited.json()["role"]) == ("New Name", "Your team lead")
+        assert server.tracks[1]["name"] == "New Name" and server.tracks[1]["bullets"][0] == "Your team lead"
+        store.set_role(a, "Muse guess", "muse")
+        assert store.person(a)["role"] == "Your team lead"  # a role set in the dashboard is the user's
+        assert http.patch(f"/people/{a}", json={"role": ""}).json()["role"] == ""
+        store.set_role(a, "Muse tries again", "muse")
+        assert store.person(a)["role"] == ""  # a cleared label stays cleared: no label until you type one
+        assert http.patch(f"/people/{a}", json={"role": "r" * 61}).status_code == 422
+        assert http.patch(f"/people/{a}", json={"name": " "}).status_code == 422
+        assert http.patch("/people/p_nobody", json={"role": "x"}).status_code == 404
+
+        assert phone.delete(f"/people/{b}").status_code == 403 and store.person(b)
+        assert phone.delete(f"/people/{b}", headers={"X-Delete-Token": tb}).status_code == 200  # a guest with their token
+        assert http.delete(f"/people/{a}").status_code == 200 and store.person(a) is None  # the dashboard needs no token
+        assert http.delete(f"/people/{a}").status_code == 404
+    server.tracks.pop(1, None)
+
+
 def test_person_returns_notes_newest_first(db, enroll):
     pid, _ = enroll(random_print())
     store.add_note(pid, "Moved to Austin")
@@ -173,13 +263,14 @@ def test_call_end_summarises_only_recognized_people(db, enroll, tmp_path, monkey
     pid, _ = enroll(face)
     quiet, _ = enroll(quiet_face)  # recognized, mostly asks questions, and Muse leaves them out
     name, quiet_name = store.person(pid)["name"], store.person(quiet)["name"]
+    store.set_role(quiet, "Your friend", "user")
     prompts = []
 
     def muse(prompt: str) -> str:
         prompts.append(prompt)
         if "A video call just ended" in prompt:
             return json.dumps({"people": [
-                {"personId": pid, "about": "Runner training for a marathon", "lastTime": "Talked about the March race."},
+                {"personId": pid, "about": "Runner training for a marathon", "lastTime": "Talked about the March race.", "role": "Running buddy"},
                 {"personId": "p_stranger", "about": "Not in the call", "lastTime": "Never stored"},
             ]})
         return json.dumps({"topic": "", "points": [], "actions": []})
@@ -196,11 +287,12 @@ def test_call_end_summarises_only_recognized_people(db, enroll, tmp_path, monkey
         http.post("/transcript", json={"speaker": "speaker_0", "text": "My race is in March.", "final": True})
         http.post("/calls/end")
         deadline = time.time() + 3
-        while (store.last_time(pid) is None or store.last_time(quiet) is None) and time.time() < deadline:
+        while (store.last_time(pid) is None or store.last_time(quiet) is None or not store.person(pid)["role"]) and time.time() < deadline:
             time.sleep(0.05)
+        assert [store.person(p)["role"] for p in (pid, quiet)] == ["Running buddy", "Your friend"]  # Muse fills in a missing role; one you typed stays
 
         summary = next(p for p in prompts if "A video call just ended" in p)
-        roster = summary.split("existing notes):\n")[1].split("\n\nTranscript:")[0]
+        roster = summary.split("<people>\n")[1].split("\n</people>")[0]
         assert roster.splitlines() == [f"{pid}: {name} (nothing yet)", f"{quiet}: {quiet_name} (nothing yet)"]  # no stranger
         assert f"{name}: My race is in March." in summary
         got = http.get(f"/people/{pid}").json()["encounters"]
@@ -240,6 +332,25 @@ def test_remember_from_the_call_enrolls_with_consent_and_no_photo(db, monkeypatc
     assert saved_prints() == 0
 
 
+def test_remembering_someone_too_unlike_their_enrollment_makes_a_second_record(db, enroll, monkeypatch):
+    for name, value in {"call": None, "tracks": {}, "unknown": {}}.items():
+        monkeypatch.setattr(server, name, value)
+    first = random_print()
+    old_pid, _ = enroll(first)
+    today = near(first, store.MATCH_MIN - 0.05)  # same person, but too unlike their enrollment to be recognized
+
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
+        assert http.post("/faces", json={"trackId": 990401, "screenBox": [0, 0, 100, 100], "facePrint": today.tolist()}).json() == {"person": None}
+        got = http.post("/faces/990401/remember", json={"name": "Same Person", "consent": True}).json()
+        try:
+            assert got["id"] != old_pid  # agreed: a duplicate becomes a second record, nothing is merged
+            assert server.card_for(today.tolist())["id"] == got["id"]
+            assert server.card_for(first.tolist())["id"] == old_pid
+            http.post("/faces/gone", json={"trackId": 990401})
+        finally:
+            store.delete_person(got["id"], got["deleteToken"])
+
+
 def test_summary_without_model_key_is_skipped_and_logged(db, enroll, monkeypatch, capsys):
     monkeypatch.delenv("MODEL_API_KEY", raising=False)
     picks.client.cache_clear()
@@ -247,3 +358,26 @@ def test_summary_without_model_key_is_skipped_and_logged(db, enroll, monkeypatch
     server.remember_encounters(server.Call(people={pid: []}, lines=["You: hello"]))  # returns instead of raising
     assert "encounter summaries skipped: Add MODEL_API_KEY to .env" in capsys.readouterr().out
     assert store.last_time(pid) is None
+
+
+def test_person_file_is_private_complete_named_by_id_and_goes_with_the_person(db, enroll, tmp_path, monkeypatch):
+    monkeypatch.setattr(notes, "NOTES", tmp_path)
+    pid, token = enroll(random_print())
+    db.execute("update people set name = %s where id = %s", ("../../Étienne O'Brien/..", pid))
+    store.set_role(pid, "Your team lead", "user")
+    store.add_encounter(pid, datetime(2026, 10, 1, 12).astimezone(), "Engineer\n## injected", "Talked about Austin.")
+    store.add_encounter(pid, datetime(2026, 10, 20, 12).astimezone(), "Engineer", "Planned the launch.")
+    store.add_note(pid, "Has a dog")
+    path = notes.write_person(pid)
+    assert path.parent == tmp_path / "people" and path.name == f"{pid}.md"
+    assert path.stat().st_mode & 0o777 == 0o600
+    text = path.read_text()
+    assert "Who they are to you: Your team lead" in text and "\n## injected" not in text
+    assert text.index("Planned the launch.") < text.index("Talked about Austin.")  # newest first
+    assert "Has a dog" in text
+
+    db.execute("update people set name = 'Renamed' where id = %s", (pid,))
+    assert notes.write_person(pid) == path and "# Renamed" in path.read_text()  # same file after a rename
+
+    store.delete_person(pid, token)
+    assert list((tmp_path / "people").iterdir()) == []

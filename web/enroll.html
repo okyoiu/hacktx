@@ -27,8 +27,15 @@
     .check { display: flex; gap: 10px; align-items: flex-start; font-weight: 500; }
     .check input { flex: none; width: 22px; height: 22px; margin: 1px 0 0; accent-color: var(--accent); }
     img { width: 96px; height: 96px; object-fit: cover; border-radius: 50%; border: 1px solid var(--line); }
+    .field { display: grid; gap: 10px; }
+    .field-label { font-weight: 600; font-size: 15px; }
+    video { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 12px; border: 1px solid var(--line); background: var(--bg); }
+    video, img.mirrored { transform: scaleX(-1); } /* a selfie view reads like a mirror; the photo sent is not flipped */
     button { font: inherit; font-weight: 650; padding: 13px 16px; border-radius: 12px; border: 0; background: var(--accent); color: var(--on-accent); cursor: pointer; }
     button.quiet { background: transparent; color: var(--bad); border: 1px solid var(--line); }
+    button.secondary { font-weight: 600; padding: 11px 16px; border-radius: 10px; background: var(--bg); color: var(--ink); border: 1px solid var(--line); }
+    button.secondary:hover:not(:disabled) { border-color: var(--ink-2); }
+    button.link { justify-self: start; padding: 0; background: none; color: var(--accent); font-weight: 600; font-size: 14px; text-decoration: underline; text-underline-offset: 3px; }
     button:disabled { opacity: 0.5; }
     :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     .msg { font-weight: 600; }
@@ -45,9 +52,8 @@
     <div>
       <strong>What gets saved</strong>
       <ul>
-        <li>A face print made from the selfie you take here</li>
-        <li>That selfie, shown on your name card</li>
-        <li>Notes from calls you're both in</li>
+        <li>A face print made from the selfie you take here (the photo itself isn't kept)</li>
+        <li>Notes from calls you're both in, written by Meta's Muse from what's said on those calls</li>
       </ul>
     </div>
     <p>Everything is deleted after one year, or right away when you ask.</p>
@@ -55,9 +61,16 @@
     <label for="name">Your name
       <input id="name" name="name" type="text" autocomplete="name" required maxlength="80">
     </label>
-    <label for="selfie">Selfie
-      <input id="selfie" name="selfie" type="file" accept="image/*" capture="user" required>
-    </label>
+    <div class="field" id="selfieField" role="group" aria-labelledby="selfieLabel">
+      <span class="field-label" id="selfieLabel">Selfie</span>
+      <div class="field" id="camera" hidden>
+        <video id="video" autoplay playsinline muted aria-label="Camera preview" hidden></video>
+        <button type="button" class="secondary" id="openCamera">Open camera</button>
+        <button type="button" class="secondary" id="shoot" hidden>Take photo</button>
+        <button type="button" class="link" id="useFile">Choose a photo instead</button>
+      </div>
+      <input id="selfie" name="selfie" type="file" accept="image/*" capture="user" aria-labelledby="selfieLabel">
+    </div>
     <label class="check" for="consent">
       <input id="consent" type="checkbox" required>
       <span>I agree to let Hello Again recognize my face and keep notes about our calls.</span>
@@ -78,23 +91,91 @@
 
 <script>
   const $ = (id) => document.getElementById(id)
+  const say = (text) => { $('msg').className = 'msg error'; $('msg').textContent = text }
+  let shot = null // the photo taken with this laptop's camera, as a JPEG
+  let stream = null
+
+  // Browsers allow the camera only on a secure page, which this laptop's localhost is; elsewhere the file
+  // input stays, and on phones its capture attribute opens the front camera anyway.
+  const canUseCamera = Boolean(navigator.mediaDevices?.getUserMedia)
+  $('camera').hidden = !canUseCamera
+  $('selfie').hidden = canUseCamera
+
+  function showPreview(src, mirrored) {
+    $('preview')?.remove()
+    const img = new Image()
+    img.id = 'preview'
+    img.alt = 'Your selfie'
+    img.src = src
+    img.classList.toggle('mirrored', mirrored)
+    $('selfieLabel').after(img)
+  }
+
+  function stopCamera() {
+    stream?.getTracks().forEach((track) => track.stop())
+    stream = null
+    $('video').srcObject = null
+    $('video').hidden = true
+    $('shoot').hidden = true
+    $('openCamera').hidden = false
+  }
+
+  $('openCamera').addEventListener('click', async () => {
+    $('openCamera').disabled = true
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 } }, audio: false })
+      $('video').srcObject = stream
+      $('video').hidden = false
+      $('shoot').hidden = false
+      $('openCamera').hidden = true
+      $('msg').textContent = ''
+      $('preview')?.remove() // retaking: the live view replaces the last photo
+      shot = null
+    } catch {
+      say("Couldn't open the camera. Allow camera access in your browser, or choose a photo instead.")
+      $('selfie').hidden = false
+    } finally {
+      $('openCamera').disabled = false
+    }
+  })
+
+  $('shoot').addEventListener('click', () => {
+    const video = $('video')
+    if (!video.videoWidth) return say('The camera is still starting. Try again in a second.')
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    canvas.getContext('2d').drawImage(video, 0, 0)
+    canvas.toBlob((blob) => {
+      shot = blob
+      $('selfie').value = '' // the photo just taken replaces any chosen file
+      showPreview(URL.createObjectURL(blob), true)
+      stopCamera() // the camera light goes off as soon as the photo is taken
+      $('openCamera').textContent = 'Retake'
+    }, 'image/jpeg', 0.92)
+  })
+
+  $('useFile').addEventListener('click', () => {
+    $('selfie').hidden = false
+    $('selfie').click()
+  })
 
   $('selfie').addEventListener('change', () => {
     const file = $('selfie').files[0]
     $('preview')?.remove()
     if (!file) return
-    const img = new Image()
-    img.id = 'preview'
-    img.alt = 'Your selfie'
-    img.src = URL.createObjectURL(file)
-    $('selfie').closest('label').after(img)
+    shot = null
+    stopCamera()
+    $('openCamera').textContent = 'Open camera'
+    showPreview(URL.createObjectURL(file), false)
   })
+
+  addEventListener('pagehide', stopCamera)
 
   $('form').addEventListener('submit', async (e) => {
     e.preventDefault()
     const name = $('name').value.trim()
-    const file = $('selfie').files[0]
-    const say = (text) => { $('msg').className = 'msg error'; $('msg').textContent = text }
+    const file = shot || $('selfie').files[0]
     if (!name) return say('Add your name so people know who you are.')
     if (!file) return say('Take a selfie so Hello Again can recognize you.')
     if (!$('consent').checked) return say('Tick the box to agree. Nothing is saved without it.')
@@ -102,7 +183,9 @@
     const body = new FormData()
     body.append('name', name)
     body.append('consent', 'true')
-    body.append('selfie', file)
+    const code = new URLSearchParams(location.search).get('code') // from the invite link
+    if (code) body.append('code', code)
+    body.append('selfie', file, file.name || 'selfie.jpg')
     $('submit').disabled = true
     $('msg').className = 'msg'
     $('msg').textContent = 'Enrolling…'

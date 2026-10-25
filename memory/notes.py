@@ -1,4 +1,6 @@
 """End-of-call note in notes/YYYY-MM-DD-HHMM.md: who you saw, what you learned about them, key points and AI answers."""
+import os
+import re
 from datetime import date, datetime
 from pathlib import Path
 
@@ -12,10 +14,11 @@ def day(d: date) -> str:
 
 
 def render(started: datetime, people: list[dict], points: list[str], responses: list[dict]) -> str:
-    """people: [{name, firstMet, learned}]; points: insight points; responses: finished response events."""
+    """people: [{id, name, firstMet, learned}]; points: insight points; responses: finished response events."""
     out = [f"# Call on {started:%A} {day(started)}, {started:%H:%M}", ""]
     for p in people:
-        out += [f"## {p['name']}", "", f"First met {day(p['firstMet'])}.", ""]
+        # the id marks the section so forget() can find it; a name can't add lines or headings of its own
+        out += [f"## {' '.join(p['name'].split())} <!-- {p['id']} -->", "", f"First met {day(p['firstMet'])}.", ""]
         out += [f"- {text}" for text in p["learned"]] or ["Nothing new this call."]
         out.append("")
     if points:
@@ -39,4 +42,43 @@ def write(started: datetime, learned: dict[str, list[str]], points: list[str], r
     path = NOTES / f"{started:%Y-%m-%d-%H%M}.md"
     with path.open("a") as f:  # a second call starting in the same minute appends instead of overwriting
         f.write(render(started, people, points, responses) + "\n")  # blank line before any call appended later
+    return path
+
+
+def forget(pid: str) -> None:
+    """Remove a person's section from every call note, for someone who deleted themselves or whose consent ran out."""
+    section = re.compile(rf"^## [^\n]*<!-- {re.escape(pid)} -->\n.*?(?=^#{{1,2}} |\Z)", re.M | re.S)
+    (NOTES / "people" / f"{pid}.md").unlink(missing_ok=True)
+    for path in NOTES.glob("*.md"):
+        text = path.read_text()
+        if (cleaned := section.sub("", text)) != text:
+            path.write_text(cleaned)
+
+
+def one_line(text: str) -> str:
+    return " ".join(text.split())
+
+
+def write_person(pid: str) -> Path | None:
+    """notes/people/<id>.md: who they are to you, what they're about and every conversation, newest first.
+    Rewritten whole each time. The file is named by id, so names stay out of paths and can't escape the folder."""
+    p = store.person(pid)
+    if p is None:
+        return None
+    folder = NOTES / "people"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{pid}.md"
+    about = next((e["about"] for e in p["encounters"] if e["about"]), "")
+    out = [f"# {one_line(p['name'])}", "", f"Who they are to you: {one_line(p['role']) or 'not set'}", "",
+           f"First met {day(p['firstMet'])}.", ""]
+    if about:
+        out += ["## About", "", one_line(about), ""]
+    out += ["## Conversations", ""]
+    out += [f"- {day(e['metAt'].astimezone())}: {one_line(e['lastTime'])}" for e in p["encounters"]] or ["Nothing yet."]
+    if p["notes"]:
+        out += ["", "## Notes", ""] + [f"- {one_line(n['text'])}" for n in p["notes"]]
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # about real people: only this user can read it
+    with os.fdopen(fd, "w") as f:
+        f.write("\n".join(out) + "\n")
+    path.chmod(0o600)  # O_CREAT's mode is skipped for a file that already exists
     return path

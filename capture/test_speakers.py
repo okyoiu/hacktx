@@ -64,3 +64,25 @@ def test_lip_gap_reads_open_mouths_wider_on_the_sample_photo():
     faces = sorted(mouths_in(get_image("t1")), key=lambda f: f.bbox[0])  # six people, left to right
     assert len(faces) == 6
     assert lip_gap(faces[3]) > 2 * lip_gap(faces[1])  # laughing, mouth open vs. lips closed
+
+
+def test_only_lips_inside_the_lines_window_and_on_big_enough_faces_count():
+    namer = Namer()
+    for i in range(3):
+        start = 10 * i
+        rng = np.random.default_rng(i)
+        for k in range(15):  # Maya talked, but 5 s before this line: outside the lead-in
+            namer.saw(MAYA, lips(rng.uniform(0.0, 0.07)), start - 6 + k / 5)
+        namer.caption(start, "B", False)
+        for k in range(15):  # during the line she is still
+            namer.saw(MAYA, lips(0.02), start + k / 5)
+        assert namer.caption(start + 3, "B", True) is None
+
+    tiny = Namer()
+    small = lips(0.0)
+    small.bbox = [0, 0, 100, 30]  # under MIN_FACE: ignored, so no evidence
+    for i in range(6):
+        for k in range(15):
+            tiny.saw(MAYA, small, 10 * i + k / 5)
+        assert tiny.caption(10 * i + 3, "B", True) is None
+    assert not tiny.gaps

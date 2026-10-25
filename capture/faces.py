@@ -3,7 +3,7 @@
 Run: uv run --env-file .env python -m capture.faces --region 0,38,1100,700
 The region is the call window as x,y,width,height in screen points (on a Mac: the numbers Cmd+Shift+4 shows).
 On a Mac, --app zoom.us (or FaceTime, 'Google Chrome', …) follows that app's window instead, even when you move it;
-with neither, it follows the largest window of a known call app (capture/window.py).
+with neither, it follows the largest window of a known call app (capture/window.py), waiting quietly until one appears.
 Without a live call: --video call.mp4 reads a recording instead; its pixels stand in for screen points.
 It also names Muse's voices from whose lips move (capture/speakers.py) and tells memory with POST /speakers.
 Nothing here shows frames or boxes to anyone; tools/cv_check.py is the debug view.
@@ -24,22 +24,38 @@ from ultralytics import YOLO
 
 from capture.embed import faces_in, mouths_in
 from capture.speakers import Namer, listen
-from capture.window import CALL_APPS, apps_on_screen, call_window
+from capture.window import CALL_APPS, call_window
 
 PERSON = 0  # COCO class id YOLO uses for people
 FOLLOW_EVERY = 3  # seconds between window position checks (each takes ~0.1 s)
+RETRY = 3.0  # seconds before another InsightFace pass for a person whose face wasn't visible last time
 
 
-def screen_frames(region: tuple[int, int, int, int], follow: str | None = None):
-    """Yield (frame, (x, y, width)) of the region in screen points; with follow (an app name), move with its window."""
-    checked = time.time()
+def screen_frames(region: tuple[int, int, int, int] | None, follow: list[str] | None = None):
+    """Yield (frame, (x, y, width)) of the region in screen points; with follow (app names), move with that app's window.
+    While there is no such window (not started yet, or the user left the call) it yields (None, ...) instead and keeps
+    looking, logging one line when that changes."""
+    checked = time.time() if region else 0  # no region yet: look right away
+    apps, shown = follow, None
     with mss.MSS() as screen:
         while True:
             if follow and time.time() - checked > FOLLOW_EVERY:
                 # shortcut: follows the app's largest window, so a bigger second window of the same app (another browser
                 # window) takes over; follow kCGWindowNumber instead if that bites
-                found, checked = call_window([follow]), time.time()
-                region = found[1] if found else region  # minimized or closed: keep the last spot
+                why = "waiting for a call window"
+                try:
+                    found = call_window(apps)
+                except SystemExit as e:  # the window list isn't readable (no osascript, no permission): keep waiting
+                    found, why = None, str(e)
+                checked = time.time()
+                region, apps = (found[1], [found[0]]) if found else (None, follow)  # stick with the app we found
+                state = f"following the {found[0]} window" if found else why
+                if state != shown:
+                    print(state)
+                    shown = state
+            if region is None:
+                yield None, (0, 0, 1)
+                continue
             x, y, w, h = region
             frame = cv2.cvtColor(np.array(screen.grab({"left": x, "top": y, "width": w, "height": h})), cv2.COLOR_BGRA2BGR)
             yield frame, (x, y, w)
@@ -90,18 +106,15 @@ def main() -> None:
         frames = screen_frames(tuple(int(v) for v in args.region.split(",")))
     elif sys.platform != "darwin":
         ap.error("pass --region or --video")
-    elif found := call_window([args.app] if args.app else CALL_APPS):
-        app, region = found  # stick with this app from now on, even if another call app opens a bigger window
-        print(f"following the {app} window, now at --region {','.join(map(str, region))}")
-        frames = screen_frames(region, follow=app)
-    else:
-        ap.error(f"no {args.app or 'call app'} window on screen; apps with windows now: {', '.join(apps_on_screen())}")
+    else:  # also how the overlay app starts us, before any call: wait for a call window to appear
+        frames = screen_frames(None, follow=[args.app] if args.app else list(CALL_APPS))
 
     model = YOLO("yolo26n.pt")  # downloads on first run
     memory_url = os.getenv("MEMORY_URL", "http://localhost:8000")
     http = httpx.Client(base_url=memory_url, timeout=10)
     printed: set[int] = set()  # track ids whose face print the memory service already has
     people: dict[int, dict] = {}  # track id -> the recognized person memory replied with
+    tried: dict[int, float] = {}  # track id -> when InsightFace last looked for its face
     namer, captions = Namer(), deque()
     threading.Thread(target=listen, args=(memory_url.replace("http", "ws", 1) + "/ws", captions), daemon=True).start()
 
@@ -114,15 +127,17 @@ def main() -> None:
 
     for frame, (x, y, w) in frames:
         started = time.time()
-        scale = frame.shape[1] / w  # pixels per screen point (2.0 on Retina)
-        result = model.track(frame, persist=True, classes=[PERSON], verbose=False)[0]
+        scale = frame.shape[1] / w if frame is not None else 1  # pixels per screen point (2.0 on Retina)
+        result = model.track(frame, persist=True, classes=[PERSON], verbose=False)[0] if frame is not None else None
 
-        live: set[int] = set()
-        if result.boxes is not None and result.boxes.is_track:
+        live: set[int] = set()  # empty while the call window is gone, so every card clears
+        if result is not None and result.boxes is not None and result.boxes.is_track:
             boxes = dict(zip(result.boxes.id.int().tolist(), result.boxes.xyxy.tolist()))
             now = time.monotonic()
-            if boxes.keys() - printed:
+            wanting = {t for t in boxes.keys() - printed if now - tried.get(t, -RETRY) >= RETRY}
+            if wanting:
                 found = assign(faces_in(frame), boxes)  # one full InsightFace pass gives prints and lips
+                tried.update(dict.fromkeys(wanting, now))
             elif namer.wants_lips([p["id"] for p in people.values()], now):
                 found = assign(mouths_in(frame), boxes)
             else:
@@ -134,8 +149,8 @@ def main() -> None:
                 live.add(tid)
                 body = {"trackId": tid, "screenBox": [x + x1 / scale, y + y1 / scale, (x2 - x1) / scale, (y2 - y1) / scale]}
                 if tid not in printed:
-                    if tid not in found:
-                        continue  # face not visible yet (turned away); try again next frame
+                    if tid not in wanting or tid not in found:
+                        continue  # face not visible yet (turned away); looked again after RETRY
                     body["facePrint"] = found[tid].normed_embedding.tolist()
                     printed.add(tid)
                 reply = send("/faces", body)
@@ -145,6 +160,7 @@ def main() -> None:
                     people[tid] = reply["person"]
                     namer.met(reply["person"])
 
+        tried = {t: v for t, v in tried.items() if t in live}
         for tid in printed - live:
             send("/faces/gone", {"trackId": tid})
             printed.discard(tid)
