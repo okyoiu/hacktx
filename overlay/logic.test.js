@@ -1,7 +1,7 @@
 // node --test (npm test in overlay/)
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { ROUTES, elapsed, takesOver, cleanName, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS } = require('./logic')
+const { ROUTES, elapsed, takesOver, cleanName, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS } = require('./logic')
 
 test('main only forwards the memory API calls the overlay makes', () => {
   for (const route of ['/listening', '/ask', '/actions/x1', '/actions/act_2-b']) assert.ok(ROUTES.test(route), route)
@@ -171,4 +171,13 @@ test('the bar warns about each part that is down, and says nothing when all is w
   assert.equal(launchWarning({ db: 'ok', server: 'ok', faces: 'restarting' }), '')
   assert.equal(launchWarning({ db: 'ok', faces: 'down', transcribe: 'down' }), 'Face capture · Transcription')
   assert.equal(launchWarning({ nonsense: 'down' }), '')
+})
+
+test('the invite link carries the code only when one is set, URL-encoded', () => {
+  assert.equal(inviteLink('http://192.168.1.5:8000/enroll', ''), 'http://192.168.1.5:8000/enroll')
+  assert.equal(inviteLink('http://192.168.1.5:8000/enroll', undefined), 'http://192.168.1.5:8000/enroll')
+  assert.equal(inviteLink('http://192.168.1.5:8000/enroll', 'taco'), 'http://192.168.1.5:8000/enroll?code=taco')
+  assert.equal(inviteLink('http://x.test/enroll', 'a b&c=d'), 'http://x.test/enroll?code=a+b%26c%3Dd')
+  assert.equal(inviteLink('http://x.test/enroll?lang=en', 'taco'), 'http://x.test/enroll?lang=en&code=taco')
+  assert.equal(inviteLink('not a url', 'taco'), 'not a url')
 })

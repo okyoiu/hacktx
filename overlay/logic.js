@@ -137,4 +137,15 @@ function launchWarning(statuses) {
   return Object.entries(statuses).filter(([, state]) => state === 'down').map(([name]) => PART_NAMES[name]).filter(Boolean).join(' · ')
 }
 
-if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver, cleanName, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
+// The invite link guests open: the enroll page, with ?code= when ENROLL_CODE is set.
+function inviteLink(base, code) {
+  try {
+    const url = new URL(base)
+    if (code) url.searchParams.set('code', code)
+    return url.href
+  } catch {
+    return base
+  }
+}
+
+if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver, cleanName, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }

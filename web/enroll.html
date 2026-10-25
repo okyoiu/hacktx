@@ -53,7 +53,7 @@
       <strong>What gets saved</strong>
       <ul>
         <li>A face print made from the selfie you take here (the photo itself isn't kept)</li>
-        <li>Notes from calls you're both in</li>
+        <li>Notes from calls you're both in, written by Meta's Muse from what's said on those calls</li>
       </ul>
     </div>
     <p>Everything is deleted after one year, or right away when you ask.</p>
@@ -183,6 +183,8 @@
     const body = new FormData()
     body.append('name', name)
     body.append('consent', 'true')
+    const code = new URLSearchParams(location.search).get('code') // from the invite link
+    if (code) body.append('code', code)
     body.append('selfie', file, file.name || 'selfie.jpg')
     $('submit').disabled = true
     $('msg').className = 'msg'

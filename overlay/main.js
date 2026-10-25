@@ -9,8 +9,13 @@
 const { app, BrowserWindow, clipboard, globalShortcut, ipcMain, screen, shell, systemPreferences } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
-const { validCall, webUrl } = require('./logic')
+const { inviteLink, validCall, webUrl } = require('./logic')
 const { createLauncher } = require('./launcher')
+
+// The repo's .env supplies ENROLL_CODE, ENROLL_URL and MEMORY_URL; variables already set win.
+try {
+  process.loadEnvFile(path.join(__dirname, '..', '.env'))
+} catch {}
 
 const MOCK = process.argv.includes('--mock')
 const MEMORY_URL = process.env.MEMORY_URL || 'http://localhost:8000'
@@ -280,7 +285,7 @@ on('cards-focus', (_e, on) => {
     windows.cards.setFocusable(false)
   }
 })
-on('copy-invite', () => clipboard.writeText(ENROLL_URL))
+on('copy-invite', () => clipboard.writeText(inviteLink(ENROLL_URL, process.env.ENROLL_CODE)))
 on('ask', openAsk)
 on('people-toggle', togglePeople)
 on('toggle-all', toggleAll)
