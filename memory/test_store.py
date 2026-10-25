@@ -356,3 +356,26 @@ def test_summary_without_model_key_is_skipped_and_logged(db, enroll, monkeypatch
     server.remember_encounters(server.Call(people={pid: []}, lines=["You: hello"]))  # returns instead of raising
     assert "encounter summaries skipped: Add MODEL_API_KEY to .env" in capsys.readouterr().out
     assert store.last_time(pid) is None
+
+
+def test_person_file_is_private_complete_named_by_id_and_goes_with_the_person(db, enroll, tmp_path, monkeypatch):
+    monkeypatch.setattr(notes, "NOTES", tmp_path)
+    pid, token = enroll(random_print())
+    db.execute("update people set name = %s where id = %s", ("../../Étienne O'Brien/..", pid))
+    store.set_role(pid, "Your team lead", "user")
+    store.add_encounter(pid, datetime(2026, 10, 1, 12).astimezone(), "Engineer\n## injected", "Talked about Austin.")
+    store.add_encounter(pid, datetime(2026, 10, 20, 12).astimezone(), "Engineer", "Planned the launch.")
+    store.add_note(pid, "Has a dog")
+    path = notes.write_person(pid)
+    assert path.parent == tmp_path / "people" and path.name == f"{pid}.md"
+    assert path.stat().st_mode & 0o777 == 0o600
+    text = path.read_text()
+    assert "Who they are to you: Your team lead" in text and "\n## injected" not in text
+    assert text.index("Planned the launch.") < text.index("Talked about Austin.")  # newest first
+    assert "Has a dog" in text
+
+    db.execute("update people set name = 'Renamed' where id = %s", (pid,))
+    assert notes.write_person(pid) == path and "# Renamed" in path.read_text()  # same file after a rename
+
+    store.delete_person(pid, token)
+    assert list((tmp_path / "people").iterdir()) == []

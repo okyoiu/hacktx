@@ -123,13 +123,19 @@ def remember_encounters(ended: Call) -> None:
         people = {p["id"]: {"name": p["name"], "notes": [n["text"] for n in p["notes"][:5]]}
                   for p in map(store.person, ended.people) if p}
         if not people or not ended.lines:
-            return
+            return  # the finally below still refreshes their files
         for s in picks.summarise(people, ended.lines):
             store.add_encounter(s["personId"], ended.started.astimezone(), s["about"], s["lastTime"])
             if s["role"]:
                 store.set_role(s["personId"], s["role"], "muse")  # never replaces a role the user typed
     except Exception as e:  # e.g. no MODEL_API_KEY: the call still ends and its note is still written
         print(f"encounter summaries skipped: {e}")
+    finally:
+        for pid in ended.people:
+            try:
+                notes.write_person(pid)
+            except Exception as e:
+                print(f"person file skipped: {e}")
 
 
 def saw_face(card: dict | None) -> None:
@@ -497,6 +503,7 @@ async def edit_person(pid: str, body: PersonEdit):
     if body.role is not None:  # what you type here is yours: Muse won't replace it (clearing it lets Muse suggest again)
         await asyncio.to_thread(store.set_role, pid, body.role, "user")
     updated = await asyncio.to_thread(store.person, pid)
+    await asyncio.to_thread(notes.write_person, pid)
     for t, shown in tracks.items():  # the next frame of a face on screen carries the new name and role
         if shown and shown["id"] == pid:
             tracks[t] = await asyncio.to_thread(card, updated)
