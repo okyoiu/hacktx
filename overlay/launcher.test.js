@@ -5,7 +5,7 @@ const { EventEmitter } = require('node:events')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
-const { createLauncher } = require('./launcher')
+const { createLauncher, trimLogs, MAX_LOG } = require('./launcher')
 
 function setup({ running = [], dockerStartFails = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-'))
@@ -73,4 +73,29 @@ test('quitting stops what we started, not what was already running, and nothing 
   started[0].emit('exit', null)
   assert.equal(uvChildren(children).length, started.length, 'no restart while quitting')
   assert.ok(calls.some((c) => c[0] === 'docker' && c[1] === 'stop'), 'we started the db, so we stop it')
+})
+
+test('logs are private to this account, even ones an older version made', async () => {
+  if (process.platform === 'win32') return
+  const { launcher, root } = setup({ running: ['db'] })
+  fs.mkdirSync(path.join(root, 'logs'))
+  fs.writeFileSync(path.join(root, 'logs', 'server.log'), 'old', { mode: 0o644 })
+  await launcher.start()
+  for (const name of fs.readdirSync(path.join(root, 'logs'))) {
+    assert.equal(fs.statSync(path.join(root, 'logs', name)).mode & 0o077, 0, name)
+  }
+})
+
+test('a log over 1 MB keeps only its last 1 MB; small logs and other files are left alone', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'logs-'))
+  fs.writeFileSync(path.join(dir, 'big.log'), 'a'.repeat(MAX_LOG) + 'END')
+  fs.writeFileSync(path.join(dir, 'small.log'), 'hi')
+  fs.writeFileSync(path.join(dir, 'other.txt'), 'b'.repeat(MAX_LOG * 2))
+  trimLogs(dir)
+  const big = fs.readFileSync(path.join(dir, 'big.log'), 'utf8')
+  assert.equal(big.length, MAX_LOG)
+  assert.ok(big.endsWith('END'))
+  assert.equal(fs.readFileSync(path.join(dir, 'small.log'), 'utf8'), 'hi')
+  assert.equal(fs.statSync(path.join(dir, 'other.txt')).size, MAX_LOG * 2)
+  trimLogs(path.join(dir, 'missing')) // no logs folder yet: nothing to do
 })

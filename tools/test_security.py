@@ -238,7 +238,6 @@ def test_a_call_note_is_readable_only_by_you(monkeypatch, tmp_path):
     assert path.stat().st_mode & 0o077 == 0
 
 
-@pytest.mark.xfail(strict=True, reason="R4-1: launcher logs are created world-readable and keep everything forever")
 def test_launcher_logs_are_private():
     assert re.search(r"openSync\([^)]*0o600", (ROOT / "overlay/launcher.js").read_text())
 
