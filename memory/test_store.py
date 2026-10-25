@@ -568,3 +568,28 @@ def test_the_schema_never_gives_connector_by_default_or_adds_wording_people_neve
     scope_lines = [l for l in lines if "scope" in l]
     assert scope_lines and not any("connector" in l for l in scope_lines)  # a default or an update never includes it
     assert not any(re.search(r"update consents.*(facts|voice)", l) for l in lines)  # an update adds nothing
+
+
+def test_places_from_ai_answers_go_to_the_person_they_concern_and_into_their_file(db, enroll, tmp_path, monkeypatch):
+    monkeypatch.setattr(notes, "NOTES", tmp_path)
+    pid, token = enroll(random_print())
+    prompts = []
+
+    def muse(prompt: str, seconds=None) -> str:
+        prompts.append(prompt)
+        return json.dumps({"people": [{"personId": pid, "lastTime": "Chat.", "places": ["Ledge Climbing Gym, 1 Main St", "ledge climbing gym, 1 main st", "Zilker Park"]}]})
+
+    monkeypatch.setattr(picks, "chat", muse)
+    answered = [{"query": "Find climbing gyms", "text": "Ledge Climbing Gym · 1 Main St", "kind": "places", "sources": []},
+                {"query": "Define bouldering", "text": "Climbing without ropes.", "kind": "define", "sources": []}]
+    server.remember_encounters(server.Call(people={pid: []}, lines=["x: I want to climb"], responses=answered))
+    assert "<answers>\nFind climbing gyms: Ledge Climbing Gym · 1 Main St\n</answers>" in prompts[0]  # only places, events and searches
+    assert "Define bouldering" not in prompts[0]
+    assert [m["text"] for m in store.person(pid)["mentions"]] == ["Zilker Park", "Ledge Climbing Gym, 1 Main St"]
+    text = (tmp_path / "people" / f"{pid}.md").read_text()
+    assert "## Places and events (from AI answers)\n\n- Zilker Park\n- Ledge Climbing Gym, 1 Main St" in text
+    assert text.index("## Places and events") < text.index("## Conversations")  # sits with the other Muse-written parts
+
+    server.remember_encounters(server.Call(people={pid: []}, lines=["x: hi"]))  # no answers this call: nothing is stored, whatever Muse says
+    assert len(store.person(pid)["mentions"]) == 2 and "(none)" in prompts[1]
+    assert store.delete_person(pid, token) and db.execute("select count(*) from mentions where person_id = %s", (pid,)).fetchone()[0] == 0

@@ -24,9 +24,11 @@ def render(started: datetime, people: list[dict], points: list[str], responses: 
     if points:
         out += ["## Key points", ""] + [f"- {p}" for p in points] + [""]
     if responses:
-        out += ["## AI responses", ""]
+        out += ["## Asked during the call", ""]
     for r in responses:
-        out += [f"### {r['query']}", "", r["text"], ""]
+        # a recall carries its person's id, so forget() can take it out; Muse text can't start a heading of its own
+        marker = f" <!-- {r['personId']} -->" if r.get("personId") else ""
+        out += [f"### {one_line(r['query'])}{marker}", "", re.sub(r"^#", r"\\#", r["text"], flags=re.M), ""]
         if r["sources"]:
             out += ["Sources: " + ", ".join(f"[{s['title']}]({s['url']})" for s in r["sources"]), ""]
     return "\n".join(out)
@@ -67,7 +69,7 @@ GONE = "someone who deleted their data"
 def forget(pid: str, name: str | None = None) -> None:
     """For someone who deleted themselves or whose consent ran out: drop their section and file, and say GONE
     wherever else their name appears in old call notes (key points, AI answers)."""
-    section = re.compile(rf"^## [^\n]*<!-- {re.escape(pid)} -->\n.*?(?=^#{{1,2}} |\Z)", re.M | re.S)
+    section = re.compile(rf"^#{{2,3}} [^\n]*<!-- {re.escape(pid)} -->\n.*?(?=^#{{1,3}} |\Z)", re.M | re.S)  # their section, and recalls about them
     mention = re.compile(rf"\b{re.escape(name)}\b", re.I) if name and name.strip() else None
     (NOTES / "people" / f"{pid}.md").unlink(missing_ok=True)
     for path in NOTES.glob("*.md"):
@@ -103,6 +105,8 @@ def write_person(pid: str) -> Path | None:
            f"- First met: {day(p['firstMet'])}"]
     if p.get("facts"):
         out += ["", "## Facts (Muse)", ""] + [f"- {one_line(f['text'])}" for f in p["facts"]]
+    if p.get("mentions"):
+        out += ["", "## Places and events (from AI answers)", ""] + [f"- {one_line(m['text'])}" for m in p["mentions"]]
     out += ["", "## Conversations", ""]
     out += [f"- {day(e['metAt'].astimezone())}: {one_line(e['lastTime'])}" for e in p["encounters"]] or ["Nothing yet."]
     if p["notes"]:
