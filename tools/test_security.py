@@ -339,7 +339,6 @@ def test_the_app_build_never_packs_secrets_or_data():
     assert "codesign" not in code or "'--sign', '-'" in code
 
 
-@pytest.mark.xfail(strict=True, reason="R5-6: the recap kept for a late overlay still names someone who deleted themselves")
 def test_a_deleted_person_leaves_the_stored_recap(monkeypatch):
     recap = {"type": "recap", "topic": "", "points": [], "actions": [], "people": [{"id": "p_zed", "name": "Zed", "role": "", "lastTime": "x"}]}
     monkeypatch.setattr(server, "latest_recap", recap, raising=False)

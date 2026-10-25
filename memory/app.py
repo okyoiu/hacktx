@@ -772,13 +772,21 @@ async def edit_person(pid: str, body: PersonEdit):
 
 
 @app.delete("/people/{pid}")
-def forget(pid: str, request: Request, x_delete_token: str | None = Header(default=None)):
+async def forget(pid: str, request: Request, x_delete_token: str | None = Header(default=None)):
     mine = from_this_laptop(request)  # the dashboard needs no token; a phone on the Wi-Fi does
     if not mine and x_delete_token is None:
         raise HTTPException(403, "That delete link doesn't match. Nothing was deleted.")
-    if not store.delete_person(pid, None if mine else x_delete_token):  # also clears them from notes/
+    if not await asyncio.to_thread(store.delete_person, pid, None if mine else x_delete_token):  # also clears them from notes/
         raise HTTPException(404 if mine else 403, "Nobody with that id." if mine else "That delete link doesn't match. Nothing was deleted.")
-    for t, card in tracks.items():  # not named on screen, and not sent to Muse, from now on
+    if call:
+        call.people.pop(pid, None)  # not in this call's note, summary or recap from now on
+    if latest_recap:
+        latest_recap["people"] = [p for p in latest_recap["people"] if p["id"] != pid]
+    snippets.pop(pid, None)
+    live.pop(pid, None)
+    for t, card in list(tracks.items()):  # their card comes off the screen, and nothing about them goes to Muse again
         if card and card["id"] == pid:
-            tracks[t] = None
+            for state in (tracks, unknown, boxes, debug_scores):
+                state.pop(t, None)
+            await push({"type": "face_gone", "trackId": t})
     return {"deleted": pid}
