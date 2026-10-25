@@ -46,7 +46,7 @@ def fake_serpapi(url, params, timeout):
 def http(monkeypatch, tmp_path):
     """A fresh server: no call, transcript, insights or faces, and listening."""
     state = {"call": None, "history": [], "fresh": [], "actions": {}, "latest_insights": None, "tracks": {}, "unknown": {},
-             "speakers": {}, "clients": set(), "last_transcript_at": None, "last_refresh": None, "latest_window": None, "listening": {"type": "listening", "on": True, "startedAt": "2026-10-24T20:00:00Z"}}
+             "speakers": {}, "clients": set(), "last_transcript_at": None, "last_refresh": None, "latest_window": None, "latest_recap": None, "listening": {"type": "listening", "on": True, "startedAt": "2026-10-24T20:00:00Z"}}
     for name, value in state.items():
         monkeypatch.setattr(server, name, value)
     monkeypatch.setattr(server, "INSIGHTS_SECONDS", 0.3)
@@ -570,3 +570,49 @@ def test_window_rect_is_validated_broadcast_and_replayed_to_a_late_overlay(http,
         ws.receive_json()
         assert ws.receive_json() == {"type": "window", "rect": None}
     assert TestClient(server.app, client=WIFI).post("/window", json={"rect": None}).status_code == 403
+
+
+def test_recap_is_sent_when_the_call_ends_with_this_calls_last_time_and_kept_for_a_late_overlay(http, events, monkeypatch):
+    def muse(prompt: str, seconds=None) -> str:
+        if "A video call just ended" in prompt:
+            return json.dumps({"people": [{"personId": "p_jordan", "about": "Engineer", "lastTime": "Talked about Austin.", "role": ""}]})
+        if "New lines:" in prompt:
+            return json.dumps({"topic": "Jordan's move", "points": ["Moved to Austin"],
+                               "actions": [{"kind": "followups", "label": "Suggest follow-up questions"}]})
+        return "Answer from Muse"
+
+    monkeypatch.setattr(picks, "chat", muse)
+    monkeypatch.setattr(store, "person", lambda pid: {"id": pid, "name": "Jordan Lee", "role": "Your team lead", "firstMet": date(2026, 10, 1),
+                                                       "encounters": [], "notes": []} if pid == "p_jordan" else None)
+    stored = []
+    monkeypatch.setattr(store, "add_encounter", lambda *args: stored.append(args))
+    monkeypatch.setattr(notes, "write_person", lambda pid: None)
+    server.tracks[1] = JORDAN
+    http.post("/faces", json={"trackId": 1, "screenBox": [0, 0, 10, 10]})
+    http.post("/transcript", json=line("speaker_0", "We moved to Austin."))
+    wait_for(lambda: server.latest_insights is not None)
+    action = server.latest_insights["actions"][0]
+
+    http.post("/calls/end")
+    wait_for(lambda: any(e["type"] == "recap" for e in events))
+    recap = next(e for e in events if e["type"] == "recap")
+    assert recap == {"type": "recap", "topic": "Jordan's move", "points": ["Moved to Austin"], "actions": [action],
+                     "people": [{"id": "p_jordan", "name": "Jordan Lee", "role": "Your team lead", "lastTime": "Talked about Austin."}]}
+    assert [e["type"] for e in events if e["type"] == "recap"] == ["recap"] and stored  # once per call
+
+    with http.websocket_connect("/ws") as ws:  # an overlay that starts after the call ended
+        assert ws.receive_json()["type"] == "listening"
+        assert ws.receive_json() == recap
+    assert http.post(f"/actions/{action['id']}").status_code == 200  # the recap's actions keep working
+
+    http.post("/transcript", json=line("speaker_0", "A new call begins."))
+    with http.websocket_connect("/ws") as ws:
+        types = [ws.receive_json()["type"]]
+        assert "recap" not in types and server.latest_recap is None
+
+
+def test_no_recap_when_there_was_no_call_or_nothing_happened_in_it(http, events, monkeypatch):
+    monkeypatch.setattr(picks, "chat", FakeMuse())
+    assert http.post("/calls/end").status_code == 200
+    time.sleep(0.2)
+    assert not any(e["type"] == "recap" for e in events) and server.latest_recap is None

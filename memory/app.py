@@ -48,6 +48,7 @@ history: list[str] = []  # lines Muse Spark has already seen, context for the ne
 fresh: list[str] = []  # final lines since the last insights refresh
 listening: dict = {"type": "listening", "on": True, "startedAt": utc_now()}  # latest listening event
 latest_insights: dict | None = None  # latest insights event
+latest_recap: dict | None = None  # recap of the call that just ended, until the next call starts
 latest_window: dict | None = None  # latest window event: where the followed call window is, for Ask AI placement
 last_refresh: float | None = None  # when the last insights refresh started (monotonic); None = the next one is immediate
 last_transcript_at: str | None = None  # when the last line was accepted, for the control bar's status dot
@@ -98,9 +99,10 @@ background: set[asyncio.Task] = set()  # pushes started from sync code, kept ref
 
 
 def this_call() -> Call:
-    global call
+    global call, latest_recap
     if call is None:
         call = Call()
+        latest_recap = None
         listening["startedAt"] = utc_now()  # the control bar's call timer starts with the call
         task = asyncio.get_running_loop().create_task(push(dict(listening)))
         background.add(task)
@@ -114,18 +116,37 @@ def end_call() -> asyncio.Future:
     if idle_timer:
         idle_timer.cancel()
     ended, call = call or Call(), None
+    insights = latest_insights
     latest_insights = None  # the next call, and overlays connecting later, start clean
     last_refresh = None  # the next call's first insights don't wait out this call's interval
     history.clear()
     unknown.clear()  # strangers' prints never outlive the call
     fresh.clear()
     loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, remember_encounters, ended)  # Muse Spark is slow; the note doesn't wait for it
+    task = loop.create_task(send_recap(ended, insights))  # Muse Spark is slow; the note doesn't wait for it
+    background.add(task)
+    task.add_done_callback(background.discard)
     return loop.run_in_executor(None, notes.write, ended.started, ended.people, ended.points, ended.responses)
 
 
-def remember_encounters(ended: Call) -> None:
-    """Runs in a thread: store Muse Spark's about/last-time summary for each recognized person of a finished call."""
+async def send_recap(ended: Call, insights: dict | None) -> None:
+    """Once the summaries are saved, broadcast the finished call's recap and keep it for an overlay that connects later."""
+    global latest_recap
+    lasts = await asyncio.get_running_loop().run_in_executor(None, remember_encounters, ended)
+    people = [{"id": p["id"], "name": p["name"], "role": p["role"], "lastTime": lasts.get(p["id"], "")}
+              for p in map(store.person, ended.people) if p]
+    recap = {"type": "recap", "topic": (insights or {}).get("topic", ""), "points": (insights or {}).get("points", []),
+             "actions": (insights or {}).get("actions", []), "people": people}
+    if call is not None or not (recap["topic"] or recap["points"] or recap["actions"] or people):
+        return  # a new call already started, or there was no call to recap
+    latest_recap = recap
+    await push(recap)
+
+
+def remember_encounters(ended: Call) -> dict[str, str]:
+    """Runs in a thread: store Muse Spark's about/last-time summary for each recognized person of a finished call.
+    Returns person id -> this call's last-time line (empty when the summary was skipped)."""
+    lasts: dict[str, str] = {}
     try:
         # store.person drops anyone who deleted themselves or whose consent ran out; unenrolled faces never got here
         people = {p["id"]: {"name": p["name"], "role": p["role"], "notes": [n["text"] for n in p["notes"][:5]]}
@@ -134,6 +155,7 @@ def remember_encounters(ended: Call) -> None:
             return  # the finally below still refreshes their files
         for s in picks.summarise(people, ended.lines):
             store.add_encounter(s["personId"], ended.started.astimezone(), s["about"], s["lastTime"])
+            lasts[s["personId"]] = s["lastTime"]
             if s["role"]:
                 store.set_role(s["personId"], s["role"], "muse")  # never replaces a role the user typed
     except Exception as e:  # e.g. no MODEL_API_KEY: the call still ends and its note is still written
@@ -144,6 +166,7 @@ def remember_encounters(ended: Call) -> None:
                 notes.write_person(pid)
             except Exception as e:
                 print(f"person file skipped: {e}")
+    return lasts
 
 
 def saw_face(card: dict | None) -> None:
@@ -170,7 +193,7 @@ async def overlay_socket(ws: WebSocket):
     if not from_this_laptop(ws):  # the http middleware doesn't see WebSockets
         return await ws.close(code=1008)
     await ws.accept()
-    for event in (listening, latest_insights, latest_window):  # catch up an overlay that starts mid-call
+    for event in (listening, latest_insights, latest_window, latest_recap):  # catch up an overlay that starts mid-call
         if event:
             await ws.send_json(event)
     clients.add(ws)
