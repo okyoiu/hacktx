@@ -23,12 +23,13 @@ def require_key(request: Request) -> None:
     key = os.getenv("MUSE_CONNECTOR_KEY")
     if not key:
         raise HTTPException(404, "Not found")  # not set up: these routes do not exist
-    # Muse's credential store may send the key bare, as "Bearer …"/"Token …", or in X-API-Key: accept the key in any of them
-    given = (request.headers.get("authorization") or request.headers.get("x-api-key") or "").strip()
-    for prefix in ("Bearer ", "Token ", ""):
-        if given.startswith(prefix) and secrets.compare_digest(given[len(prefix):].strip().encode(), key.encode()):
-            return  # the right key always gets in; only wrong ones are counted, so strangers can't lock Muse out
-    print(f"connector: wrong key ({'no auth header' if not given else 'header present, value differs'})")
+    # "Authorization: Bearer <key>", or the key alone in X-API-Key (some credential stores send that); never bare in Authorization
+    given = request.headers.get("authorization", "").strip()
+    if given.startswith("Bearer ") and secrets.compare_digest(given[7:].strip().encode(), key.encode()):
+        return  # the right key always gets in; only wrong ones are counted, so strangers can't lock Muse out
+    if secrets.compare_digest(request.headers.get("x-api-key", "").strip().encode(), key.encode()):
+        return
+    print(f"connector: wrong key ({'no auth header' if not given else 'Authorization present, value differs'})")
     now = time.monotonic()
     failures[:] = [t for t in failures if t > now - 60]
     if len(failures) >= FAILS_PER_MINUTE:
