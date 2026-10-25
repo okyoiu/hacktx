@@ -368,3 +368,16 @@ Checked by applying the commits to a scratch copy of this branch and running `to
 - **R5-6 still open (Low-Medium):** `forget` still does not remove the person from `latest_recap`. Also, `snippets`, `live` and the Ask AI `thread` can keep a deleted person's words until the call ends; they are not shown (the card is cleared) but are sent to Muse in later prompts. Smallest fix in `forget`: filter `latest_recap["people"]`, `snippets.pop(pid, None)`, `live.pop(pid, None)`.
 - **R5-4a and R5-9 still open** (no upper bound on `rect`; NaN accepted in `screenBox` and the debug boxes).
 - `facts` can be misattributed if a voice is named wrongly (speaker names come from lip movement); the host can delete a wrong fact only by deleting the person. Low, and an existing limit.
+
+---
+
+## Demo-day checklist for the packaged app: 10 minutes before the pitch
+
+1. **Network:** phone hotspot on, venue Wi-Fi off, macOS firewall on; `docker ps` shows `127.0.0.1:5432->5432`, never `0.0.0.0`.
+2. **`.env`:** `ENROLL_CODE` is a fresh random value, there is **no** `HELLO_DEBUG` line (it turns the debug view on in the app), and no key is visible on screen.
+3. **Open `Hello Again.app` from the Dock:** the control strip shows no warning; Screen Recording and Microphone are allowed for "Hello Again" (a rebuild changes the ad-hoc signature, so macOS asks again).
+4. **Files:** `rm -rf logs/` for a clean start, then after a test call `ls -l notes logs` shows only `-rw-------`; `git status` is clean and the repo folder is yours alone (the app runs its code).
+5. **People window:** only teammates or sample people who said yes; delete anyone else (no token needed on the laptop).
+6. **Phones enrolling:** start the server by hand with `--host 0.0.0.0` *before* opening the app, send only the **Copy invite link** (it carries the code), and stop that server when guests are done.
+7. **Screen share:** the overlay hides itself from shares on Windows only; on a newer Mac, test your share first, or share one window instead of the screen.
+8. **After:** delete demo people in the People window, `rm -rf logs/ notes/`, change `ENROLL_CODE`, `docker stop hello-again-db`.
