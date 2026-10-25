@@ -95,12 +95,12 @@ function placeCard({ trackId, screenBox, person }) {
     card.addEventListener('mouseenter', () => {
       card.dataset.hover = 'true'
       syncMouse()
-      syncOpen(card)
+      syncOpen(card, true)
     })
     card.addEventListener('mouseleave', () => {
       delete card.dataset.hover
       syncMouse()
-      syncOpen(card)
+      syncOpen(card, true)
     })
     fillCard(card, person)
     $('cards').append(card)
@@ -151,8 +151,13 @@ function avoidFor(card) {
   }
   return islandRect ? [...others, islandRect] : others
 }
+// A closed tag is placed by its own size (so it hugs its face); an open card by its full size. A known card's
+// closed height is its row, never the body still folding away.
+const TAG_HEIGHT = 28
 function cardSize(card) {
-  return card.classList.contains('known') ? { width: CARD.width, height: CARD.open } : { width: card.offsetWidth || CARD.width, height: card.offsetHeight || 40 }
+  if (card.classList.contains('open')) return { width: CARD.width, height: CARD.open }
+  const known = card.classList.contains('known')
+  return { width: card.offsetWidth || CARD.width, height: known ? TAG_HEIGHT : card.offsetHeight || TAG_HEIGHT }
 }
 function position(card) {
   const size = cardSize(card)
@@ -202,10 +207,13 @@ setInterval(() => {
 // tag. ✕ closes it for that person for the rest of the call; clicking the name tag opens or closes it by hand.
 const popped = new Set() // person ids already popped in this call; emptied when the last card leaves
 const dismissed = new Set() // person ids whose card was closed with ✕
-function syncOpen(card) {
+// `hover`: the pointer opened it, so it must not move out from under the pointer.
+function syncOpen(card, hover = false) {
   const pid = card.dataset.pid
   const open = card.dataset.pinned === 'true' || (!dismissed.has(pid) && isOpen(+card.dataset.popUntil || 0, !!card.dataset.hover, Date.now()))
+  const was = card.classList.contains('open')
   card.classList.toggle('open', open)
+  if (open !== was && !hover && card.dataset.face) position(card) // the open card and the tag have different spots
 }
 
 function fillCard(card, person, oldBullets = new Set()) {
@@ -976,7 +984,7 @@ function renderStale(stale) {
     const item = el('li')
     const button = el('button', 'person-row')
     button.type = 'button'
-    button.append(el('span', 'who', p.name), el('span', 'sub', [p.role, staleLine(p)].filter(Boolean).join(' · ')))
+    button.append(el('span', 'who', p.name), el('span', 'sub', [staleLine(p), p.role].filter(Boolean).join(' · ')))
     button.addEventListener('click', () => openPerson(p.id))
     item.append(button)
     return item
