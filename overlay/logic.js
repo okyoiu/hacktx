@@ -22,4 +22,11 @@ function takesOver(shown, event, closedId) {
   return event.status === 'thinking' || !shown.id || event.id === shown.id // a late answer to an older question loses
 }
 
-if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver, cleanName }
+// In a big call (BIG_CALL or more cards) a name card hides once its person hasn't been seen arriving or heard for QUIET_MS.
+const BIG_CALL = 6
+const QUIET_MS = 60_000
+function isQuiet(cardCount, lastActive, now) {
+  return cardCount >= BIG_CALL && now - lastActive > QUIET_MS
+}
+
+if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver, cleanName, isQuiet, BIG_CALL, QUIET_MS }

@@ -29,6 +29,7 @@ function handle(e) {
   if (shows('cards')) {
     if (e.type === 'face') placeCard(e)
     if (e.type === 'face_gone') removeCard(e.trackId)
+    if (e.type === 'caption') heard(e.speaker)
   }
   if (shows('bar')) {
     if (e.type === 'listening') setListening(e)
@@ -58,13 +59,33 @@ function placeCard({ trackId, screenBox: [x, y, w], person }) {
     card.addEventListener('mouseleave', syncMouse)
     fillCard(card, person)
     $('cards').append(card)
-  } else if (card.dataset.person !== known) morph(card, () => fillCard(card, person))
+    card.dataset.active = Date.now()
+  } else if (card.dataset.person !== known) {
+    morph(card, () => fillCard(card, person))
+    card.dataset.active = Date.now()
+  }
   card.dataset.person = known
   // beside the face, flipping to the left side near the screen edge
   let left = x - origin.x + w + CARD.gap
   if (left + CARD.width > innerWidth) left = x - origin.x - CARD.width - CARD.gap
   card.style.transform = `translate(${Math.max(8, left)}px, ${Math.max(8, y - origin.y)}px)`
 }
+
+// Speaking brings a quiet card back. Face events repeat while a face is on screen, so only arrivals and
+// changes count as being seen; in a big call a face that just sits there fades out.
+function heard(speaker) {
+  for (const card of document.querySelectorAll('#cards .card')) {
+    if (card.querySelector('.name')?.textContent === speaker) card.dataset.active = Date.now()
+  }
+}
+
+setInterval(() => {
+  const cards = [...document.querySelectorAll('#cards .card')]
+  for (const card of cards) {
+    const stays = card.matches('.thinking, .remembering, .leaving')
+    card.classList.toggle('quiet', !stays && isQuiet(cards.length, +card.dataset.active, Date.now()))
+  }
+}, 5000)
 
 function fillCard(card, person) {
   const hadForm = card.classList.contains('remembering')

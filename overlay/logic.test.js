@@ -1,7 +1,7 @@
 // node --test (npm test in overlay/)
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { ROUTES, elapsed, takesOver, cleanName } = require('./logic')
+const { ROUTES, elapsed, takesOver, cleanName, isQuiet, BIG_CALL, QUIET_MS } = require('./logic')
 
 test('main only forwards the memory API calls the overlay makes', () => {
   for (const route of ['/listening', '/ask', '/actions/x1', '/actions/act_2-b']) assert.ok(ROUTES.test(route), route)
@@ -40,4 +40,10 @@ test('only the current answer or a new question replaces the AI response', () =>
   assert.ok(!takesOver(shown, { id: 'r0', status: 'done' }), 'a late answer to an older question')
   assert.ok(!takesOver(shown, { id: 'r1', status: 'done' }, 'r1'), 'the user closed it')
   assert.ok(!takesOver({ state: 'ask' }, { id: 'r2', status: 'thinking' }), 'the user is typing a question')
+})
+
+test('name cards only go quiet in big calls, after a minute without activity', () => {
+  assert.ok(isQuiet(BIG_CALL, 0, QUIET_MS + 1))
+  assert.ok(!isQuiet(BIG_CALL, 0, QUIET_MS), 'exactly a minute is not yet quiet')
+  assert.ok(!isQuiet(BIG_CALL - 1, 0, QUIET_MS * 10), 'a small call keeps every card')
 })
