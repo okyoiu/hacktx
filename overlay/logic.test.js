@@ -425,6 +425,54 @@ test('the island is a pill, widens to a notice for a moment, opens as a sheet, a
   assert.equal(islandStage({ recap: true, open: true, noticeUntil: now + 100, now }), 'recap', 'the Recap beats everything')
 })
 
+test('hover opens, leaving backs off after a grace period, and a pinned thing stays open', () => {
+  const { hoverOpen, HOVER_GRACE } = require('./logic')
+  const now = 50_000
+  assert.ok(hoverOpen({ pinned: false, over: true, leftAt: null, now, grace: 600 }), 'pointer over')
+  assert.ok(hoverOpen({ pinned: false, over: false, leftAt: now - 200, now, grace: 600 }), 'just left: still open')
+  assert.ok(!hoverOpen({ pinned: false, over: false, leftAt: now - 600, now, grace: 600 }), 'the grace is over')
+  assert.ok(!hoverOpen({ pinned: false, over: false, leftAt: null, now, grace: 600 }), 'never hovered')
+  assert.ok(hoverOpen({ pinned: true, over: false, leftAt: now - 5000, now, grace: 600 }), 'pinned (⌘↵ or a click) stays')
+  assert.deepEqual(HOVER_GRACE, { island: 600, card: 800 })
+  assert.equal(islandStage({ recap: false, open: false, noticeUntil: 0, now, hover: true }), 'notice', 'the pill grows while hovered')
+  assert.equal(islandStage({ recap: false, open: true, noticeUntil: 0, now, hover: true }), 'sheet', 'an open sheet stays a sheet')
+  assert.equal(islandStage({ recap: true, open: false, noticeUntil: 0, now, hover: true }), 'recap', 'the Recap is unaffected')
+})
+
+test('the ⋯ menu: People, the transcript toggle, Debug only in developer mode, then Quit', () => {
+  const { menuModel } = require('./logic')
+  assert.deepEqual(menuModel({ dev: false, transcriptShown: false, debugOn: false }), [
+    { id: 'people', label: 'People' },
+    { id: 'transcript', label: 'Show transcript' },
+    { type: 'separator' },
+    { id: 'quit', label: 'Quit Hello Again' },
+  ])
+  const dev = menuModel({ dev: true, transcriptShown: true, debugOn: true })
+  assert.equal(dev[1].label, 'Hide transcript')
+  assert.deepEqual(dev[2], { id: 'debug', label: 'Debug view', type: 'checkbox', checked: true })
+  assert.equal(dev.at(-1).id, 'quit')
+})
+
+test('mute: the mic toggle flattens and dims the waveform without pausing everything', () => {
+  const { micState } = require('./logic')
+  assert.deepEqual(micState({ connected: true, on: true, muted: false }), { wave: 'live', label: 'Mute', dim: false })
+  assert.deepEqual(micState({ connected: true, on: true, muted: true }), { wave: 'flat', label: 'Unmute', dim: true })
+  assert.deepEqual(micState({ connected: true, on: false, muted: false }), { wave: 'flat', label: 'Mute', dim: false }, 'paused: flat but not dimmed')
+  assert.deepEqual(micState({ connected: false, on: true, muted: false }), { wave: 'flat', label: 'Mute', dim: false }, 'offline')
+  assert.ok(validCall('/mute', { on: true }), 'the mute route is allowed')
+  assert.ok(!validCall('/mute/x', { on: true }))
+})
+
+test('result rows: three, then "+N more" that expands; prose only when there are no items', () => {
+  const { itemRows } = require('./logic')
+  const items = [1, 2, 3, 4, 5].map((n) => ({ title: 'Place ' + n, detail: n + ' mi', url: 'https://maps.example/' + n }))
+  assert.deepEqual(itemRows(items, false), { shown: items.slice(0, 3), more: 2 })
+  assert.deepEqual(itemRows(items, true), { shown: items, more: 0 })
+  assert.deepEqual(itemRows(items.slice(0, 3), false), { shown: items.slice(0, 3), more: 0 }, 'three or fewer: no cutoff')
+  assert.deepEqual(itemRows(undefined, false), { shown: [], more: 0 })
+  assert.deepEqual(itemRows([{ title: 'x' }, { nope: 1 }, 'bad'], false).shown, [{ title: 'x' }], 'only rows with a title')
+})
+
 test('the island keeps its centre as it grows (Teams: its left edge) and stays on screen', () => {
   const spot = { x: 440, y: 31, width: BAR.width, height: BAR.height, anchor: 'center' }
   assert.deepEqual(islandBounds(spot, { width: ISLAND.pill, height: 44 }, WORK), { x: 440 + (BAR.width - ISLAND.pill) / 2, y: 31, width: ISLAND.pill, height: 44 })
