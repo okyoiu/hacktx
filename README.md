@@ -234,6 +234,7 @@ On connect the server first sends the latest `listening` and `insights` events, 
 - Cards sit beside faces, not on them, because `capture/faces.py` captures the screen and would otherwise see the cards instead of the faces.
 - The cards are tinted glass only. Electron can't blur the desktop through a transparent full-screen window; the control bar and panels are their own windows, so they get real blur from macOS vibrancy and Windows acrylic.
 - `setContentProtection` keeps the overlay out of screen shares on Windows. Newer macOS screen sharing can still capture it.
+- What happens to people's data, on one page: `docs/privacy.md` (what is kept, where, for how long, what goes to Meta and SerpApi, how to delete).
 - Only this laptop can use the server's routes; other devices can only enroll and delete themselves, plus `/connector/*` with the key (see `docs/security-review.md`). Never tunnel it to the internet, except `tools/tunnel.sh` for the Muse connector during the demo (only `/connector/*` answers through it).
 - Muse realtime sessions last up to 60 minutes; restart `capture.transcribe` for longer calls.
 - Licenses: InsightFace `buffalo_l` weights are non-commercial and Ultralytics YOLO is AGPL-3.0. Both are fine for a hackathon; replace them before selling anything.
