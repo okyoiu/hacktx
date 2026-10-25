@@ -211,13 +211,18 @@ a.source:hover { background: var(--hover); color: var(--ink); }
 .card .row { display: flex; align-items: center; gap: 7px; }
 .card .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--known); flex: none; }
 .card .name { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
-.card .line { margin-top: 3px; color: var(--ink-2); font-size: 13px; text-wrap: pretty; }
+.card .more { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 0.4s var(--ease), opacity 0.3s ease; }
+.card .more > div { min-height: 0; overflow: hidden; }
+.card.open .more { grid-template-rows: 1fr; opacity: 1; }
+.card .bullets { margin: 6px 0 0; padding: 0; list-style: none; color: var(--ink-2); font-size: 13px; text-wrap: pretty; }
+.card .bullets li { margin-top: 3px; }
+.card .bullets li:first-child { margin-top: 0; color: var(--ink); }
 .card .met { margin-top: 2px; color: var(--ink-2); font-size: 12px; font-variant-numeric: tabular-nums; }
 .card.thinking { width: auto; display: grid; grid-template-columns: 16px auto; align-items: center; gap: 8px; padding: 8px 14px 8px 10px; border-radius: 999px; }
 .card .mark { width: 16px; height: 16px; }
 
 /* Thinking pills are the one card that takes the mouse: a ring and a pointer on hover reveal "Remember them". */
-.card:is(.thinking, .remembering) { pointer-events: auto; }
+.card:is(.thinking, .remembering, .known) { pointer-events: auto; } /* a known card opens on hover */
 .card.thinking { cursor: pointer; transition: transform 0.35s var(--ease), box-shadow 0.2s ease; }
 .card.thinking:is(:hover, :focus-within) {
   border-radius: 14px;

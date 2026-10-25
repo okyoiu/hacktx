@@ -1,7 +1,7 @@
 // node --test (npm test in overlay/)
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { ROUTES, elapsed, takesOver, cleanName, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS } = require('./logic')
+const { ROUTES, elapsed, takesOver, cleanName, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS } = require('./logic')
 
 test('main only forwards the memory API calls the overlay makes', () => {
   for (const route of ['/listening', '/ask', '/actions/x1', '/actions/act_2-b']) assert.ok(ROUTES.test(route), route)
@@ -105,4 +105,22 @@ test('Remember them: a 409 says they left, a failure keeps the form, a late save
   assert.deepEqual(rememberResult({}), { kind: 'saved' })
   assert.equal(rememberResult({}, 'true').text, 'Saved. They have left the call.')
   assert.equal(rememberResult({ error: 'x' }, 'true').text, undefined, 'unsaved and gone: the default sentence')
+})
+
+test('a known card pops open once per person, for 10 seconds, and again while hovered', () => {
+  const seen = new Set()
+  assert.ok(shouldPop(seen, 'p_1'))
+  seen.add('p_1')
+  assert.ok(!shouldPop(seen, 'p_1'))
+  assert.ok(shouldPop(seen, 'p_2'))
+  assert.equal(POP_MS, 10_000)
+  assert.ok(isOpen(POP_MS, false, POP_MS - 1))
+  assert.ok(!isOpen(POP_MS, false, POP_MS), 'shrinks at 10 seconds')
+  assert.ok(isOpen(POP_MS, true, POP_MS * 5), 'hover opens it again')
+})
+
+test('a card shows at most 3 bullets, falling back to the label and last time', () => {
+  assert.deepEqual(bulletsOf({ bullets: ['a', ' ', 'b', 'c', 'd'] }), ['a', 'b', 'c'])
+  assert.deepEqual(bulletsOf({ role: 'Your team lead', line: 'Last time: the move' }), ['Your team lead', 'Last time: the move'])
+  assert.deepEqual(bulletsOf({ bullets: [], role: '', line: '' }), [])
 })

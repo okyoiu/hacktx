@@ -50,13 +50,21 @@ function handle(e) {
 function placeCard({ trackId, screenBox: [x, y, w], person }) {
   const id = 't' + trackId
   let card = $(id)
-  const known = person ? person.id : 'unknown'
+  const known = person ? [person.id, ...bulletsOf(person), person.met].join('\n') : 'unknown'
   if (!card) {
     card = el('div')
     card.id = id
     card.dataset.track = trackId
-    card.addEventListener('mouseenter', syncMouse)
-    card.addEventListener('mouseleave', syncMouse)
+    card.addEventListener('mouseenter', () => {
+      card.dataset.hover = 'true'
+      syncMouse()
+      syncOpen(card)
+    })
+    card.addEventListener('mouseleave', () => {
+      delete card.dataset.hover
+      syncMouse()
+      syncOpen(card)
+    })
     fillCard(card, person)
     $('cards').append(card)
     card.dataset.active = Date.now()
@@ -64,7 +72,16 @@ function placeCard({ trackId, screenBox: [x, y, w], person }) {
     morph(card, () => fillCard(card, person))
     card.dataset.active = Date.now()
   }
+  if (person && card.dataset.pid !== person.id) {
+    card.dataset.pid = person.id
+    if (shouldPop(popped, person.id)) {
+      popped.add(person.id)
+      card.dataset.popUntil = Date.now() + POP_MS
+      setTimeout(() => syncOpen(card), POP_MS)
+    }
+  }
   card.dataset.person = known
+  syncOpen(card)
   // beside the face, flipping to the left side near the screen edge
   let left = x - origin.x + w + CARD.gap
   if (left + CARD.width > innerWidth) left = x - origin.x - CARD.width - CARD.gap
@@ -87,6 +104,12 @@ setInterval(() => {
   }
 }, 5000)
 
+// The memory pop-up: a known card shows its bullets while it's new or hovered, else just the name tag.
+const popped = new Set() // person ids already popped in this call; emptied when the last card leaves
+function syncOpen(card) {
+  card.classList.toggle('open', isOpen(+card.dataset.popUntil || 0, !!card.dataset.hover, Date.now()))
+}
+
 function fillCard(card, person) {
   const hadForm = card.classList.contains('remembering')
   if (!person) {
@@ -98,12 +121,17 @@ function fillCard(card, person) {
     remember.addEventListener('click', () => morph(card, () => openRemember(card)))
     card.replaceChildren(icon('sparkle', 'mark'), verb('Recalling,Thinking,Remembering,Looking'), remember)
   } else {
-    card.className = 'card glass'
+    card.className = 'card glass known'
     const row = el('div', 'row')
     row.append(el('span', 'dot'), el('span', 'name', person.name))
-    card.replaceChildren(row)
-    if (person.line) card.append(el('div', 'line', person.line))
-    card.append(el('div', 'met', person.met))
+    const bullets = el('ul', 'bullets')
+    bullets.append(...bulletsOf(person).map((b) => el('li', null, b)))
+    const inner = el('div')
+    inner.append(bullets, el('div', 'met', person.met))
+    const more = el('div', 'more')
+    more.append(inner)
+    card.replaceChildren(row, more)
+    syncOpen(card)
   }
   if (hadForm) release()
   else syncMouse() // a hovered pill that just became a name card must stop taking the mouse
@@ -186,7 +214,7 @@ function leftCall(card, text = 'They left the call before saving.') {
 }
 
 // The cards window takes the mouse only while the pointer is over a thinking pill or its form.
-const syncMouse = () => window.overlay?.setClickThrough(!document.querySelector('#cards :is(.thinking, .remembering):hover'))
+const syncMouse = () => window.overlay?.setClickThrough(!document.querySelector('#cards :is(.thinking, .remembering, .known):hover'))
 
 // Hands the keyboard back to the call app, and the mouse unless the pointer is still over a pill.
 function release() {
@@ -217,6 +245,7 @@ function removeCard(trackId) {
   card.classList.add('leaving')
   setTimeout(() => {
     card.remove()
+    if (!document.querySelector('#cards .card')) popped.clear() // the call is empty; the next hello pops again
     syncMouse() // in case the pointer was over it
   }, 250)
 }

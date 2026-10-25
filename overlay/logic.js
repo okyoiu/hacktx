@@ -85,4 +85,18 @@ function rememberResult({ error, status }, gone) {
   return error ? { kind: 'error', text: error } : { kind: 'saved' }
 }
 
-if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver, cleanName, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
+// ---------- memory pop-up ----------
+
+// A known card opens with its bullets the first time that person shows up in the call, for POP_MS, and
+// whenever the pointer is over it. `seen` is the set of person ids already popped; it empties when the call does.
+const POP_MS = 10_000
+const shouldPop = (seen, personId) => !seen.has(personId)
+const isOpen = (popUntil, hovering, now) => hovering || now < popUntil
+
+// Up to 3 bullets: the server's, or (an older server) the label and the last-time line.
+function bulletsOf(person) {
+  const list = person.bullets?.length ? person.bullets : [person.role, person.line]
+  return list.filter((b) => typeof b === 'string' && b.trim()).slice(0, 3)
+}
+
+if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver, cleanName, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
