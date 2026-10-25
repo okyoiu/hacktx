@@ -623,3 +623,48 @@ Run with `ponytail:ponytail-audit` on main `253d438`, plus what the security rou
 **Lean:** about -2 lines, -0 dependencies possible. The code is already small for what it does; I found no duplicate helper or unused dependency.
 
 **Not checked:** the Windows window finder and the Windows app build (no Windows machine); the Mac-only parts (packaged app, permissions, the macOS window list); real TimescaleDB; the Muse realtime protocol; the JavaScript in `overlay/overlay.js` beyond the sinks and routes (it is large and only the security paths were read); `web/enroll.html` logic beyond consent and delete.
+
+---
+
+## Island (`review-design` `d387bb8`, `e3f5c2e`, finished build `025bbcb`)
+
+2026-10-25, Security agent, read-only (`git diff HEAD...review-design`). I also merged it into a scratch copy of main `75c3e70`: 40 security tests pass, 5 expected xfails, and `node --test` passes 54 of 54. **Verdict: no findings above Low.**
+
+**Fine:**
+- **One place builds every window.** Pill, notice, sheet and Recap are now one `island` window; it, the name-card layer, the transcript strip and People all come from `overlayWindow()`, which sets `setContentProtection(true)`, `contextIsolation`, `sandbox`, no Node, blocks navigation and `<webview>`, and routes new windows through `webUrl`. `test_every_overlay_window_is_built_in_one_place_with_the_safe_settings` fails if a second `new BrowserWindow(` appears or any of those lines goes missing.
+- **IPC:** every `on(...)` channel still goes through the `ours(e)` sender check. The removed channels (`ask-busy`, `close-response`, `close-recap`) are gone from `preload.js` too, so there is less surface than before. `api` is unchanged (anchored routes, method table, 2,000-character body).
+- **Muse and call text** goes in with `textContent` (`el()` at `overlay.js:27`); the only `.href` set is on a source link that passed `/^https?:\/\//`, opened through `setWindowOpenHandler`/`webUrl`. The `context` value is mapped to the fixed labels "Work" or "Personal" (`logic.js:145`), never used as a class name. The no-`innerHTML` test passes on every overlay file.
+- **Debug gate:** unchanged. `toggleDebug` and the shortcut exist only when `DEV`; `debug` events are dropped in main otherwise; the toggle now targets the island instead of the old bar.
+- **Network:** the page's CSP is unchanged (`default-src 'self'`); no `http(s)` URL in the HTML or CSS, no `fetch` or `WebSocket` in the renderer (they stay in main: the `/ws` connection and the `api` call). `test_the_overlay_pages_load_nothing_from_the_network` checks the HTML and CSS.
+- Content size comes only from the renderer's own `fit` and is clamped to the screen (`islandBounds`).
+
+**R10-1, Low: the `fit` handler accepts `Infinity`.** `on('fit')` checks `height > 0` and `width > 0`, which `Infinity` passes; `win.setBounds` then throws in the main process (an uncaught-exception dialog). Only our own page can send it, and only through a bug. Fix: `if (!Number.isFinite(width) || !Number.isFinite(height)) return` before the `islandSize = ...` line. Strict xfail `test_the_fit_handler_only_accepts_finite_sizes`; delete its marker when fixed.
+
+**Not checked:** how it looks and behaves on a Mac (animation, focus, the pill at the screen edge), the reduce-motion path, and the mock demo.
+
+**Finished build `025bbcb` (checked after the first pass):** the only change since `e3f5c2e` is two CSS lines and a timer in `wakePanel()` (`overlay.js:826-833`): after 20 seconds of quiet an open sheet folds back into the pill, unless a question is being typed or the Recap is showing. It adds no IPC channel, no text sink and no network use; `node --check` passes, and in a scratch merge with main the security tests give 40 passed and 5 expected xfails, and `node --test` 54 of 54. A small plus: a sheet that shows insights and names no longer stays open on the screen when nobody touches it. The verdict above stands.
+
+---
+
+## Fresh-clone check again, and the README mismatches (main `75c3e70`, R9-1 landed)
+
+**Fresh clone in `/tmp/fresh2`, no `.env`, no keys:** with the database, **176 passed, 2 skipped, 5 expected xfails**; `node --test` passed. Without `DATABASE_URL`: 151 passed, 25 skipped, **2 failed**, both in `memory/test_app.py` (`test_call_ends_by_itself_when_no_face_has_been_seen_for_the_idle_time`, `test_the_call_remembers_the_followed_app_and_its_last_topic_for_how_we_met`): they call the real database and die with `KeyError: 'DATABASE_URL'`. My own failure from last time is fixed, and the clock-based capture test passed this time. The two memory tests are the memory owner's: patch `store.match`/`store.person` or skip without `DATABASE_URL`. R9-1 is closed (the tunnel test now passes).
+
+**README mismatches from last time:**
+
+| # | Was | Now |
+|---|---|---|
+| 1, 2 | line 232 "never tunnel" and "`/connector/*` only" | **Fixed** (lines 142 and 236) |
+| 3 | line 69: add `/connector/*` to "only enroll and delete-my-data answer to other devices" | **Still open.** Line 69 does not mention the connector (line 236 does). Add: ", plus `/connector/*` when `MUSE_CONNECTOR_KEY` is set". |
+| 4 | line 121 `--verbose` | **Fixed** |
+| 5 | End call and Recap missing from the walkthrough | **Fixed** (step 5) |
+| 6 | "control bar at the top right" | **Mostly fixed;** one left at **line 119** (hand-run row 2): "A small glass control bar at the top right of your screen". Say: "The island, a small black glass pill at the top of your call window". |
+| 7 | card bullets text | **Fixed** |
+| 8 | `/people/stale`, `/health` missing | **Fixed** (lines 213-214) |
+| 9 | `logs/` in "Files" | **Fixed** (line 226) |
+| 10 | `ENROLL_CODE`, `MUSE_CONNECTOR_KEY` | **Fixed** (line 14) |
+| 11 | model downloads | **Fixed** (line 20) |
+| 12 | "The first run also installs anything missing" | **Still there** (optional wording; `uv` syncs Python packages but Docker, `uv` and Node must already be installed) |
+| 13 | `Start-Hello-Again.bat` | **Fixed** (line 44 names it) |
+
+Left: **3** (line 69), **6** (line 119), and the optional **12** (line 44).

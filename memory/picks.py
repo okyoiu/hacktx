@@ -14,6 +14,7 @@ QUERY_KINDS = {"define", "search", "places", "events"}  # kinds that act on a se
 MAX_POINTS = 3
 MAX_ACTIONS = 4
 MAX_NOTES_PER_CALL = 3  # new notes saved per person per call; a flood of claims about one person stops here
+QUERY_CHARS = 200  # a Muse-written search term or definition target is cut to this
 THREAD_CHARS = 1000  # each earlier question or answer is cut to this when shown to Muse again
 MAX_FACTS = 3  # new facts per person per call
 FACT_CHARS = 80
@@ -226,6 +227,8 @@ def answer(
         f"[{i}] {r['title']}: {r['snippet']} ({r['url']})"
         for i, r in enumerate(results or [], 1)
     ])
+    if kind in ("define", "search"):  # these queries were written by Muse after reading the transcript
+        query = " ".join(re.sub(r"[<>]", "", query).split())[:QUERY_CHARS]
     task = TASKS[kind].format(query=query, results=numbered)
     chat_so_far = fence("chat", [f"{who}: {text[:THREAD_CHARS]}" for q, a in thread or [] for who, text in (("User", q), ("AI", a))])
     return chat(
@@ -354,7 +357,7 @@ def parse(reply: str, known_ids: set[str]) -> dict:
                 notes.append({"personId": pid, "text": value[:200]})
 
     topic = data.get("topic")
-    topic = topic.strip()[:80] if isinstance(topic, str) else ""
+    topic = " ".join(topic.split())[:80] if isinstance(topic, str) else ""  # one line: it ends up in bullets and files
 
     points = []
     if isinstance(raw_points, list):
