@@ -349,7 +349,6 @@ def test_a_deleted_person_leaves_the_stored_recap(monkeypatch):
     assert "p_zed" not in json.dumps(server.latest_recap)
 
 
-@pytest.mark.xfail(strict=True, reason="R5-9: a NaN box is accepted, then breaks the push and drops every connected overlay")
 def test_a_nan_box_is_refused_and_does_not_drop_the_overlay(monkeypatch):
     class Overlay:
         async def send_json(self, event):

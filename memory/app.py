@@ -18,6 +18,7 @@ from typing import Annotated
 import numpy as np
 import psycopg
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, StringConstraints
 from starlette.requests import HTTPConnection
@@ -108,6 +109,12 @@ app.include_router(connector.router)  # read-only, bearer key; the one set of ro
 
 
 FORWARDED = ("x-forwarded-for", "x-forwarded-host", "x-real-ip", "forwarded", "cf-connecting-ip", "cf-ray", "true-client-ip")
+
+
+@app.exception_handler(RequestValidationError)
+async def invalid(_: Request, exc: RequestValidationError):
+    """422 without echoing the input back: a NaN or a face print in the error would not even serialize."""
+    return JSONResponse({"detail": [{"loc": e["loc"], "msg": e["msg"], "type": e["type"]} for e in exc.errors()]}, 422)
 
 
 def from_this_laptop(conn: HTTPConnection) -> bool:
@@ -275,16 +282,19 @@ async def overlay_socket(ws: WebSocket):
 
 # --- faces (from capture/faces.py) ---
 
+Number = Annotated[float, Field(allow_inf_nan=False)]  # NaN would make the next push fail and drop every overlay
+
+
 class Debug(BaseModel):
-    personBox: list[float] = Field(min_length=4, max_length=4)
-    faceBox: list[float] | None = Field(default=None, min_length=4, max_length=4)
-    fps: float
+    personBox: list[Number] = Field(min_length=4, max_length=4)
+    faceBox: list[Number] | None = Field(default=None, min_length=4, max_length=4)
+    fps: Number
 
 
 class FaceTrack(BaseModel):
     trackId: int
-    screenBox: list[float] = Field(min_length=4, max_length=4)  # x, y, width, height in screen points
-    facePrint: list[float] | None = Field(default=None, min_length=512, max_length=512)
+    screenBox: list[Number] = Field(min_length=4, max_length=4)  # x, y, width, height in screen points
+    facePrint: list[Number] | None = Field(default=None, min_length=512, max_length=512)
     debug: Debug | None = None  # only sent by capture in developer mode
 
 

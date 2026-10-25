@@ -843,3 +843,18 @@ def test_window_numbers_are_bounded(http):
     assert http.post("/window", json={"app": "zoom.us", "rect": [-20000, 0, 20000, 20000]}).status_code == 200
     for bad in ([0, 0, 20001, 10], [20001, 0, 10, 10], [0, -20001, 10, 10]):
         assert http.post("/window", json={"app": "zoom.us", "rect": bad}).status_code == 422, bad
+
+
+def test_nan_or_infinite_numbers_are_refused_without_echoing_them_and_the_overlay_stays(http, events, monkeypatch):
+    monkeypatch.setattr(store, "match", lambda p: None)
+
+    def post(path, body):
+        return http.post(path, content=body, headers={"content-type": "application/json"})
+
+    debug = '"debug":{"personBox":[0,0,1,1],"faceBox":null,"fps":%s}'
+    for body in ('{"trackId":1,"screenBox":[NaN,0,1,1]}', '{"trackId":1,"screenBox":[0,0,Infinity,1]}',
+                 '{"trackId":1,"screenBox":[0,0,1,1],' + debug % "NaN" + "}"):
+        r = post("/faces", body)
+        assert r.status_code == 422 and "NaN" not in r.text and "Infinity" not in r.text, body
+    assert post("/faces", '{"trackId":1,"screenBox":[0,0,1,1],"facePrint":[%s]}' % ",".join(["NaN"] * 512)).status_code == 422
+    assert events == [] and http.post("/faces", json={"trackId": 1, "screenBox": [0, 0, 1, 1], "facePrint": [0.1] * 512}).status_code == 200
