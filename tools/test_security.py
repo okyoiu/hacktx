@@ -247,3 +247,20 @@ def test_launcher_logs_are_private():
 def test_transcription_does_not_print_what_people_say():
     printed = [l for l in (ROOT / "capture/transcribe.py").read_text().splitlines() if "print(" in l]
     assert not any("transcript" in l for l in printed)
+
+
+@pytest.mark.xfail(strict=True, reason="R4-2: notes/ and notes/people/ are created with the default mode (0755)")
+def test_the_notes_folders_are_private(monkeypatch, tmp_path):
+    from datetime import datetime
+
+    from memory import notes
+
+    monkeypatch.setattr(notes, "NOTES", tmp_path / "notes")
+    monkeypatch.setattr(store, "person", lambda pid: {
+        "id": pid, "name": "Zed", "role": "", "firstMet": datetime(2026, 10, 1), "encounters": [], "notes": []})
+    old = os.umask(0o022)
+    try:
+        notes.write_person("p_zed")
+    finally:
+        os.umask(old)
+    assert all((tmp_path / "notes" / d).stat().st_mode & 0o077 == 0 for d in ("", "people"))

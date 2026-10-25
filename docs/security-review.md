@@ -281,3 +281,16 @@ Nothing high or critical is open. Before the demo: #9 if enrolling happens on a 
 ### Verdict
 
 Nothing high or critical. Fix R4-1 before the demo (two small edits); the rest can wait. The checklist for the day is in the TASKS.md Report.
+
+### Round 4 status: the R4 fixes as they land in `/review/*` (2026-10-25)
+
+Checked by applying the commits to a scratch copy of this branch and running `tools/test_security.py` and `node --test`: 24 security tests pass and 32 overlay tests pass.
+
+| Finding | Status | Where |
+|---|---|---|
+| **R4-1** transcripts in `logs/transcribe.log` | **Fixed** | `capture` `b99c161`: sentences print only with `--verbose`, and the launcher never passes it. `overlay` `e03840a`: logs opened `0600` (older ones are chmod'ed), and each is trimmed to its last 1 MB at start. Both xfails flipped, markers removed. |
+| **R4-2** call notes readable by other accounts | **Fixed, not committed yet** | `/review/memory` working tree: `notes/` and `notes/people/` are `0700`, call notes are created `0600`, and `notes.tighten()` at server start fixes files left by older versions. My file-mode xfail now passes (XPASS), so remove its marker when it merges. A second xfail covers the folder modes. |
+| **R4-3** invite code in `logs/server.log` | **Open, low** | The launcher still starts uvicorn with the access log on. Logs are now private and trimmed, and a hand-started server (needed for phones) prints to the terminal instead. Optional: add `--no-access-log` to the `uvicorn` line in `overlay/launcher.js:14`. |
+| R4-4 `/health` | **Checked** | Now exists (`memory/app.py:282`). It is not in the guest list, so only this laptop reaches it. It returns booleans, a time and the listening flag: no names, no key values. |
+| R4-5 End call button | Not present in this build | Add `calls/end` to the overlay's `ROUTES` exactly when it is built. |
+| R4-6 role newlines | Open, low | Cosmetic (the role is in no prompt; files collapse it). |
