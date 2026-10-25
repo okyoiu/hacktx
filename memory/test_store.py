@@ -511,3 +511,19 @@ def test_encounters_become_a_hypertable_when_timescaledb_exists_and_the_schema_r
     pid, _ = enroll(random_print())
     store.add_encounter(pid, datetime.now().astimezone(), "x", "Works on a hypertable.")
     assert store.last_time(pid) == "Works on a hypertable."
+
+
+def test_a_person_whose_role_is_me_is_marked_self_on_cards_and_in_the_list(db, enroll, monkeypatch):
+    assert [store.is_self(r) for r in ("Me", "me!", " MYSELF ", "myself", "Me!", "Mel", "Your team lead", "", "me too")] == \
+        [True, True, True, True, True, False, False, False, False]
+    face = random_print()
+    pid, _ = enroll(face)
+    other, _ = enroll(random_print())
+    assert server.card_for(face.tolist())["self"] is False
+    store.set_role(pid, "ME", "user")
+    assert server.card_for(face.tolist())["self"] is True and server.card(store.person(pid))["self"] is True
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
+        listed = {p["id"]: p["self"] for p in http.get("/people").json() if p["id"] in (pid, other)}
+        assert listed == {pid: True, other: False}
+        http.patch(f"/people/{pid}", json={"role": "Your friend"})
+        assert next(p for p in http.get("/people").json() if p["id"] == pid)["self"] is False

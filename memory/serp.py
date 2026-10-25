@@ -7,6 +7,8 @@ import httpx
 
 URL = "https://serpapi.com/search.json"
 _lock = Lock()
+TRIES = 2  # one retry
+last_error: str | None = None  # class of the last failure, None while lookups succeed; GET /health shows it
 
 
 class SerpApiError(RuntimeError):
@@ -73,17 +75,25 @@ def _search(query: str, key: str) -> tuple[dict, ...]:
 
 
 def _get(params: dict) -> dict:
-    """One SerpApi request; every failure becomes a SerpApiError without the key in it."""
-    try:
-        r = httpx.get(URL, params=params, timeout=30)  # Google Events often takes 12 s or more
-        r.raise_for_status()
-        data = r.json()
-    except httpx.HTTPStatusError as exc:
-        raise SerpApiError(f"SerpApi returned HTTP {exc.response.status_code}; check key and quota") from None
-    except httpx.RequestError:
-        raise SerpApiError("SerpApi request failed or timed out; try again") from None
-    except ValueError:
-        raise SerpApiError("SerpApi returned invalid JSON") from None
+    """One SerpApi request (retried once); every failure becomes a SerpApiError without the key in it."""
+    global last_error
+    for attempt in range(TRIES):
+        try:
+            r = httpx.get(URL, params=params, timeout=20)
+            r.raise_for_status()
+            data = r.json()
+            last_error = None
+            break
+        except httpx.HTTPStatusError as exc:
+            last_error = type(exc).__name__
+            if exc.response.status_code < 500 and exc.response.status_code != 429 or attempt == TRIES - 1:
+                raise SerpApiError(f"SerpApi returned HTTP {exc.response.status_code}; check key and quota") from None
+        except httpx.RequestError as exc:
+            last_error = type(exc).__name__
+            if attempt == TRIES - 1:
+                raise SerpApiError("SerpApi request failed or timed out; try again") from None
+        except ValueError:
+            raise SerpApiError("SerpApi returned invalid JSON") from None
     if not isinstance(data, dict):
         raise SerpApiError("SerpApi could not complete the search; check key, quota and query")
     # "No results" also comes back as an error, but on a search whose status is Success
