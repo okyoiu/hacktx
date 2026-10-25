@@ -119,8 +119,8 @@ test('a known card pops open once per person, for 10 seconds, and again while ho
   assert.ok(isOpen(POP_MS, true, POP_MS * 5), 'hover opens it again')
 })
 
-test('a card shows at most 3 bullets, falling back to the label and last time', () => {
-  assert.deepEqual(bulletsOf({ bullets: ['a', ' ', 'b', 'c', 'd'] }), ['a', 'b', 'c'])
+test('a card shows at most 5 bullets (the server appends "This call: …"), falling back to the label and last time', () => {
+  assert.deepEqual(bulletsOf({ bullets: ['a', ' ', 'b', 'c', 'd', 'This call: e', 'f'] }), ['a', 'b', 'c', 'd', 'This call: e'])
   assert.deepEqual(bulletsOf({ role: 'Your team lead', line: 'Last time: the move' }), ['Your team lead', 'Last time: the move'])
   assert.deepEqual(bulletsOf({ bullets: [], role: '', line: '' }), [])
 })
@@ -242,4 +242,126 @@ test('dashboard search also finds the "who they are to you" label', () => {
   const people = [{ name: 'Jordan Lee', role: 'Recruiter at Meta' }, { name: 'Maya Chen', role: 'Your team lead' }]
   assert.deepEqual(filterPeople(people, 'recruiter').map((p) => p.name), ['Jordan Lee'])
   assert.deepEqual(filterPeople(people, 'TEAM LEAD').map((p) => p.name), ['Maya Chen'])
+})
+
+// ---------- round 5: presets, fixed spots, Ask AI nudge, Recap, debug ----------
+const { presetFor, layoutFor, askPlace, recapFrom, debugLabel, BAR, PANEL, STRIP, RECAP, MATCH_MIN } = require('./logic')
+
+const WORK = { x: 0, y: 25, width: 1440, height: 875 } // a 13" Mac under its menu bar
+const inside = (r, area = WORK) => r.x >= area.x && r.y >= area.y && r.x + r.width <= area.x + area.width && r.y + (r.height || 0) <= area.y + area.height
+const overlap = (a, b) => Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y))
+
+test('each call app gets a preset; browsers mean Meet; anything else is general', () => {
+  assert.equal(presetFor('zoom.us'), 'zoom')
+  assert.equal(presetFor('Microsoft Teams classic'), 'teams')
+  assert.equal(presetFor('FaceTime'), 'facetime')
+  for (const app of ['Google Chrome', 'Arc', 'Safari']) assert.equal(presetFor(app), 'meet', app)
+  for (const app of ['Discord', '', null, undefined]) assert.equal(presetFor(app), 'general', String(app))
+})
+
+test('full screen: the strip sits at the top, the rail inside on the app\'s free side, the transcript above its bar', () => {
+  const full = [WORK.x, WORK.y, WORK.width, WORK.height]
+  const expect = {
+    zoom: { side: 'right', strip: 'center', bottom: 64, top: 48 },
+    teams: { side: 'left', strip: 'left', bottom: 0, top: 64 },
+    facetime: { side: 'left', strip: 'center', bottom: 80, top: 40 },
+    meet: { side: 'left', strip: 'center', bottom: 88, top: 0 },
+    general: { side: 'right', strip: 'center', bottom: 72, top: 48 },
+  }
+  const apps = { zoom: 'zoom.us', teams: 'Microsoft Teams', facetime: 'FaceTime', meet: 'Google Chrome', general: 'Discord' }
+  for (const [preset, want] of Object.entries(expect)) {
+    const l = layoutFor(apps[preset], full, WORK)
+    assert.equal(l.preset, preset)
+    for (const part of ['bar', 'insights', 'ask', 'transcript', 'recap']) assert.ok(inside(l[part]), `${preset} ${part} on screen`)
+    assert.equal(l.bar.y, WORK.y + 6, `${preset} strip at the top`)
+    assert.equal(l.bar.x, want.strip === 'left' ? 24 : Math.round((WORK.width - BAR.width) / 2), `${preset} strip ${want.strip}`)
+    assert.equal(l.insights.x, want.side === 'left' ? 24 : WORK.width - 24 - PANEL.width, `${preset} rail ${want.side}`)
+    assert.ok(l.insights.y >= Math.max(WORK.y + want.top, l.bar.y + l.bar.height) + 12, `${preset} rail below the strip and the app's top band`)
+    assert.equal(l.ask.x, l.insights.x)
+    assert.equal(l.ask.y, l.insights.y + 220 + 12, 'Ask AI under Live insights')
+    assert.equal(l.transcript.y + l.transcript.height, WORK.y + WORK.height - want.bottom - 12, `${preset} transcript above the app's bar`)
+    assert.equal(l.recap.x, Math.round((WORK.width - RECAP.width) / 2), 'Recap centred')
+    assert.deepEqual(l.bands.map((b) => b.height), [want.top, want.bottom].filter(Boolean), `${preset} bands`)
+  }
+})
+
+test('with room beside the window, the strip goes above it, the rail beside it on the wider side, the transcript below', () => {
+  const big = { x: 0, y: 25, width: 2560, height: 1415 }
+  const rect = [200, 120, 1400, 900]
+  for (const app of ['zoom.us', 'Microsoft Teams']) {
+    const l = layoutFor(app, rect, big)
+    assert.equal(l.bar.y, 120 - 12 - BAR.height, 'strip above the window')
+    assert.deepEqual([l.insights.x, l.insights.y], [1600 + 12, 120], `${app}: rail on the right, outside`)
+    assert.equal(l.transcript.y, 1020 + 12, 'transcript below the window')
+    assert.equal(l.transcript.x + l.transcript.width / 2, 900, 'transcript centred under the window')
+    assert.equal(l.recap.x + l.recap.width / 2, 900, 'Recap centred over the window')
+    for (const part of ['bar', 'insights', 'ask', 'transcript', 'recap']) assert.ok(inside(l[part], big), part)
+  }
+  const left = layoutFor('zoom.us', [1000, 120, 1400, 900], big)
+  assert.equal(left.insights.x, 1000 - 12 - PANEL.width, 'the wider free side is the left')
+})
+
+test('no call window: the general layout over the whole work area, and a taller Live insights pushes Ask AI down', () => {
+  assert.deepEqual(layoutFor(null, null, WORK), layoutFor('Discord', [WORK.x, WORK.y, WORK.width, WORK.height], WORK))
+  assert.equal(layoutFor(null, null, WORK, 300).ask.y, layoutFor(null, null, WORK).insights.y + 300 + 12)
+  assert.ok(inside(layoutFor('zoom.us', [-50, -50, 3000, 3000], WORK).insights), 'a window larger than the screen is clipped to it')
+})
+
+test('Ask AI stays in its spot when it covers nothing, else moves to a free area away from faces and controls', () => {
+  const panel = { width: PANEL.width, height: 300 }
+  const spot = { x: 968, y: 100 }
+  const strip = { x: 360, y: 31, width: BAR.width, height: BAR.height }
+  const bands = [{ x: 0, y: 836, width: 1440, height: 64 }]
+  assert.deepEqual(askPlace({ work: WORK, spot, faces: [], blocks: [strip, ...bands], panel }), spot)
+  const face = { x: 1000, y: 150, width: 200, height: 250 }
+  const moved = askPlace({ work: WORK, spot, faces: [face], blocks: [strip, ...bands], panel })
+  const placed = { ...moved, ...panel }
+  assert.ok(inside(placed))
+  for (const o of [face, strip, ...bands]) assert.equal(overlap(placed, o), 0, 'covers nothing')
+  const under = askPlace({ work: WORK, spot: { x: 400, y: 40 }, faces: [], blocks: [strip], panel })
+  assert.equal(overlap({ ...under, ...panel }, strip), 0, 'never under the control strip')
+})
+
+test('Ask AI in a full-screen grid of faces with no window rect: on screen, covering as little as possible', () => {
+  const panel = { width: PANEL.width, height: 300 }
+  const faces = []
+  for (const col of [140, 620, 1100]) for (const row of [125, 575]) faces.push({ x: col, y: row, width: 200, height: 200 })
+  const spot = { x: 968, y: 100 }
+  const at = askPlace({ work: WORK, spot, faces, blocks: [], panel })
+  const placed = { ...at, ...panel }
+  assert.ok(inside(placed))
+  const covered = (r) => faces.reduce((sum, f) => sum + overlap(r, f), 0)
+  assert.ok(covered(placed) < covered({ ...spot, ...panel }), 'better than the spot')
+  assert.ok(covered(placed) <= 200 * 70, 'at most a sliver of one face (the grid leaves no gap wide enough)')
+  assert.deepEqual(askPlace({ work: WORK, spot, faces, blocks: [], panel }), at, 'stable: the same answer every time')
+})
+
+test('without a recap from the server, one is built from the call\'s insights and the people seen', () => {
+  const a = { type: 'insights', topic: 'Weekend plans', points: ['p1', 'p2'], actions: [{ id: 'x1', kind: 'events', label: 'e' }] }
+  const b = { type: 'insights', topic: "Jordan's move", points: ['p3', 'p1'], actions: [{ id: 'x2', kind: 'places', label: 'g' }] }
+  const people = [
+    { id: 'p_j', name: 'Jordan Lee', role: 'Friend', line: 'Last time: the move' },
+    { id: 'p_j', name: 'Jordan Lee', role: 'Friend', line: 'Last time: the move' },
+    { id: 'p_m', name: 'Maya Chen', role: '', line: '' },
+  ]
+  assert.deepEqual(recapFrom([a, b], people), {
+    type: 'recap',
+    topic: "Jordan's move",
+    points: ['p3', 'p1', 'p2'],
+    actions: b.actions,
+    people: [{ id: 'p_j', name: 'Jordan Lee', role: 'Friend', lastTime: 'Last time: the move' }, { id: 'p_m', name: 'Maya Chen', role: '', lastTime: '' }],
+  })
+  assert.equal(recapFrom([], []).topic, 'This call')
+  assert.equal(recapFrom([{ points: Array.from({ length: 9 }, (_, i) => 'q' + i), actions: [] }], []).points.length, 5)
+})
+
+test('the debug label says the track, the score against the cutoff and the decision', () => {
+  assert.equal(MATCH_MIN, 0.45)
+  assert.equal(debugLabel({ trackId: 3, score: 0.62, decision: 'Jordan Lee' }), '#3 · 0.62 ≥ 0.45 · Jordan Lee')
+  assert.equal(debugLabel({ trackId: 4, score: 0.31, decision: 'below 0.45' }), '#4 · 0.31 < 0.45 · below 0.45')
+  assert.equal(debugLabel({ trackId: 5, score: null, decision: 'no face yet' }), '#5 · no score · no face yet')
+})
+
+test('the transcript strip and Recap have fixed sizes the layout can count on', () => {
+  assert.ok(STRIP.height > 0 && RECAP.width > PANEL.width)
 })

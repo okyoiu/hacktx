@@ -104,10 +104,11 @@ const POP_MS = 10_000
 const shouldPop = (seen, personId) => !seen.has(personId)
 const isOpen = (popUntil, hovering, now) => hovering || now < popUntil
 
-// Up to 3 bullets: the server's, or (an older server) the label and the last-time line.
+// Up to 5 bullets (three from memory, then "This call: …" lines the server appends while they talk), or
+// (an older server) the label and the last-time line.
 function bulletsOf(person) {
   const list = person.bullets?.length ? person.bullets : [person.role, person.line]
-  return list.filter((b) => typeof b === 'string' && b.trim()).slice(0, 3)
+  return list.filter((b) => typeof b === 'string' && b.trim()).slice(0, 5)
 }
 
 // ---------- People dashboard ----------
@@ -193,4 +194,139 @@ function cardPlace({ face: [x, y, w, h], card, screen, gap = 12, margin = 8 }) {
   return side(clamp(x + w + gap, card.width, screen.width))
 }
 
-if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
+// ---------- fixed spots per call app ----------
+
+// Window sizes the layout counts on, in screen points. Panels grow downwards from their spot (main.js `fit`).
+const BAR = { width: 760, height: 56 }
+const PANEL = { width: 448, gap: 12, margin: 24 }
+const STRIP = { width: 720, height: 64 } // the transcript strip along the bottom
+const RECAP = { width: 560, height: 440 } // height: a guess for centring; the window fits its content
+const INSIGHTS_GUESS = 220
+
+// Where each app keeps its own controls: a band at the top and one at the bottom of its window (points), which
+// side its chat/people panels and self tile use (the rail takes the other), and where the strip sits.
+const PRESETS = {
+  zoom: { side: 'right', strip: 'center', top: 48, bottom: 64 },
+  teams: { side: 'left', strip: 'left', top: 64, bottom: 0 }, // Teams' controls are top right
+  facetime: { side: 'left', strip: 'center', top: 40, bottom: 80 },
+  meet: { side: 'left', strip: 'center', top: 0, bottom: 88 },
+  general: { side: 'right', strip: 'center', top: 48, bottom: 72 },
+}
+
+// The preset for the app name capture/window.py reports; Meet (and any web call) lives in a browser.
+function presetFor(app) {
+  const name = String(app || '')
+  if (/zoom/i.test(name)) return 'zoom'
+  if (/teams/i.test(name)) return 'teams'
+  if (/facetime/i.test(name)) return 'facetime'
+  if (/chrome|arc|safari|firefox|edge/i.test(name)) return 'meet'
+  return 'general'
+}
+
+const clampTo = (v, size, lo, hi) => Math.round(Math.max(lo, Math.min(v, hi - size)))
+
+// The spot of every piece for a call window ([x, y, w, h] in screen points, or null) on a screen's work area:
+// the control strip, Live insights and Ask AI (one rail), the transcript strip and the Recap. Beside the window
+// when there is room (the strip above it, the rail on the wider free side, the transcript below), inside it
+// otherwise, clear of the app's own control bands. `bands` are those bands, for the Ask AI nudge.
+function layoutFor(app, rect, work, insightsHeight = INSIGHTS_GUESS) {
+  const preset = presetFor(app)
+  const p = PRESETS[preset]
+  const { gap, margin } = PANEL
+  const right = work.x + work.width
+  const bottom = work.y + work.height
+  // the window, clipped to the screen; the whole work area when there is none
+  const win = rect ? { x: Math.max(rect[0], work.x), y: Math.max(rect[1], work.y) } : { x: work.x, y: work.y }
+  win.width = rect ? Math.min(rect[0] + rect[2], right) - win.x : work.width
+  win.height = rect ? Math.min(rect[1] + rect[3], bottom) - win.y : work.height
+  const winRight = win.x + win.width
+  const winBottom = win.y + win.height
+
+  const barAbove = win.y - work.y >= BAR.height + gap
+  const bar = {
+    ...BAR,
+    x: clampTo(p.strip === 'left' ? win.x + margin : win.x + (win.width - BAR.width) / 2, BAR.width, work.x + margin, right - margin),
+    y: barAbove ? win.y - gap - BAR.height : win.y + gap / 2,
+  }
+
+  const roomRight = right - winRight
+  const roomLeft = win.x - work.x
+  const outside = Math.max(roomRight, roomLeft) >= PANEL.width + gap + margin
+  const side = outside ? (roomRight >= roomLeft ? 'right' : 'left') : p.side
+  const railX = outside
+    ? side === 'right' ? winRight + gap : win.x - gap - PANEL.width
+    : side === 'right' ? winRight - margin - PANEL.width : win.x + margin
+  const railY = outside ? Math.max(win.y, work.y + margin / 2) : Math.max(win.y + p.top, bar.y + bar.height) + gap
+  const insights = { x: Math.round(railX), y: Math.round(railY), width: PANEL.width }
+  const ask = { ...insights, y: insights.y + insightsHeight + gap }
+
+  const transcriptBelow = bottom - winBottom >= STRIP.height + gap
+  const transcript = {
+    width: Math.min(STRIP.width, win.width - 2 * margin),
+    height: STRIP.height,
+    y: transcriptBelow ? winBottom + gap : winBottom - p.bottom - gap - STRIP.height,
+  }
+  transcript.x = Math.round(win.x + (win.width - transcript.width) / 2)
+
+  const recap = {
+    ...RECAP,
+    x: clampTo(win.x + (win.width - RECAP.width) / 2, RECAP.width, work.x + margin, right - margin),
+    y: clampTo(win.y + (win.height - RECAP.height) / 2, RECAP.height, bar.y + bar.height + gap, bottom - margin),
+  }
+
+  const bands = [
+    p.top && { x: win.x, y: win.y, width: win.width, height: p.top },
+    p.bottom && { x: win.x, y: winBottom - p.bottom, width: win.width, height: p.bottom },
+  ].filter(Boolean)
+  return { preset, bar, insights, ask, transcript, recap, bands }
+}
+
+const area = (a, b) => Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y))
+
+// Where the Ask AI panel goes: its spot when that covers no face and no control (ours or the app's), else the
+// nearest placement that covers nothing, else the one that covers least. Candidates are the work area's
+// corners and each obstacle's edges, so the answer is the same for the same inputs.
+function askPlace({ work, spot, faces, blocks, panel }) {
+  const { gap, margin } = PANEL
+  const obstacles = [...faces, ...blocks]
+  const covered = (x, y) => obstacles.reduce((sum, o) => sum + area({ x, y, ...panel }, o), 0)
+  const clampX = (x) => clampTo(x, panel.width, work.x + margin, work.x + work.width - margin)
+  const clampY = (y) => clampTo(y, panel.height, work.y + margin / 2, work.y + work.height - margin / 2)
+  const home = { x: clampX(spot.x), y: clampY(spot.y) }
+  if (!covered(home.x, home.y)) return home
+  const xs = new Set([home.x, clampX(work.x), clampX(work.x + work.width)])
+  const ys = new Set([home.y, clampY(work.y), clampY(work.y + work.height)])
+  for (const o of obstacles) {
+    xs.add(clampX(o.x + o.width + gap)).add(clampX(o.x - gap - panel.width))
+    ys.add(clampY(o.y + o.height + gap)).add(clampY(o.y - gap - panel.height))
+  }
+  let best = null
+  for (const x of xs) {
+    for (const y of ys) {
+      const score = [covered(x, y), Math.hypot(x - home.x, y - home.y)]
+      if (!best || score[0] < best.score[0] || (score[0] === best.score[0] && score[1] < best.score[1])) best = { x, y, score }
+    }
+  }
+  return { x: best.x, y: best.y }
+}
+
+// ---------- Recap ----------
+
+// A Recap built on this laptop when the server sends none within a few seconds of End call: the last topic,
+// the newest points first (at most 5), the last actions, and each person seen with their "last time" line.
+function recapFrom(insightsList, people) {
+  const last = insightsList[insightsList.length - 1]
+  const points = [...new Set([...insightsList].reverse().flatMap((i) => i.points))].slice(0, 5)
+  const seen = new Map(people.map((p) => [p.id, { id: p.id, name: p.name, role: p.role || '', lastTime: p.line || '' }]))
+  return { type: 'recap', topic: last?.topic || 'This call', points, actions: last?.actions || [], people: [...seen.values()] }
+}
+
+// ---------- developer debug view ----------
+
+const MATCH_MIN = 0.45 // memory/store.py's cutoff; shown so a developer sees why a face stayed "Recalling…"
+function debugLabel({ trackId, score, decision }) {
+  const scored = typeof score === 'number' ? `${score.toFixed(2)} ${score >= MATCH_MIN ? '≥' : '<'} ${MATCH_MIN}` : 'no score'
+  return `#${trackId} · ${scored} · ${decision}`
+}
+
+if (typeof module !== 'undefined') module.exports = { presetFor, layoutFor, askPlace, recapFrom, debugLabel, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
