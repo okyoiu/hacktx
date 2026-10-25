@@ -94,6 +94,9 @@ kbd {
   font-family: inherit; font-size: 13px; font-weight: 500; line-height: 1; color: var(--ink-2);
 }
 
+.warn { font-size: 13px; font-weight: 650; white-space: nowrap; color: #FFD27A; }
+body[data-view="all"] .bar { width: auto; }
+
 /* ---------- panels ---------- */
 .panel { padding: 16px 20px 18px; }
 .panel-head {

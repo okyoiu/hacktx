@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('overlay', {
   onEvent: (fn) => ipcRenderer.on('event', (_e, event) => fn(event)),
   onStatus: (fn) => ipcRenderer.on('status', (_e, state) => fn(state)),
   onPeople: (fn) => ipcRenderer.on('people-open', () => fn()),
+  onLaunch: (fn) => ipcRenderer.on('launch', (_e, statuses) => fn(statuses)),
   onAsk: (fn) => ipcRenderer.on('ask', () => fn()),
   api: (route, body, method) => ipcRenderer.invoke('api', route, body, method),
   fit: (height) => ipcRenderer.send('fit', height),

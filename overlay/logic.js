@@ -131,4 +131,10 @@ function deleteStep(step, event) {
   return 'idle' // cancel, escape, switch
 }
 
-if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver, cleanName, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
+// One launch: the control bar's warning names whatever the launcher couldn't keep running.
+const PART_NAMES = { db: 'Database', server: 'Memory', faces: 'Face capture', transcribe: 'Transcription' }
+function launchWarning(statuses) {
+  return Object.entries(statuses).filter(([, state]) => state === 'down').map(([name]) => PART_NAMES[name]).filter(Boolean).join(' · ')
+}
+
+if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver, cleanName, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }

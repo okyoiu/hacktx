@@ -10,6 +10,7 @@ const { app, BrowserWindow, clipboard, globalShortcut, ipcMain, screen, shell, s
 const fs = require('node:fs')
 const path = require('node:path')
 const { validCall, webUrl } = require('./logic')
+const { createLauncher } = require('./launcher')
 
 const MOCK = process.argv.includes('--mock')
 const MEMORY_URL = process.env.MEMORY_URL || 'http://localhost:8000'
@@ -17,6 +18,7 @@ const ENROLL_URL = process.env.ENROLL_URL || 'http://localhost:8000/enroll'
 const PEOPLE_SIZE = { width: 760, height: 540 }
 const PANEL = { width: 448, gap: 12, margin: 24 }
 const BAR_HEIGHT = 56
+const BAR_WIDTH = 580 // room for People and a launch warning
 const IDLE_OPACITY = 0.3
 
 const windows = {}
@@ -301,7 +303,7 @@ app.whenReady().then(async () => {
   const panel = process.platform === 'darwin' ? { type: 'panel' } : {}
   windows.cards = overlayWindow({ view: 'cards', ox: bounds.x, oy: bounds.y }, { ...bounds, ...panel, focusable: false, acceptFirstMouse: true })
   windows.cards.setIgnoreMouseEvents(true, { forward: true }) // click-through, but hover still reaches thinking pills
-  windows.bar = panelWindow('bar', { width: PANEL.width, height: BAR_HEIGHT, x: right - PANEL.width, y: top })
+  windows.bar = panelWindow('bar', { width: BAR_WIDTH, height: BAR_HEIGHT, x: right - BAR_WIDTH, y: top })
   windows.response = panelWindow('response', { width: PANEL.width, height: 160, x: right - PANEL.width, y: below })
   windows.insights = panelWindow('insights', {
     width: PANEL.width,
@@ -330,10 +332,30 @@ app.whenReady().then(async () => {
   if (MOCK) {
     status('demo')
     replay()
-  } else connect()
+  } else {
+    connect()
+    startEverything()
+  }
 })
+
+// One launch: start what isn't running (database, memory server, capture), stop what we started on quit.
+let launcher
+const launched = {}
+function startEverything() {
+  launcher = createLauncher({
+    root: path.join(__dirname, '..'),
+    onStatus: (name, state) => {
+      launched[name] = state
+      for (const win of Object.values(windows)) win.webContents.send('launch', { ...launched })
+    },
+  })
+  launcher.start().catch((err) => console.error('Launch failed:', err.message))
+}
 
 // Clicking the Dock icon brings a hidden overlay back, in case another app owns ⌘\.
 app.on('activate', () => allHidden && toggleAll())
-app.on('will-quit', () => globalShortcut.unregisterAll())
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll()
+  launcher?.stop()
+})
 app.on('window-all-closed', () => app.quit())

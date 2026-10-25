@@ -307,6 +307,14 @@ function setListening({ on, startedAt }) {
   renderBar()
 }
 
+// One launch: the launcher says which parts it couldn't keep running.
+window.overlay?.onLaunch((statuses) => {
+  const down = launchWarning(statuses)
+  $('warn').hidden = !down
+  $('warn').textContent = down && '⚠ ' + down
+  $('warn').title = down && down + ' stopped. See the logs folder.'
+})
+
 function renderBar() {
   const live = connected && listening.on
   $('bar').dataset.state = barState(connected, listening.on)

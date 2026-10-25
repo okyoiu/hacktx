@@ -1,7 +1,7 @@
 // node --test (npm test in overlay/)
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { ROUTES, elapsed, takesOver, cleanName, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS } = require('./logic')
+const { ROUTES, elapsed, takesOver, cleanName, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS } = require('./logic')
 
 test('main only forwards the memory API calls the overlay makes', () => {
   for (const route of ['/listening', '/ask', '/actions/x1', '/actions/act_2-b']) assert.ok(ROUTES.test(route), route)
@@ -165,4 +165,10 @@ test('deleting someone takes Delete then Confirm, and anything else backs out', 
   assert.equal(asked, 'confirm')
   assert.equal(deleteStep(asked, 'confirm'), 'deleting')
   for (const back of ['cancel', 'escape', 'switch']) assert.equal(deleteStep(asked, back), 'idle')
+})
+
+test('the bar warns about each part that is down, and says nothing when all is well', () => {
+  assert.equal(launchWarning({ db: 'ok', server: 'ok', faces: 'restarting' }), '')
+  assert.equal(launchWarning({ db: 'ok', faces: 'down', transcribe: 'down' }), 'Face capture · Transcription')
+  assert.equal(launchWarning({ nonsense: 'down' }), '')
 })
