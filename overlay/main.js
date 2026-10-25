@@ -14,6 +14,7 @@ const { validCall, webUrl } = require('./logic')
 const MOCK = process.argv.includes('--mock')
 const MEMORY_URL = process.env.MEMORY_URL || 'http://localhost:8000'
 const ENROLL_URL = process.env.ENROLL_URL || 'http://localhost:8000/enroll'
+const PEOPLE_SIZE = { width: 760, height: 540 }
 const PANEL = { width: 448, gap: 12, margin: 24 }
 const BAR_HEIGHT = 56
 const IDLE_OPACITY = 0.3
@@ -120,6 +121,17 @@ function toggleAll() {
   }
 }
 
+// The People dashboard: its own window, centred, opened by the control bar or ⌘⇧P, works without a call.
+function togglePeople() {
+  const win = windows.people
+  if (win.isVisible() && !closing.has(win)) return conceal(win)
+  if (allHidden) toggleAll()
+  reveal(win)
+  if (process.platform === 'darwin') app.focus({ steal: true })
+  win.focus()
+  win.webContents.send('people-open')
+}
+
 function openAsk() {
   if (allHidden) toggleAll()
   closedResponse = null
@@ -176,7 +188,23 @@ function replay() {
 // The demo answers locally, so clicking around in `npm run mock` never posts to a real memory service.
 let demoAnswers = 0
 const demoFaces = new Map()
-function demoApi(route, body) {
+const demoPeople = [
+  { id: 'p_jordan', name: 'Jordan Lee', role: 'Your team lead', firstMet: '2026-09-24T18:00:00Z', lastMet: '2026-10-24T18:00:00Z', lastTime: 'Talked about the move to Austin.' },
+  { id: 'p_maya', name: 'Maya Chen', role: '', firstMet: '2026-10-01T18:00:00Z', lastMet: '2026-10-20T18:00:00Z', lastTime: 'Asked about climbing gyms.' },
+]
+function demoPeopleApi(route, body, method) {
+  const id = route.split('/')[2]
+  const person = demoPeople.find((p) => p.id === id)
+  if (!id) return demoPeople
+  if (!person) return { error: 'Nobody with that id.', status: 404 }
+  if (method === 'DELETE') demoPeople.splice(demoPeople.indexOf(person), 1)
+  if (method === 'PATCH') person.role = body.role ?? person.role
+  if (method !== 'GET') return method === 'PATCH' ? person : { deleted: id }
+  return { ...person, encounters: [{ about: 'Sample', lastTime: person.lastTime, date: person.lastMet }], notes: [{ text: 'A sample note from the demo.' }] }
+}
+
+function demoApi(route, body, method) {
+  if (route.startsWith('/people')) return demoPeopleApi(route, body, method)
   const remember = route.match(/^\/faces\/(\d+)\/remember$/)
   if (remember) {
     const face = demoFaces.get(+remember[1])
@@ -200,12 +228,12 @@ function demoApi(route, body) {
 // ---------- calls from the panels ----------
 
 // Resolves to the service's JSON, or to { error } with a sentence the panel can show as is.
-ipcMain.handle('api', async (e, route, body) => {
-  if (!ours(e) || !validCall(route, body)) return { error: 'The overlay never makes that call.' }
-  if (MOCK) return demoApi(route, body)
+ipcMain.handle('api', async (e, route, body, method = 'POST') => {
+  if (!ours(e) || !validCall(route, body, method)) return { error: 'The overlay never makes that call.' }
+  if (MOCK) return demoApi(route, body, method)
   try {
     const res = await fetch(MEMORY_URL + route, {
-      method: 'POST',
+      method,
       headers: body ? { 'content-type': 'application/json' } : {},
       body: body ? JSON.stringify(body) : undefined,
     })
@@ -252,6 +280,7 @@ on('cards-focus', (_e, on) => {
 })
 on('copy-invite', () => clipboard.writeText(ENROLL_URL))
 on('ask', openAsk)
+on('people-toggle', togglePeople)
 on('toggle-all', toggleAll)
 on('close-response', (_e, id) => {
   if (typeof id !== 'string') return
@@ -281,12 +310,19 @@ app.whenReady().then(async () => {
     y: below,
   })
 
+  const { workArea: area } = screen.getPrimaryDisplay()
+  windows.people = panelWindow('people', {
+    ...PEOPLE_SIZE,
+    x: Math.round(area.x + (area.width - PEOPLE_SIZE.width) / 2),
+    y: Math.round(area.y + (area.height - PEOPLE_SIZE.height) / 2),
+  })
+
   await Promise.all(Object.values(windows).map((win) => new Promise((r) => win.webContents.once('did-finish-load', r))))
   windows.cards.showInactive()
   reveal(windows.bar)
   reveal(windows.insights)
 
-  const shortcuts = { 'CommandOrControl+Return': openAsk, 'CommandOrControl+\\': toggleAll }
+  const shortcuts = { 'CommandOrControl+Return': openAsk, 'CommandOrControl+Shift+P': togglePeople, 'CommandOrControl+\\': toggleAll }
   for (const [keys, run] of Object.entries(shortcuts)) {
     if (!globalShortcut.register(keys, run)) console.warn(`${keys} is taken by another app; use the control bar instead`)
   }

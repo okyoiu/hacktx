@@ -1,7 +1,7 @@
 // node --test (npm test in overlay/)
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { ROUTES, elapsed, takesOver, cleanName, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS } = require('./logic')
+const { ROUTES, elapsed, takesOver, cleanName, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS } = require('./logic')
 
 test('main only forwards the memory API calls the overlay makes', () => {
   for (const route of ['/listening', '/ask', '/actions/x1', '/actions/act_2-b']) assert.ok(ROUTES.test(route), route)
@@ -129,4 +129,40 @@ test('Remember them sends the optional role only when typed, at most 60 characte
   assert.deepEqual(rememberBody(' Maya  Chen ', ''), { name: 'Maya Chen', consent: true })
   assert.deepEqual(rememberBody('Maya', '  Your   team lead '), { name: 'Maya', consent: true, role: 'Your team lead' })
   assert.equal(rememberBody('Maya', 'x'.repeat(100)).role.length, 60)
+})
+
+test('the dashboard may read, rename and delete people, nothing else', () => {
+  assert.ok(validCall('/people', undefined, 'GET'))
+  assert.ok(validCall('/people/p_1a2b', undefined, 'GET'))
+  assert.ok(validCall('/people/p_1a2b', { role: 'Your team lead' }, 'PATCH'))
+  assert.ok(validCall('/people/p_1a2b', undefined, 'DELETE'))
+  for (const [route, method] of [['/people', 'DELETE'], ['/people', 'PATCH'], ['/people/p_1', 'POST'], ['/people/../ask', 'GET'], ['/people/a/b', 'GET'], ['/enroll', 'GET'], ['/ask', 'GET'], ['/people/p_1', 'PUT']]) {
+    assert.ok(!validCall(route, undefined, method), `${method} ${route}`)
+  }
+  assert.ok(!validCall('/people/p_1', { role: 'x'.repeat(3000) }, 'PATCH'))
+  assert.ok(!validCall('/ask', { question: 'hi' }, 'GET'), 'POST routes stay POST')
+})
+
+test('search finds people by name or label, ignoring case', () => {
+  const people = [{ name: 'Jordan Lee', role: 'Your team lead' }, { name: 'Maya Chen', role: '' }, { name: 'Sam' }]
+  assert.deepEqual(filterPeople(people, '  MAYA ').map((p) => p.name), ['Maya Chen'])
+  assert.deepEqual(filterPeople(people, 'lead').map((p) => p.name), ['Jordan Lee'])
+  assert.equal(filterPeople(people, '').length, 3)
+  assert.equal(filterPeople(people, 'zzz').length, 0)
+})
+
+test('dates read as "Sep 24" and a bad date as nothing; labels are cleaned like the form', () => {
+  assert.equal(shortDate('2026-09-24T18:00:00Z'), 'Sep 24')
+  assert.equal(shortDate('nope'), '')
+  assert.equal(shortDate(undefined), '')
+  assert.equal(cleanRole('  Your   team lead '), 'Your team lead')
+  assert.equal(cleanRole('x'.repeat(90)).length, 60)
+})
+
+test('deleting someone takes Delete then Confirm, and anything else backs out', () => {
+  assert.equal(deleteStep('idle', 'confirm'), 'idle', 'no confirm without asking first')
+  const asked = deleteStep('idle', 'delete')
+  assert.equal(asked, 'confirm')
+  assert.equal(deleteStep(asked, 'confirm'), 'deleting')
+  for (const back of ['cancel', 'escape', 'switch']) assert.equal(deleteStep(asked, back), 'idle')
 })

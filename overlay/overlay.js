@@ -13,6 +13,7 @@ const $ = (id) => document.getElementById(id)
 document.body.dataset.view = view
 $('bar').hidden = !shows('bar')
 $('insights').hidden = !shows('insights')
+$('people').hidden = view !== 'people' // the dashboard has its own window
 if (!/Mac/.test(navigator.platform)) for (const key of document.querySelectorAll('kbd.mod')) key.textContent = 'Ctrl'
 
 function el(tag, className, text) {
@@ -23,7 +24,7 @@ function el(tag, className, text) {
 }
 
 // resolves to the service's answer, or to { error } with a sentence to show (see main.js)
-const api = (route, body) => (window.overlay ? window.overlay.api(route, body) : Promise.resolve({ error: 'Open the overlay app to send this.' }))
+const api = (route, body, method) => (window.overlay ? window.overlay.api(route, body, method) : Promise.resolve({ error: 'Open the overlay app to send this.' }))
 
 function handle(e) {
   if (shows('cards')) {
@@ -365,6 +366,7 @@ if (shows('bar')) {
     tick()
   })
   $('askBtn').addEventListener('click', () => window.overlay?.ask())
+  $('peopleBtn').addEventListener('click', () => window.overlay?.togglePeople())
   $('hideBtn').addEventListener('click', () => window.overlay?.toggleAll())
 }
 
@@ -572,3 +574,135 @@ for (const part of ['insights', 'response']) {
 
 window.overlay?.onEvent(handle)
 if (shows('insights')) wakePanel()
+
+// ---------- People dashboard ----------
+
+let everyone = []
+let current = null // the person on the right: { id, step }
+
+function personRow(p) {
+  const item = el('li')
+  const button = el('button', 'person-row')
+  button.type = 'button'
+  button.setAttribute('aria-current', String(current?.id === p.id))
+  const sub = [p.role, shortDate(p.lastMet) && 'Met ' + shortDate(p.lastMet)].filter(Boolean).join(' · ')
+  button.append(el('span', 'who', p.name), el('span', 'sub', sub))
+  button.addEventListener('click', () => openPerson(p.id))
+  item.append(button)
+  return item
+}
+
+function renderPeople() {
+  const found = filterPeople(everyone, $('peopleSearch').value)
+  $('peopleList').replaceChildren(...found.map(personRow))
+  $('peopleEmpty').textContent = found.length ? '' : everyone.length ? 'Nobody matches that.' : "Nobody yet. Use Remember them on a call."
+}
+
+async function loadPeople() {
+  const got = await api('/people', undefined, 'GET')
+  if (got.error) $('peopleEmpty').textContent = got.error
+  else {
+    everyone = got
+    renderPeople()
+  }
+  if (current) openPerson(current.id)
+}
+
+function showPersonNote(text) {
+  const note = $('person').querySelector('.note')
+  if (note) note.textContent = text
+}
+
+async function openPerson(id) {
+  if (current?.id !== id) current = { id, step: 'idle' }
+  const p = await api('/people/' + encodeURIComponent(id), undefined, 'GET')
+  if (current?.id !== id) return // they picked someone else while this loaded
+  if (p.error) {
+    $('person').replaceChildren(el('p', 'note', p.error))
+    return
+  }
+  renderPerson(p)
+  renderPeople()
+}
+
+function renderPerson(p) {
+  const role = el('input', 'role-field')
+  Object.assign(role, { type: 'text', maxLength: 60, value: p.role || '', placeholder: 'Who are they to you?', autocomplete: 'off', spellcheck: false })
+  role.setAttribute('aria-label', 'Who are they to you?')
+  const saveRole = el('button', 'pill-btn', 'Save')
+  saveRole.type = 'button'
+  const note = el('p', 'note')
+  note.setAttribute('role', 'status')
+  const doSave = async () => {
+    const { error } = await api('/people/' + encodeURIComponent(p.id), { role: cleanRole(role.value) }, 'PATCH')
+    note.textContent = error || 'Saved.'
+    if (!error) loadPeople()
+  }
+  saveRole.addEventListener('click', doSave)
+  role.addEventListener('keydown', (e) => e.key === 'Enter' && doSave())
+  const roleRow = el('div', 'role-row')
+  roleRow.append(role, saveRole)
+
+  const last = p.encounters?.[0]?.lastTime
+  const talks = (p.encounters || []).map((e) => {
+    const item = el('li', null, e.lastTime || '')
+    const when = [shortDate(e.date), e.about].filter(Boolean).join(' · ')
+    if (when) item.append(el('span', 'about', when))
+    return item
+  })
+  const notes = (p.notes || []).map((n) => el('li', null, n.text))
+  const sections = [el('h2', null, p.name), el('div', 'met', shortDate(p.firstMet) && 'First met ' + shortDate(p.firstMet)), roleRow, note]
+  if (last) sections.push(el('h3', null, 'Last time'), el('p', null, last))
+  if (talks.length) sections.push(el('h3', null, 'Every conversation'), listOf(talks))
+  if (notes.length) sections.push(el('h3', null, 'Notes'), listOf(notes))
+  sections.push(deleteRow(p))
+  $('person').replaceChildren(...sections)
+}
+
+function listOf(items) {
+  const ul = el('ul')
+  ul.append(...items)
+  return ul
+}
+
+// Delete, then a confirm step inside this window; Cancel or Escape backs out.
+function deleteRow(p) {
+  const row = el('div', 'delete-row')
+  const button = (text, className, event) => {
+    const b = el('button', 'pill-btn ' + className, text)
+    b.type = 'button'
+    b.addEventListener('click', () => stepDelete(p, event))
+    return b
+  }
+  if (current.step === 'idle') row.append(button('Delete…', '', 'delete'))
+  else row.append(el('span', null, `Forget ${p.name}? This can't be undone.`), button('Delete', 'danger', 'confirm'), button('Cancel', '', 'cancel'))
+  return row
+}
+
+async function stepDelete(p, event) {
+  current.step = deleteStep(current.step, event)
+  if (current.step !== 'deleting') return renderPerson(p)
+  const { error } = await api('/people/' + encodeURIComponent(p.id), undefined, 'DELETE')
+  if (error) {
+    current.step = deleteStep('deleting', 'cancel')
+    renderPerson(p)
+    return showPersonNote(error)
+  }
+  current = null
+  $('person').replaceChildren(el('p', 'empty', `${p.name} is forgotten.`))
+  loadPeople()
+}
+
+if (view === 'people') {
+  $('peopleSearch').addEventListener('input', renderPeople)
+  $('closePeople').addEventListener('click', () => window.overlay?.togglePeople())
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return
+    if (current?.step === 'confirm') {
+      current.step = deleteStep('confirm', 'escape')
+      openPerson(current.id)
+    } else window.overlay?.togglePeople()
+  })
+  window.overlay?.onPeople(loadPeople)
+  loadPeople()
+}

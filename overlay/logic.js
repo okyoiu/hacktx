@@ -3,14 +3,19 @@
 // The only memory API calls the overlay makes; main refuses anything else. Action ids are short words.
 const ROUTES = /^\/(listening|ask|actions\/[\w-]+|faces\/\d+\/remember)$/
 
+// What each method may call. The People dashboard reads, renames and deletes people; ids are short words.
+const PERSON = /^\/people\/[\w-]+$/
+const CALLS = { POST: ROUTES, GET: /^\/people(\/[\w-]+)?$/, PATCH: PERSON, DELETE: PERSON }
+
 // A name typed into "Remember them": trimmed, single-spaced, at most 80 characters like the enroll page.
 function cleanName(raw) {
   return String(raw).trim().replace(/\s+/g, ' ').slice(0, 80)
 }
 
 // The "Remember them" body: `role` ("Your team lead", at most 60 characters) is sent only when typed.
+const cleanRole = (raw) => String(raw).trim().replace(/\s+/g, ' ').slice(0, 60)
 function rememberBody(name, role) {
-  const label = String(role).trim().replace(/\s+/g, ' ').slice(0, 60)
+  const label = cleanRole(role)
   return { name: cleanName(name), consent: true, ...(label && { role: label }) }
 }
 
@@ -36,8 +41,8 @@ function isQuiet(cardCount, lastActive, now) {
 }
 
 // A call is a known route plus no body or a small plain object; main checks this before forwarding.
-function validCall(route, body) {
-  if (typeof route !== 'string' || !ROUTES.test(route)) return false
+function validCall(route, body, method = 'POST') {
+  if (typeof route !== 'string' || !Object.hasOwn(CALLS, method) || !CALLS[method].test(route)) return false
   if (body == null) return true
   return typeof body === 'object' && !Array.isArray(body) && JSON.stringify(body).length <= 2000
 }
@@ -105,4 +110,25 @@ function bulletsOf(person) {
   return list.filter((b) => typeof b === 'string' && b.trim()).slice(0, 3)
 }
 
-if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver, cleanName, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
+// ---------- People dashboard ----------
+
+// Search matches the name or the label, ignoring case; an empty search lists everyone.
+function filterPeople(people, query) {
+  const needle = String(query).trim().toLowerCase()
+  return people.filter((p) => !needle || `${p.name} ${p.role || ''}`.toLowerCase().includes(needle))
+}
+
+// "Sep 24" from an ISO date, or "" when the server sent nothing usable.
+function shortDate(iso) {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
+}
+
+// Deleting takes two clicks: Delete, then Confirm. Cancel, Escape or opening someone else puts it back.
+function deleteStep(step, event) {
+  if (event === 'delete') return step === 'idle' ? 'confirm' : step
+  if (event === 'confirm') return step === 'confirm' ? 'deleting' : step
+  return 'idle' // cancel, escape, switch
+}
+
+if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver, cleanName, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
