@@ -7,7 +7,7 @@ const view = q.get('view') || 'all'
 const ISLAND_PARTS = ['bar', 'insights', 'response', 'recap'] // all drawn by the island window
 const shows = (part) => view === 'all' || view === part || (view === 'island' && ISLAND_PARTS.includes(part))
 const origin = { x: +q.get('ox') || 0, y: +q.get('oy') || 0 } // the cards window's top-left in screen points
-const CARD = { width: 300, gap: 12, open: 170 } // open: room for the name, the facts row and three bullets (CARD_SIZE in logic.js)
+const CARD = { width: 340, gap: 12, open: 300 } // open: the name, role, the facts row and three bullets (CARD_SIZE in logic.js)
 const KIND_EMOJI = { define: '📘', search: '🌐', places: '📍', events: '📅', recall: '👋', followups: '💬', helpful: '✨' }
 const calm = matchMedia('(prefers-reduced-motion: reduce)')
 const DEBUG = q.get('debug') === '1' // developer mode: only main.js sets this, and only when started with `npm run dev`
@@ -35,9 +35,13 @@ function handle(e) {
   if (shows('cards')) {
     if (e.type === 'face') {
       $('hint').hidden = true // a face showed up; the hint has done its job
+      faceBoxes.set(e.trackId, e.screenBox)
       placeCard(e)
     }
-    if (e.type === 'face_gone') removeCard(e.trackId)
+    if (e.type === 'face_gone') {
+      faceBoxes.delete(e.trackId)
+      removeCard(e.trackId)
+    }
     if (e.type === 'caption') heard(e.speaker)
     if (DEBUG && e.type === 'debug') drawDebug(e)
     if (DEBUG && e.type === 'face_gone') $('dbg' + e.trackId)?.remove()
@@ -70,6 +74,19 @@ function handle(e) {
 function placeCard({ trackId, screenBox, person }) {
   const id = 't' + trackId
   let card = $(id)
+  const kind = cardKind(person, DEBUG)
+  if (kind === 'none') return card?.remove() // your own tile: nothing
+  if (kind === 'you') {
+    // developers see a dim "You" so they know the self tile was recognised; it takes no clicks and never opens
+    if (!card) {
+      card = el('div', 'card glass you')
+      card.id = id
+      card.append(el('span', 'name', 'You'))
+      $('cards').append(card)
+    }
+    card.dataset.face = JSON.stringify(screenBox)
+    return position(card)
+  }
   const known = person ? [person.id, ...bulletsOf(person), person.met].join('\n') : 'unknown'
   if (!card) {
     card = el('div')
@@ -78,12 +95,12 @@ function placeCard({ trackId, screenBox, person }) {
     card.addEventListener('mouseenter', () => {
       card.dataset.hover = 'true'
       syncMouse()
-      syncOpen(card)
+      syncOpen(card, true)
     })
     card.addEventListener('mouseleave', () => {
       delete card.dataset.hover
       syncMouse()
-      syncOpen(card)
+      syncOpen(card, true)
     })
     fillCard(card, person)
     $('cards').append(card)
@@ -111,17 +128,59 @@ function placeCard({ trackId, screenBox, person }) {
     card.dataset.known = String(!!person) // a pill that became a name card is placed for its new size
     position(card)
   }
+  settleOthers(card)
 }
 
-// A known card is placed for its open size, so opening it never pushes it over the face.
-function position(card) {
-  const [x, y, w, h] = JSON.parse(card.dataset.face)
+// A known card is placed for its open size, so opening it never pushes it over the face, and clear of every
+// other face and the island.
+let islandRect = null // the island window, in this window's coordinates (main.js sends it)
+const faceBoxes = new Map() // trackId -> screenBox of every face on screen, your own included
+const localFace = ([x, y, w, h]) => [x - origin.x, y - origin.y, w, h]
+function avoidFor(card) {
+  const others = [...faceBoxes].filter(([id]) => 't' + id !== card?.id).map(([, box]) => localFace(box))
+  // and the other cards where they are now, so two cards never stack
+  for (const c of document.querySelectorAll('#cards .card[data-place]')) {
+    if (c === card) continue
+    const [left, top] = JSON.parse(c.dataset.place)
+    const { width, height } = cardSize(c)
+    others.push([left, top, width, height])
+  }
+  if (view === 'all') {
+    const r = $('island').getBoundingClientRect()
+    return [...others, [r.left, r.top, r.width, r.height]]
+  }
+  return islandRect ? [...others, islandRect] : others
+}
+// A closed tag is placed by its own size (so it hugs its face); an open card by its full size. A known card's
+// closed height is its row, never the body still folding away.
+const TAG_HEIGHT = 30
+function cardSize(card) {
+  if (card.classList.contains('open')) return { width: CARD.width, height: CARD.open }
   const known = card.classList.contains('known')
-  const size = known ? { width: CARD.width, height: CARD.open } : { width: card.offsetWidth || CARD.width, height: card.offsetHeight || 40 }
-  const { left, top } = cardPlace({ face: [x - origin.x, y - origin.y, w, h], card: size, screen: { width: innerWidth, height: innerHeight }, gap: CARD.gap })
+  return { width: card.offsetWidth || CARD.width, height: known ? TAG_HEIGHT : card.offsetHeight || TAG_HEIGHT }
+}
+function position(card) {
+  const size = cardSize(card)
+  const { left, top } = cardPlace({ face: localFace(JSON.parse(card.dataset.face)), card: size, screen: { width: innerWidth, height: innerHeight }, avoid: avoidFor(card), gap: CARD.gap, margin: 16 })
+  card.dataset.place = JSON.stringify([left, top])
   card.style.transform = `translate(${left}px, ${top}px)`
 }
-window.addEventListener('resize', () => document.querySelectorAll('#cards .card[data-face]').forEach(position))
+// A face or the island arrived under a card that was already placed: that card moves, the others stay.
+function settleOthers(except) {
+  for (const card of document.querySelectorAll('#cards .card[data-face]')) {
+    if (card === except || !card.dataset.place) continue
+    const [left, top] = JSON.parse(card.dataset.place)
+    const { width, height } = cardSize(card)
+    const covered = avoidFor(card).some(([x, y, w, h]) => left < x + w && left + width > x && top < y + h && top + height > y)
+    if (covered) position(card)
+  }
+}
+const repositionAll = () => document.querySelectorAll('#cards .card[data-face]').forEach(position)
+window.addEventListener('resize', repositionAll)
+window.overlay?.onIslandBounds((b) => {
+  islandRect = [b.x - origin.x, b.y - origin.y, b.width, b.height]
+  settleOthers(null)
+})
 
 function pop(card) {
   card.dataset.popUntil = Date.now() + POP_MS
@@ -148,10 +207,13 @@ setInterval(() => {
 // tag. ✕ closes it for that person for the rest of the call; clicking the name tag opens or closes it by hand.
 const popped = new Set() // person ids already popped in this call; emptied when the last card leaves
 const dismissed = new Set() // person ids whose card was closed with ✕
-function syncOpen(card) {
+// `hover`: the pointer opened it, so it must not move out from under the pointer.
+function syncOpen(card, hover = false) {
   const pid = card.dataset.pid
   const open = card.dataset.pinned === 'true' || (!dismissed.has(pid) && isOpen(+card.dataset.popUntil || 0, !!card.dataset.hover, Date.now()))
+  const was = card.classList.contains('open')
   card.classList.toggle('open', open)
+  if (open !== was && !hover && card.dataset.face) position(card) // the open card and the tag have different spots
 }
 
 function fillCard(card, person, oldBullets = new Set()) {
@@ -216,10 +278,17 @@ function openRemember(card) {
   const role = el('input', 'name-field')
   Object.assign(role, { type: 'text', maxLength: 60, placeholder: 'Who are they to you? (optional)', autocomplete: 'off', spellcheck: false })
   role.setAttribute('aria-label', 'Who are they to you?')
+  // what they agree to, read aloud ("Is that okay?") before the tick; the second tick is optional
+  const points = el('ul', 'points-read')
+  points.append(...REMEMBER_POINTS.map((p) => el('li', null, p)))
   const consent = el('input')
   consent.type = 'checkbox'
   const yes = el('label', 'yes')
   yes.append(consent, el('span', null, 'They said yes'))
+  const connector = el('input')
+  connector.type = 'checkbox'
+  const muse = el('label', 'yes')
+  muse.append(connector, el('span', null, 'Optional: my Muse app may read their notes'))
   const save = el('button', 'save', 'Save')
   save.type = 'submit'
   save.disabled = true
@@ -236,7 +305,7 @@ function openRemember(card) {
   const note = el('p', 'note')
   note.setAttribute('role', 'status')
   const form = el('form', 'remember-form')
-  form.append(name, role, yes, actions, note)
+  form.append(name, role, points, yes, muse, actions, note)
   card.replaceChildren(head, form)
 
   const ready = () => (save.disabled = !canSave(name.value, consent.checked))
@@ -250,11 +319,11 @@ function openRemember(card) {
   form.addEventListener('submit', async (e) => {
     e.preventDefault()
     if (save.disabled) return
-    for (const control of [name, role, consent, save]) control.disabled = true
+    for (const control of [name, role, consent, connector, save]) control.disabled = true
     save.textContent = 'Saving…'
     note.textContent = ''
     card.dataset.saving = 'true'
-    const { error, status } = await api(`/faces/${Number(card.dataset.track)}/remember`, rememberBody(name.value, role.value))
+    const { error, status } = await api(`/faces/${Number(card.dataset.track)}/remember`, rememberBody(name.value, role.value, connector.checked))
     delete card.dataset.saving
     if (!card.classList.contains('remembering')) return // already their name card
     const result = rememberResult({ error, status }, card.dataset.gone)
@@ -262,7 +331,7 @@ function openRemember(card) {
     if (result.kind === 'error') {
       note.textContent = result.text
       save.textContent = 'Save'
-      name.disabled = role.disabled = consent.disabled = false
+      name.disabled = role.disabled = consent.disabled = connector.disabled = false
       return ready()
     }
     // the server now pushes this face's updated `face` event, which morphs the form into their name card
@@ -859,6 +928,7 @@ function previewLayout() {
   const b = islandBounds(l.bar, { width: $('island').offsetWidth, height: $('island').offsetHeight }, work)
   Object.assign($('island').style, { left: b.x + 'px', top: b.y + 'px' }) // its width comes from the stage
   put($('transcript'), l.transcript)
+  settleOthers(null) // cards keep clear of the island as it grows (main.js tells the real cards window)
 }
 if (view === 'all') {
   previewLayout()
@@ -910,6 +980,22 @@ async function loadPeople() {
     renderPeople()
   }
   if (current) openPerson(current.id)
+  renderStale(await api('/people/stale?days=30', undefined, 'GET'))
+}
+
+// "Haven't talked in a while": the people you last met 30 days ago or more, at the top; hidden when empty.
+function renderStale(stale) {
+  const rows = Array.isArray(stale) ? stale : []
+  $('stale').hidden = !rows.length
+  $('staleList').replaceChildren(...rows.map((p) => {
+    const item = el('li')
+    const button = el('button', 'person-row')
+    button.type = 'button'
+    button.append(el('span', 'who', p.name), el('span', 'sub', [staleLine(p), p.role].filter(Boolean).join(' · ')))
+    button.addEventListener('click', () => openPerson(p.id))
+    item.append(button)
+    return item
+  }))
 }
 
 function showPersonNote(text) {
@@ -947,16 +1033,26 @@ function renderPerson(p) {
   const roleRow = el('div', 'role-row')
   roleRow.append(role, saveRole)
 
-  const last = p.encounters?.[0]?.lastTime
+  // the same memory jogger as the card: the label row, then Muse's facts and how you met
+  const facts = el('dl', 'facts')
+  for (const f of cardFacts(p, Date.now())) {
+    const item = el('div')
+    const value = el('dd', null, f.value)
+    if (f.title) value.title = f.title
+    item.append(el('dt', null, f.label), value)
+    facts.append(item)
+  }
+  const jogger = el('ul', 'bullets')
+  jogger.append(...[...(p.facts || []).map((f) => f.text), p.howMet && 'Met ' + p.howMet].filter(Boolean).map((b) => el('li', null, oneLine(b, 80))))
   const talks = (p.encounters || []).map((e) => {
     const item = el('li', null, e.lastTime || '')
-    const when = [shortDate(e.date), e.about].filter(Boolean).join(' · ')
+    const when = [shortDate(e.metAt || e.date), e.about].filter(Boolean).join(' · ')
     if (when) item.append(el('span', 'about', when))
     return item
   })
   const notes = (p.notes || []).map((n) => el('li', null, n.text))
-  const sections = [el('h2', null, p.name), el('div', 'met', shortDate(p.firstMet) && 'First met ' + shortDate(p.firstMet)), roleRow, note]
-  if (last) sections.push(el('h3', null, 'Last time'), el('p', null, last))
+  const sections = [el('h2', null, p.name), el('div', 'met', shortDate(p.firstMet) && 'First met ' + shortDate(p.firstMet)), roleRow, note, facts]
+  if (jogger.children.length) sections.push(jogger)
   if (talks.length) sections.push(el('h3', null, 'Every conversation'), listOf(talks))
   if (notes.length) sections.push(el('h3', null, 'Notes'), listOf(notes))
   sections.push(deleteRow(p))

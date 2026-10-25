@@ -3,6 +3,7 @@
 {"delayMs": 200, "event": {"type": "face", "trackId": 3, "screenBox": [180, 260, 200, 260], "person": null}}
 {"delayMs": 0, "event": {"type": "debug", "trackId": 3, "personBox": [120, 200, 340, 560], "faceBox": [180, 260, 200, 260], "score": null, "decision": "no face yet", "fps": 4.8}}
 {"delayMs": 300, "event": {"type": "face", "trackId": 4, "screenBox": [620, 270, 190, 250], "person": null}}
+{"delayMs": 0, "event": {"type": "face", "trackId": 6, "screenBox": [300, 560, 180, 220], "person": {"id": "p_you", "name": "You", "role": "", "self": true, "line": "", "met": "", "bullets": []}}}
 {"delayMs": 0, "event": {"type": "debug", "trackId": 4, "personBox": [560, 210, 330, 560], "faceBox": [620, 270, 190, 250], "score": 0.31, "decision": "below 0.45", "fps": 4.8}}
 {"delayMs": 2200, "event": {"type": "face", "trackId": 3, "screenBox": [184, 262, 200, 260], "person": {"id": "p_jordan", "name": "Jordan Lee", "line": "Was planning a move to Austin", "met": "Met Sep 24", "lastSeen": "2026-10-18", "lastSpoke": "2026-10-18", "topic": "his move to Austin", "context": "personal", "role": "Friend from climbing (sample)", "bullets": ["Friend from climbing", "Last time: was planning a move to Austin", "Starts a new fintech job Monday"]}}}
 {"delayMs": 0, "event": {"type": "debug", "trackId": 3, "personBox": [124, 202, 340, 560], "faceBox": [184, 262, 200, 260], "score": 0.62, "decision": "Jordan Lee", "fps": 4.9}}

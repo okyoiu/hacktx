@@ -26,7 +26,7 @@ const DEV = devMode(process.argv, process.env)
 if (DEV) process.env.HELLO_DEBUG = '1'
 const MEMORY_URL = process.env.MEMORY_URL || 'http://localhost:8000'
 const ENROLL_URL = process.env.ENROLL_URL || 'http://localhost:8000/enroll'
-const PEOPLE_SIZE = { width: 760, height: 540 }
+const PEOPLE_SIZE = { width: 840, height: 620 }
 const IDLE_OPACITY = 0.3
 const RECAP_WAIT_MS = 15_000 // after End call, how long to wait for the server's recap before building one here
 const ICON = path.join(__dirname, 'icon.png')
@@ -192,7 +192,9 @@ function place() {
 // The island grows and shrinks around its anchor as the pill becomes a notice, a sheet or the Recap.
 function fitIsland(animate = false) {
   if (!layout) return
-  move(windows.island, islandBounds(layout.bar, islandSize, workAreaFor(callWindow.rect)), animate && !reducedMotion())
+  const bounds = islandBounds(layout.bar, islandSize, workAreaFor(callWindow.rect))
+  move(windows.island, bounds, animate && !reducedMotion())
+  windows.cards.webContents.send('island-bounds', bounds) // cards keep clear of it
 }
 
 // ---------- events in ----------

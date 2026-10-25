@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('overlay', {
   onAsk: (fn) => ipcRenderer.on('ask', () => fn()),
   onTranscriptShown: (fn) => ipcRenderer.on('transcript-shown', (_e, shown) => fn(shown)),
   onDebugShow: (fn) => ipcRenderer.on('debug-show', (_e, on) => fn(on)), // main only sends this in developer mode
+  onIslandBounds: (fn) => ipcRenderer.on('island-bounds', (_e, bounds) => fn(bounds)),
   api: (route, body, method) => ipcRenderer.invoke('api', route, body, method),
   fit: (size) => ipcRenderer.send('fit', size), // a height, or { width, height } for the island
   setIdle: (idle) => ipcRenderer.send('panel-idle', idle),

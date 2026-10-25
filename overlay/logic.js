@@ -5,19 +5,29 @@ const ROUTES = /^\/(listening|ask|actions\/[\w-]+|faces\/\d+\/remember|calls\/en
 
 // What each method may call. The People dashboard reads, renames and deletes people; ids are short words.
 const PERSON = /^\/people\/[\w-]+$/
-const CALLS = { POST: ROUTES, GET: /^\/(people(\/[\w-]+)?|health)$/, PATCH: PERSON, DELETE: PERSON }
+const CALLS = { POST: ROUTES, GET: /^\/(people(\/[\w-]+)?|people\/stale\?days=\d{1,4}|health)$/, PATCH: PERSON, DELETE: PERSON }
 
 // A name typed into "Remember them": trimmed, single-spaced, at most 80 characters like the enroll page.
 function cleanName(raw) {
   return String(raw).trim().replace(/\s+/g, ' ').slice(0, 80)
 }
 
-// The "Remember them" body: `role` ("Your team lead", at most 60 characters) is sent only when typed.
+// The "Remember them" body: `role` ("Your team lead", at most 60 characters) is sent only when typed, and
+// `connector: true` only when they also agreed to the host's Muse app reading their notes.
 const cleanRole = (raw) => String(raw).trim().replace(/\s+/g, ' ').slice(0, 60)
-function rememberBody(name, role) {
+function rememberBody(name, role, connector = false) {
   const label = cleanRole(role)
-  return { name: cleanName(name), consent: true, ...(label && { role: label }) }
+  return { name: cleanName(name), consent: true, ...(label && { role: label }), ...(connector && { connector: true }) }
 }
+
+// What the host reads aloud before "They said yes": the enroll page's points, one line each.
+const REMEMBER_POINTS = [
+  'Face: numbers made from your face, never your photo',
+  'Name, and who you are to me',
+  'Voice: call audio goes to Meta’s Muse to become text',
+  'What you say: Muse writes notes, facts, how we met, a topic',
+  'Delete it all any time with your link',
+]
 
 // Call time since startedAt: "mm:ss", or "h:mm:ss" past an hour; "00:00" while unknown.
 function elapsed(startedAt, now) {
@@ -224,17 +234,39 @@ function healthProblems(health, launchWarningText = '') {
 const insightsEmptyText = (listeningOn) => (listeningOn === false ? 'Paused. Resume to keep listening.' : 'Listening…')
 
 // Where a card goes, in window coordinates: beside the face (right, else left), else below it, else above,
-// so it never covers the face. A side card slides up or down to stay on screen. With no room anywhere it
-// goes beside the face anyway, clamped (shortcut: one card can't avoid a face that fills the screen).
-function cardPlace({ face: [x, y, w, h], card, screen, gap = 12, margin = 8 }) {
+// the first spot on screen that covers none of `avoid` (the other faces, the island); with none free, the
+// spot that covers the least of them. A side card slides up or down to stay on screen.
+function cardPlace({ face: [x, y, w, h], card, screen, avoid = [], gap = 12, margin = 8 }) {
   const clamp = (v, size, max) => Math.max(margin, Math.min(v, max - size - margin))
   const side = (left) => ({ left, top: clamp(y, card.height, screen.height) })
-  if (x + w + gap + card.width <= screen.width - margin) return side(x + w + gap)
-  if (x - gap - card.width >= margin) return side(x - gap - card.width)
   const across = clamp(x, card.width, screen.width)
-  if (y + h + gap + card.height <= screen.height - margin) return { left: across, top: y + h + gap }
-  if (y - gap - card.height >= margin) return { left: across, top: y - gap - card.height }
-  return side(clamp(x + w + gap, card.width, screen.width))
+  const right = x + w + gap + card.width <= screen.width - margin && x + w + gap
+  const leftOf = x - gap - card.width >= margin && x - gap - card.width
+  const below = y + h + gap + card.height <= screen.height - margin && y + h + gap
+  const above = y - gap - card.height >= margin && y - gap - card.height
+  const base = [right && side(right), leftOf && side(leftOf), below && { left: across, top: below }, above && { left: across, top: above }].filter(Boolean)
+  const spots = [...base]
+  // the same spots slid along the face to the far side of each thing in the way
+  for (const [ax, ay, aw, ah] of avoid) {
+    const tops = [ay + ah + gap, ay - gap - card.height].map((t) => clamp(t, card.height, screen.height))
+    const lefts = [ax + aw + gap, ax - gap - card.width].map((l) => clamp(l, card.width, screen.width))
+    for (const top of tops) {
+      if (right) spots.push({ left: right, top })
+      if (leftOf) spots.push({ left: leftOf, top })
+    }
+    for (const left of lefts) {
+      if (below) spots.push({ left, top: below })
+      if (above) spots.push({ left, top: above })
+    }
+  }
+  spots.push(side(clamp(x + w + gap, card.width, screen.width))) // no room anywhere: beside, clamped
+  const own = [x, y, w, h]
+  const covers = (s) => [...avoid, own].reduce((sum, [ax, ay, aw, ah]) => sum + area({ x: s.left, y: s.top, ...card }, { x: ax, y: ay, width: aw, height: ah }), 0)
+  // the first free base spot in that order; else the nearest free slid spot; else the one that covers least
+  const away = (s) => Math.hypot(s.left + card.width / 2 - (x + w / 2), s.top + card.height / 2 - (y + h / 2))
+  const free = spots.filter((s) => !covers(s))
+  if (free.length) return base.find((s) => free.includes(s)) || free.reduce((best, s) => (away(s) < away(best) ? s : best))
+  return spots.reduce((best, s) => (covers(s) < covers(best) ? s : best))
 }
 
 // A card moves with its face only when the face's centre has moved more than JITTER points; the tracker's
@@ -252,10 +284,10 @@ function shouldMove(prev, next) {
 
 // Window sizes the layout counts on, in screen points. Panels grow downwards from their spot (main.js `fit`).
 // The strip's spot is the island at its widest (the sheet); as a pill it sits centred in that spot.
-const BAR = { width: 560, height: 44 }
-const ISLAND = { pill: 236, sheet: 560 }
+const BAR = { width: 600, height: 44 }
+const ISLAND = { pill: 236, sheet: 600 }
 const PANEL = { width: 448, gap: 12, margin: 24 }
-const STRIP = { width: 720, height: 64 } // the transcript strip along the bottom
+const STRIP = { width: 720, height: 72 } // the transcript strip along the bottom
 const RECAP = { width: 560, height: 440 } // height: a guess for centring; the window fits its content
 const INSIGHTS_GUESS = 220
 
@@ -342,12 +374,27 @@ const area = (a, b) => Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math
 
 // The open name card beside a face, in screen points, for keeping panels off it (the renderer places the
 // real card the same way, so this is where it is).
-const CARD_SIZE = { width: 300, height: 170 } // an open card: name, the facts row, three bullets
+const CARD_SIZE = { width: 340, height: 300 } // an open card: name, role, the facts row, three bullets
 const PILL_SIZE = { width: 132, height: 36 } // a "Recalling…" pill
-function cardRect([x, y, w, h], screen, known = true) {
+function cardRect([x, y, w, h], screen, known = true, avoid = []) {
   const size = known ? CARD_SIZE : PILL_SIZE
-  const { left, top } = cardPlace({ face: [x - screen.x, y - screen.y, w, h], card: size, screen })
+  const local = avoid.map(([ax, ay, aw, ah]) => [ax - screen.x, ay - screen.y, aw, ah])
+  const { left, top } = cardPlace({ face: [x - screen.x, y - screen.y, w, h], card: size, screen, avoid: local })
   return { x: left + screen.x, y: top + screen.y, ...size }
+}
+
+// What to draw for a face: a thinking pill, a known card, nothing for your own tile (`person.self`), or a dim
+// "You" tag for developers.
+function cardKind(person, debug) {
+  if (!person) return 'thinking'
+  if (person.self) return debug ? 'you' : 'none'
+  return 'known'
+}
+
+// A "Haven't talked in a while" row: how long since you last met, from the server's daysSince.
+function staleLine({ daysSince }) {
+  if (!Number.isInteger(daysSince)) return ''
+  return daysSince === 0 ? 'Last met today' : daysSince === 1 ? 'Last met yesterday' : `Last met ${daysSince} days ago`
 }
 
 // Where a panel goes: its spot when that covers no face, no name card and no control (ours or the app's),
@@ -423,4 +470,4 @@ function debugLabel({ trackId, score, decision }) {
   return `#${trackId} · ${scored} · ${decision}`
 }
 
-if (typeof module !== 'undefined') module.exports = { relativeDate, oneLine, cardFacts, cardBullets, presetFor, layoutFor, askPlace, cardRect, recapFrom, debugLabel, devMode, shouldMove, islandStage, islandBounds, ISLAND, NOTICE_MS, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
+if (typeof module !== 'undefined') module.exports = { REMEMBER_POINTS, cardKind, staleLine, relativeDate, oneLine, cardFacts, cardBullets, presetFor, layoutFor, askPlace, cardRect, recapFrom, debugLabel, devMode, shouldMove, islandStage, islandBounds, ISLAND, NOTICE_MS, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
