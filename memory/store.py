@@ -1,4 +1,5 @@
 """Postgres (Tiger Data) + pgvector: people, face prints, consent, notes and per-call encounters."""
+import hashlib
 import os
 import secrets
 from datetime import datetime
@@ -56,13 +57,17 @@ def match(face_print: np.ndarray) -> dict | None:
     return {"id": row[0], "name": row[1], "firstMet": row[2], "score": round(float(row[3]), 3)}
 
 
+def digest(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
 def enroll(name: str, face_print: np.ndarray, selfie: bytes | None) -> tuple[str, str]:
     """Save a consenting person; returns (personId, deleteToken)."""
     pid, token = "p_" + secrets.token_hex(4), secrets.token_urlsafe(16)
     with conn().transaction():
         conn().execute(
             "insert into people (id, name, selfie, delete_token) values (%s, %s, %s, %s)",
-            (pid, name, selfie, token),
+            (pid, name, selfie, digest(token)),
         )
         conn().execute("insert into faces (person_id, print) values (%s, %s)", (pid, face_print))
         conn().execute(
@@ -74,7 +79,7 @@ def enroll(name: str, face_print: np.ndarray, selfie: bytes | None) -> tuple[str
 
 def delete_person(pid: str, token: str) -> bool:
     row = conn().execute("select delete_token from people where id = %s", (pid,)).fetchone()
-    if row is None or not secrets.compare_digest(row[0], token):
+    if row is None or not secrets.compare_digest(row[0], digest(token)):
         return False
     conn().execute("delete from people where id = %s", (pid,))
     from memory import notes  # lazy: notes imports store

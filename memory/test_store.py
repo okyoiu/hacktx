@@ -113,6 +113,20 @@ def test_deleting_yourself_or_expiring_removes_your_section_from_call_notes(db, 
     assert f"fact about {a}" not in text and f"fact about {b}" not in text and f"fact about {c}" in text
 
 
+def test_delete_tokens_are_stored_hashed_and_old_plain_ones_upgrade(db, enroll):
+    pid, token = enroll(random_print())
+    assert db.execute("select delete_token from people where id = %s", (pid,)).fetchone()[0] == store.digest(token)
+    assert store.delete_person(pid, store.digest(token)) is False  # the stored hash is not a key
+
+    old, _ = enroll(random_print())
+    db.execute("update people set delete_token = 'plain-old-token' where id = %s", (old,))
+    schema = (Path(store.__file__).with_name("schema.sql")).read_text()
+    db.execute(schema)
+    db.execute(schema)  # running it again changes nothing
+    assert db.execute("select delete_token from people where id = %s", (old,)).fetchone()[0] == store.digest("plain-old-token")
+    assert store.delete_person(old, "plain-old-token") is True
+
+
 def test_person_returns_notes_newest_first(db, enroll):
     pid, _ = enroll(random_print())
     store.add_note(pid, "Moved to Austin")
