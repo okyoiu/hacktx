@@ -45,13 +45,21 @@ def write(started: datetime, learned: dict[str, list[str]], points: list[str], r
     return path
 
 
-def forget(pid: str) -> None:
-    """Remove a person's section from every call note, for someone who deleted themselves or whose consent ran out."""
+GONE = "someone who deleted their data"
+
+
+def forget(pid: str, name: str | None = None) -> None:
+    """For someone who deleted themselves or whose consent ran out: drop their section and file, and say GONE
+    wherever else their name appears in old call notes (key points, AI answers)."""
     section = re.compile(rf"^## [^\n]*<!-- {re.escape(pid)} -->\n.*?(?=^#{{1,2}} |\Z)", re.M | re.S)
+    mention = re.compile(rf"\b{re.escape(name)}\b", re.I) if name and name.strip() else None
     (NOTES / "people" / f"{pid}.md").unlink(missing_ok=True)
     for path in NOTES.glob("*.md"):
         text = path.read_text()
-        if (cleaned := section.sub("", text)) != text:
+        cleaned = section.sub("", text)
+        if mention:
+            cleaned = mention.sub(GONE, cleaned)
+        if cleaned != text:
             path.write_text(cleaned)
 
 
