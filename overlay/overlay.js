@@ -143,6 +143,9 @@ function openRemember(card) {
   const name = el('input', 'name-field')
   Object.assign(name, { type: 'text', maxLength: 80, placeholder: 'Their name', autocomplete: 'off', spellcheck: false })
   name.setAttribute('aria-label', 'Their name')
+  const role = el('input', 'name-field')
+  Object.assign(role, { type: 'text', maxLength: 60, placeholder: 'Who are they to you? (optional)', autocomplete: 'off', spellcheck: false })
+  role.setAttribute('aria-label', 'Who are they to you?')
   const consent = el('input')
   consent.type = 'checkbox'
   const yes = el('label', 'yes')
@@ -163,7 +166,7 @@ function openRemember(card) {
   const note = el('p', 'note')
   note.setAttribute('role', 'status')
   const form = el('form', 'remember-form')
-  form.append(name, yes, actions, note)
+  form.append(name, role, yes, actions, note)
   card.replaceChildren(head, form)
 
   const ready = () => (save.disabled = !canSave(name.value, consent.checked))
@@ -177,11 +180,11 @@ function openRemember(card) {
   form.addEventListener('submit', async (e) => {
     e.preventDefault()
     if (save.disabled) return
-    for (const control of [name, consent, save]) control.disabled = true
+    for (const control of [name, role, consent, save]) control.disabled = true
     save.textContent = 'Saving…'
     note.textContent = ''
     card.dataset.saving = 'true'
-    const { error, status } = await api(`/faces/${Number(card.dataset.track)}/remember`, { name: cleanName(name.value), consent: true })
+    const { error, status } = await api(`/faces/${Number(card.dataset.track)}/remember`, rememberBody(name.value, role.value))
     delete card.dataset.saving
     if (!card.classList.contains('remembering')) return // already their name card
     const result = rememberResult({ error, status }, card.dataset.gone)
@@ -189,7 +192,7 @@ function openRemember(card) {
     if (result.kind === 'error') {
       note.textContent = result.text
       save.textContent = 'Save'
-      name.disabled = consent.disabled = false
+      name.disabled = role.disabled = consent.disabled = false
       return ready()
     }
     // the server now pushes this face's updated `face` event, which morphs the form into their name card

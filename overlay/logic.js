@@ -8,6 +8,12 @@ function cleanName(raw) {
   return String(raw).trim().replace(/\s+/g, ' ').slice(0, 80)
 }
 
+// The "Remember them" body: `role` ("Your team lead", at most 60 characters) is sent only when typed.
+function rememberBody(name, role) {
+  const label = String(role).trim().replace(/\s+/g, ' ').slice(0, 60)
+  return { name: cleanName(name), consent: true, ...(label && { role: label }) }
+}
+
 // Call time since startedAt: "mm:ss", or "h:mm:ss" past an hour; "00:00" while unknown.
 function elapsed(startedAt, now) {
   const started = Date.parse(startedAt)
@@ -99,4 +105,4 @@ function bulletsOf(person) {
   return list.filter((b) => typeof b === 'string' && b.trim()).slice(0, 3)
 }
 
-if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver, cleanName, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
+if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver, cleanName, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
