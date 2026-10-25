@@ -34,6 +34,11 @@ def require_key(request: Request) -> None:
     raise HTTPException(401, "Missing or wrong key", headers={"WWW-Authenticate": "Bearer"})
 
 
+def shared(p: dict) -> bool:
+    """Only people who ticked the connector, and the host's own row (it is their own data)."""
+    return "connector" in p["scope"] or store.is_self(p["role"])
+
+
 @router.get("/health")
 def health():
     return {"ok": True}  # for the tunnel check; says nothing about the data
@@ -42,13 +47,13 @@ def health():
 @router.get("/people", dependencies=[Depends(require_key)])
 def people():
     keep = ("id", "name", "role", "lastSeen", "lastSpoke", "topic", "context")
-    return [{k: p[k] for k in keep} for p in store.people() if "connector" in p["scope"]]  # only people who ticked it
+    return [{k: p[k] for k in keep} for p in store.people() if shared(p)]
 
 
 @router.get("/people/{pid}", dependencies=[Depends(require_key)])
 def one_person(pid: str):
     p = store.person(pid)
-    if p is None or "connector" not in p["scope"]:
+    if p is None or not shared(p):
         raise HTTPException(404, "Nobody with that id (or they did not agree to the connector).")
     latest = p["encounters"][0] if p["encounters"] else None
     return {**{k: p[k] for k in ("id", "name", "role", "lastSeen", "lastSpoke", "topic", "context", "howMet")},

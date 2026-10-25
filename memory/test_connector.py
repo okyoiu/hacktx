@@ -204,3 +204,15 @@ def test_the_tunnel_reaches_mcp_with_the_key_only(monkeypatch):
         assert laptop.post("/connector/mcp", json=body, headers=tunnel).status_code == 401
         assert laptop.post("/connector/mcp", json=body, headers=tunnel | auth()).json()["result"] == {}
         assert laptop.post("/listening", json={"on": False}, headers=tunnel | auth()).status_code == 403  # nothing else opens
+
+
+def test_the_hosts_own_row_is_shared_without_the_tick(web, monkeypatch):
+    me = {**LISTED, "id": "p_me", "name": "Cesar Sample", "role": "Me", "scope": ["facePrint", "name"]}
+    other = {**LISTED, "id": "p_other", "name": "Not Ticked", "role": "Friend", "scope": ["facePrint", "name"]}
+    monkeypatch.setattr(store, "people", lambda: [me, other])
+    monkeypatch.setattr(store, "person", lambda pid: {**JORDAN, **{"p_me": me, "p_other": other}[pid]})
+    assert [p["id"] for p in web.get("/connector/people", headers=auth()).json()] == ["p_me"]
+    assert web.get("/connector/people/p_me", headers=auth()).status_code == 200
+    assert web.get("/connector/people/p_other", headers=auth()).status_code == 404
+    me["role"] = "  myself "
+    assert [p["id"] for p in web.get("/connector/people", headers=auth()).json()] == ["p_me"]

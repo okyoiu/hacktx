@@ -104,10 +104,10 @@ def add_call(app: str | None, topic: str, points: list[str], actions: list[str],
 
 def calls(limit: int, only_scope: str | None = None) -> list[dict]:
     """The last calls, newest first. People whose consent ran out (or who were deleted) are left out, and so is
-    anyone whose scope lacks `only_scope` when one is given."""
-    allowed = {r[0] for r in conn().execute(
-        "select person_id from consents where expires_at >= current_date and (%s::text is null or %s = any(scope))",
-        (only_scope, only_scope)).fetchall()}
+    anyone whose scope lacks `only_scope` when one is given (except the host's own row)."""
+    allowed = {pid for pid, scope, role in conn().execute(
+        "select c.person_id, c.scope, p.role from consents c join people p on p.id = c.person_id where c.expires_at >= current_date"
+    ).fetchall() if only_scope is None or only_scope in scope or is_self(role)}  # the host's own row is their own data
     rows = conn().execute("select ended_at, app, topic, points, actions, people from calls order by ended_at desc, id desc limit %s", (limit,)).fetchall()
     return [{"endedAt": at, "app": app, "topic": topic, "points": points, "actions": actions,
              "people": [p for p in people if p["id"] in allowed]} for at, app, topic, points, actions, people in rows]
