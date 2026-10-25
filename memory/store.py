@@ -178,17 +178,22 @@ def person(pid: str) -> dict | None:
     facts = conn().execute(
         "select text, created_at from facts where person_id = %s order by created_at desc, id desc", (pid,)
     ).fetchall()
+    mentions = conn().execute(
+        "select text, created_at from mentions where person_id = %s order by created_at desc, id desc", (pid,)
+    ).fetchall()
     return {
         "id": pid,
         "name": row[0],
         "role": row[2],
         "howMet": row[3],
         "scope": row[4],
+        "connector": "connector" in row[4],
         "firstMet": row[1],
         **seen_fields([(at, spoke, topic, ctx) for at, _, _, spoke, topic, ctx in encounters]),
         "encounters": [{"metAt": at, "about": about, "lastTime": last} for at, about, last, *_ in encounters],
         "notes": [{"text": t, "createdAt": at} for t, at in notes],
         "facts": [{"text": t, "createdAt": at} for t, at in facts],
+        "mentions": [{"text": t, "createdAt": at} for t, at in mentions],
     }
 
 
@@ -234,6 +239,12 @@ def card_extras(pid: str, facts: int = 2) -> tuple[str, list[str], dict]:
 def set_how_met(pid: str, line: str) -> None:
     """Written once, at the first encounter; never rewritten."""
     conn().execute("update people set how_met = %s where id = %s and how_met = ''", (line, pid))
+
+
+def add_mentions(pid: str, texts: list[str]) -> None:
+    """Places and events from the call's AI answers that concern this person; a repeat is skipped."""
+    for text in texts:
+        conn().execute("insert into mentions (person_id, text) values (%s, %s) on conflict do nothing", (pid, text))
 
 
 def add_facts(pid: str, texts: list[str]) -> None:
