@@ -17,12 +17,12 @@ from typing import Annotated
 
 import numpy as np
 import psycopg
-from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, StringConstraints
 from starlette.requests import HTTPConnection
 
-from memory import notes, picks, pipeline, store
+from memory import connector, notes, picks, pipeline, store
 
 WEB = Path(__file__).resolve().parent.parent / "web"
 MAX_SELFIE_BYTES = 8_000_000
@@ -36,7 +36,8 @@ OUTBOUND_SECONDS = 45
 THREAD_TURNS = 6  # question/answer turns of an Ask AI chat that follow-ups can see
 LIVE_BULLET_SECONDS = 60  # check what a person has said at most this often
 LIVE_MIN_WORDS = 8  # fewer words than this since the last check is not worth a Muse call
-MAX_BULLETS = 5  # a card past this gets a shorter "Met …" line, then fewer facts
+MAX_BULLETS = 3  # the card shows role, last seen, last spoke, topic and context itself
+TOPIC_CHARS = 60  # the topic shown on a card is kept short
 NOTE_POINTS = 10  # Muse rephrases points every refresh, so the call note keeps only the latest few
 
 
@@ -76,18 +77,23 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Hello Again memory", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+app.include_router(connector.router)  # read-only, bearer key; the one set of routes a tunnel may reach
+
+
+FORWARDED = ("x-forwarded-for", "x-forwarded-host", "x-real-ip", "forwarded", "cf-connecting-ip", "cf-ray", "true-client-ip")
 
 
 def from_this_laptop(conn: HTTPConnection) -> bool:
     """Capture, the overlay and curl connect over loopback with no Origin (the overlay page sends file://); browsers
     send their page's origin, so other Wi-Fi devices and web pages open on this laptop both fail."""
-    return conn.client is not None and conn.client.host in ("127.0.0.1", "::1") and conn.headers.get("origin") in (None, "file://")
+    return (conn.client is not None and conn.client.host in ("127.0.0.1", "::1") and conn.headers.get("origin") in (None, "file://")
+            and not any(h in conn.headers for h in FORWARDED))  # a tunnel also connects over loopback, but adds one of these
 
 
 @app.middleware("http")
 async def guests_only_enroll(request: Request, call_next):
     """Phones on the Wi-Fi may enroll and delete themselves; every other route is for this laptop only."""
-    guest = request.url.path == "/enroll" or (request.method == "DELETE" and request.url.path.startswith("/people/"))
+    guest = request.url.path.startswith("/connector/") or request.url.path == "/enroll" or (request.method == "DELETE" and request.url.path.startswith("/people/"))
     if not guest and not from_this_laptop(request):
         return JSONResponse({"detail": "Only the laptop running Hello Again can use that."}, 403)
     return await call_next(request)
@@ -180,7 +186,9 @@ def remember_encounters(ended: Call) -> dict[str, str]:
         if not people or not ended.lines:
             return  # the finally below still refreshes their files
         for s in picks.summarise(people, ended.lines):
-            store.add_encounter(s["personId"], ended.started.astimezone(), s["about"], s["lastTime"])
+            spoke = any(l.startswith(f"{people[s['personId']]['name']}: ") for l in ended.lines)  # a caption under their name
+            store.add_encounter(s["personId"], ended.started.astimezone(), s["about"], s["lastTime"],
+                                ended.topic[:TOPIC_CHARS], spoke, s["context"])
             lasts[s["personId"]] = s["lastTime"]
             if s["role"]:
                 store.set_role(s["personId"], s["role"], "muse")  # never replaces a role the user typed
@@ -264,20 +272,18 @@ def card(person: dict) -> dict:
     """The face-event card for a store.match or store.person result."""
     met = person["firstMet"]
     last = store.last_time(person["id"])
-    how, facts = store.card_extras(person["id"])
-    last_bullet = f"Last time: {last}" if last else ""
+    how, facts, seen = store.card_extras(person["id"])
     live = snippets.get(person["id"], [])
-    met_bullet = f"Met {how}" if how else ""
-    if sum(map(bool, (person["role"], last_bullet, met_bullet))) + len(facts) + len(live) > MAX_BULLETS:
-        met_bullet = f"Met {how.split(':')[0]}" if how else ""  # just the date and app
-        facts = facts[:max(0, MAX_BULLETS - len(live) - sum(map(bool, (person["role"], last_bullet, met_bullet))))]
+    base = [*facts, *([f"Last time: {last}"] if last else []), *([f"Met {how}"] if how else [])]
+    bullets = base[:MAX_BULLETS - len(live)] + live  # what they say now pushes out the oldest history, last in the list
     return {
         "id": person["id"],
         "name": person["name"],
         "role": person["role"],
         "line": f"Last time: {last}" if last else store.latest_note(person["id"]) or "",
         "met": f"Met {met:%b} {met.day}",
-        "bullets": [b for b in (person["role"], *facts, last_bullet, met_bullet) if b] + live,
+        **seen,
+        "bullets": bullets,
     }
 
 
@@ -672,6 +678,12 @@ async def enroll(
 @app.get("/people")
 def list_people():
     return store.people()
+
+
+@app.get("/people/stale")
+def stale_people(days: int = Query(30, ge=1, le=3650)):
+    """"Haven't talked in a while": people you last met at least `days` days ago, most overdue first."""
+    return store.stale(days)
 
 
 @app.get("/people/{pid}")

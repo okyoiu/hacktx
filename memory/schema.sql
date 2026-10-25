@@ -38,6 +38,11 @@ create table if not exists encounters (
 alter table people add column if not exists role text not null default '';
 alter table people add column if not exists role_source text not null default 'muse';
 
+-- what each call was about, whether the person spoke in it, and whether Muse called it "work" or "personal" ("" = unsure)
+alter table encounters add column if not exists topic text not null default '';
+alter table encounters add column if not exists spoke boolean not null default false;
+alter table encounters add column if not exists context text not null default '';
+
 -- one line about the first call together; written once
 alter table people add column if not exists how_met text not null default '';
 
@@ -52,3 +57,16 @@ create unique index if not exists facts_once on facts (person_id, lower(text));
 
 -- delete tokens are stored as sha256 hex; this upgrades older plain tokens (22 characters) once and does nothing after
 update people set delete_token = encode(sha256(convert_to(delete_token, 'UTF8')), 'hex') where length(delete_token) <> 64;
+
+-- Tiger Data (TimescaleDB): encounters are a time series, so make them a hypertable on met_at. A hypertable's unique keys
+-- must include the time column, hence the primary key change. Plain Postgres has no timescaledb: nothing happens.
+do $$
+begin
+  if exists (select 1 from pg_extension where extname = 'timescaledb') then
+    if not exists (select 1 from timescaledb_information.hypertables where hypertable_name = 'encounters') then
+      alter table encounters drop constraint encounters_pkey;
+      alter table encounters add primary key (id, met_at);
+      perform create_hypertable('encounters', 'met_at', migrate_data => true);
+    end if;
+  end if;
+end $$;
