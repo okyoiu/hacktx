@@ -5,6 +5,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import cv2
 import numpy as np
+import pytest
+import pytest
 from insightface.data import get_image
 
 from capture import faces
@@ -57,3 +59,47 @@ def test_video_posts_each_face_once_with_a_print_then_face_gone(tmp_path, monkey
     assert {b["trackId"] for path, b in posts if path == "/faces/gone"} == tracks
     kinds = [path for path, _ in posts]
     assert kinds.index("/faces/gone") > max(i for i, k in enumerate(kinds) if k == "/faces")  # gone only after the last face
+
+
+class Stop(Exception):
+    pass
+
+
+def test_leaving_the_call_clears_the_cards_and_coming_back_brings_them_again(monkeypatch):
+    t1 = get_image("t1")
+    h, w = t1.shape[:2]
+    checks = iter([True] + [True] * 5 + [False] * 4 + [True] * 5)  # main's first look, then one per frame: there, gone, back
+
+    def call_window(apps):
+        try:
+            return ("zoom.us", (0, 0, w, h)) if next(checks) else None
+        except StopIteration:
+            raise Stop from None
+
+    class Screen:  # stands in for mss.MSS, which needs a display
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            pass
+
+        def grab(self, box):
+            return cv2.cvtColor(t1, cv2.COLOR_BGR2BGRA)
+
+    server = FakeMemory()
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setenv("MEMORY_URL", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setattr("sys.argv", ["faces", "--app", "zoom.us", "--fps", "30"])
+    monkeypatch.setattr(faces.sys, "platform", "darwin")
+    monkeypatch.setattr(faces.mss, "MSS", Screen)
+    monkeypatch.setattr(faces, "FOLLOW_EVERY", -1)
+    monkeypatch.setattr(faces, "call_window", call_window)
+    try:
+        with pytest.raises(Stop):
+            faces.main()
+    finally:
+        server.shutdown()
+    kinds = [path if "facePrint" not in body else "print" for path, body in server.posts]  # a print marks a new card
+    first_gone, last_gone = kinds.index("/faces/gone"), len(kinds) - 1 - kinds[::-1].index("/faces/gone")
+    assert kinds[:first_gone].count("print") == 6 and kinds[last_gone + 1:].count("print") == 6  # six cards, cleared, six again
+    assert kinds.count("/faces/gone") == 6

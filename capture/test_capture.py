@@ -58,14 +58,15 @@ class FakeScreen:  # stands in for mss.MSS, which needs a display
         return np.zeros((box["height"], box["width"], 4), np.uint8)
 
 
-def test_screen_frames_follows_the_window_and_keeps_its_last_spot(monkeypatch):
+def test_screen_frames_follows_the_window_and_yields_nothing_while_it_is_gone(monkeypatch):
     monkeypatch.setattr(faces.mss, "MSS", FakeScreen)
-    spots = iter([("zoom.us", (50, 60, 30, 20)), None])  # moved, then closed
+    spots = iter([("zoom.us", (50, 60, 30, 20)), None, ("zoom.us", (5, 6, 30, 20))])  # moved, closed, back
     monkeypatch.setattr(faces, "FOLLOW_EVERY", -1)
     monkeypatch.setattr(faces, "call_window", lambda apps: next(spots))
     frames = faces.screen_frames((0, 0, 30, 20), follow="zoom.us")
     assert next(frames)[1] == (50, 60, 30)
-    assert next(frames)[1] == (50, 60, 30)
+    assert next(frames)[0] is None
+    assert next(frames)[1] == (5, 6, 30)
 
 
 def test_assign_gives_overlapping_people_their_own_face():

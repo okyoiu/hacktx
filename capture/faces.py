@@ -31,7 +31,8 @@ FOLLOW_EVERY = 3  # seconds between window position checks (each takes ~0.1 s)
 
 
 def screen_frames(region: tuple[int, int, int, int], follow: str | None = None):
-    """Yield (frame, (x, y, width)) of the region in screen points; with follow (an app name), move with its window."""
+    """Yield (frame, (x, y, width)) of the region in screen points; with follow (an app name), move with its window.
+    While that window is gone (the user left the call) it yields (None, ...) instead, and picks up again when it returns."""
     checked = time.time()
     with mss.MSS() as screen:
         while True:
@@ -39,7 +40,10 @@ def screen_frames(region: tuple[int, int, int, int], follow: str | None = None):
                 # shortcut: follows the app's largest window, so a bigger second window of the same app (another browser
                 # window) takes over; follow kCGWindowNumber instead if that bites
                 found, checked = call_window([follow]), time.time()
-                region = found[1] if found else region  # minimized or closed: keep the last spot
+                region = found[1] if found else None
+            if region is None:
+                yield None, (0, 0, 1)
+                continue
             x, y, w, h = region
             frame = cv2.cvtColor(np.array(screen.grab({"left": x, "top": y, "width": w, "height": h})), cv2.COLOR_BGRA2BGR)
             yield frame, (x, y, w)
@@ -114,11 +118,11 @@ def main() -> None:
 
     for frame, (x, y, w) in frames:
         started = time.time()
-        scale = frame.shape[1] / w  # pixels per screen point (2.0 on Retina)
-        result = model.track(frame, persist=True, classes=[PERSON], verbose=False)[0]
+        scale = frame.shape[1] / w if frame is not None else 1  # pixels per screen point (2.0 on Retina)
+        result = model.track(frame, persist=True, classes=[PERSON], verbose=False)[0] if frame is not None else None
 
-        live: set[int] = set()
-        if result.boxes is not None and result.boxes.is_track:
+        live: set[int] = set()  # empty while the call window is gone, so every card clears
+        if result is not None and result.boxes is not None and result.boxes.is_track:
             boxes = dict(zip(result.boxes.id.int().tolist(), result.boxes.xyxy.tolist()))
             now = time.monotonic()
             if boxes.keys() - printed:
