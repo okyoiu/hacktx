@@ -371,7 +371,7 @@ Checked by applying the commits to a scratch copy of this branch and running `to
 
 ---
 
-## Demo-day checklist for the packaged app: 10 minutes before the pitch
+## (Superseded by "Final demo-day checklist" at the end) Demo-day checklist for the packaged app: 10 minutes before the pitch
 
 1. **Network:** phone hotspot on, venue Wi-Fi off, macOS firewall on; `docker ps` shows `127.0.0.1:5432->5432`, never `0.0.0.0`.
 2. **`.env`:** `ENROLL_CODE` is a fresh random value, there is **no** `HELLO_DEBUG` line (it turns the debug view on in the app), and no key is visible on screen.
@@ -767,3 +767,22 @@ Not covered by any consent text: people on the call who are **not** enrolled. Th
 **Privacy page against the code, again:** I updated it for the connector opt-in (names the people it covers), the `consents` column (what you agreed to), the 30-second memory, and the people enrolled before the new text. Every other line (tables, files, one year, what goes to Meta, SerpApi and Tiger, how to delete) matches the code on `c60be57`.
 
 **Still open from before:** R4-3 (the invite code in `logs/server.log`), R5-4a, R5-9, R8-1a, R10-1, R11-1, R12-2.
+
+---
+
+## Final demo-day checklist
+
+One list, in the order to do it 10 minutes before the pitch. It replaces the earlier lists in this file (round 3, round 4, the packaged-app list).
+
+1. **Network:** phone hotspot on, venue Wi-Fi off, macOS firewall on. (Day before, once: run the app on good internet so the face models are downloaded, and if you use Tiger, `pg_dump` then start once against it.)
+2. **Database:** `docker ps` shows `127.0.0.1:5432->5432`, never `0.0.0.0` (or `DATABASE_URL` points at Tiger).
+3. **`.env`:** `ENROLL_CODE` is a fresh random value; there is **no** `HELLO_DEBUG` line; `MUSE_CONNECTOR_KEY` is empty unless you will show the Muse app; no key is visible on screen.
+4. **Clean start:** `rm -rf logs/`; after your test call `ls -l notes logs` shows only `-rw-------`.
+5. **People window:** only teammates who heard the consent text and said yes; delete everyone else (no key needed on the laptop). Anyone enrolled before the new text: re-ask or delete.
+6. **Phones enrolling:** only if guests will enroll, start the server by hand with `--host 0.0.0.0` *before* opening the app, send only **Copy invite link** (it carries the code), and stop that server afterwards. Otherwise skip.
+7. **Open `Hello Again.app` from the Dock:** the island shows no warning; Screen Recording and Microphone are allowed for "Hello Again" (a rebuild asks again).
+8. **One test call:** a card appears; **Remember them** shows the points to read aloud; **End call** opens the Recap.
+9. **Screen share:** try it first; the overlay hides on Windows only, so on a Mac share one window, not the screen.
+10. **Say it out loud:** "this listens, and call audio goes to Meta's Muse"; people who are not remembered are still heard but nothing about them is saved.
+11. **Muse app (only if you show it):** run `tools/tunnel.sh` last, give out the address and key, stop the tunnel straight after.
+12. **After:** delete the demo people, `rm -rf logs/ notes/`, change `ENROLL_CODE` and `MUSE_CONNECTOR_KEY`, stop the tunnel and any hand-started server, `docker stop hello-again-db`.
