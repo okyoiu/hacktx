@@ -786,3 +786,34 @@ One list, in the order to do it 10 minutes before the pitch. It replaces the ear
 10. **Say it out loud:** "this listens, and call audio goes to Meta's Muse"; people who are not remembered are still heard but nothing about them is saved.
 11. **Muse app (only if you show it):** run `tools/tunnel.sh` last, give out the address and key, stop the tunnel straight after.
 12. **After:** delete the demo people, `rm -rf logs/ notes/`, change `ENROLL_CODE` and `MUSE_CONNECTOR_KEY`, stop the tunnel and any hand-started server, `docker stop hello-again-db`.
+
+---
+
+## Round 14: requirements for `POST /connector/mcp` (not built yet)
+
+2026-10-25, Security agent, on main `a110b5e`. The README says the connector also speaks MCP (a JSON-RPC protocol some Muse custom connectors want). The route is not in any branch yet, so this is the checklist the code is reviewed against, with three strict-xfail tests in `tools/test_security.py` (`test_mcp_needs_the_key`, `test_mcp_errors_leak_nothing_and_bodies_are_bounded`, `test_mcp_tool_results_carry_no_prints_or_tokens_and_only_opted_in_people`).
+
+1. **Same key rule:** `/connector/mcp` uses the same `require_key` as the REST routes: constant-time compare, 404 when `MUSE_CONNECTOR_KEY` is unset, 401 for a missing or wrong key, the same wrong-key limit. Check the key **before** reading or parsing the body. No JSON-RPC method (not even `initialize` or `ping`) answers without it.
+2. **Tunnel rule:** the path starts with `/connector/`, so the middleware lets a tunnelled request reach it; nothing else may. It must not add any other path (for example a `/mcp` at the root, or a server-sent-events stream that stays open).
+3. **Same data rule as REST:** tools return only people whose scope has `connector`, and only the fields the REST connector returns. No face prints, delete tokens, selfie, scope or file paths in any tool result, resource or error. Tool arguments are ids and plain strings only; a wrong type is a JSON-RPC error, not an exception.
+4. **Errors without stack traces:** malformed JSON gives `-32700`, a wrong shape `-32600`, an unknown method `-32601`, bad arguments `-32602`, an unexpected failure `-32603` with a fixed message. Never `str(exception)`, never a traceback, never a file path or SQL text.
+5. **Body size bounded:** read at most about 64 KB (check `Content-Length` and the bytes actually read) and answer 413 above it; a JSON-RPC batch (an array) is limited to a few items or refused.
+6. **Read-only:** no tool writes, deletes, enrolls or calls Muse or SerpApi. The tool list is documentation and names no people.
+7. **No new open door:** the route is POST-only, takes `application/json` only (so a web page cannot post to it without a preflight), and logs no body (the access log already shows paths only).
+
+### Round 14/15 code review: `POST /connector/mcp` (`review-memory` `54224c1`) and the `calls` table
+
+2026-10-25, Security agent. I applied `54224c1` to a scratch copy of main `a110b5e` and ran the three MCP tests plus `memory/test_connector.py`: 67 passed, 2 expected xfails. **Verdict: the MCP route is sound; two Medium findings are in the `calls` table it exposes, and one Low in the route.** The three MCP tests are now real tests (they skip until the commit merges), except the size test, which stays a strict xfail.
+
+**The seven requirements:**
+1. **Key rule: holds.** `/connector/mcp` and its `GET` use the same `require_key` dependency, which FastAPI runs **before** the handler reads the body, so no JSON-RPC method answers without the key (404 when no key is set, 401 for a missing or wrong key, the same wrong-key limit).
+2. **Tunnel rule: holds.** The path is under `/connector/`; nothing else was added. `GET /connector/mcp` answers 405 behind the key.
+3. **Data rule: holds for people.** `list_people` and `get_person` call the same functions as the REST routes, so only people whose scope has `connector` come back and an expired or non-opted person gives a tool error ("Nobody with that id."), not a protocol error. The tool list names no people. No prints, tokens, scope or paths in any result (tested).
+4. **Errors: hold.** Parse errors `-32700`, bad shape `-32600`, unknown method `-32601`, bad arguments `-32602`, all with fixed messages; bad argument types (`id` as a list, `limit` as a string or out of range) are rejected before any query. Nothing echoes input or an exception.
+5. **R15-3, Low: no size limit.** The handler reads the whole body (`await request.json()`) and runs every message in a JSON-RPC batch, so a holder of the key can post a 100 MB body or a 100,000-item batch. Fix: refuse `Content-Length` above 64 KB with 413, read at most that many bytes, and refuse batches over 10 items. Strict xfail `test_mcp_bodies_and_batches_are_bounded`. Also catch any other exception in `handle` and answer `-32603 "Internal error"`; today a database failure inside a tool gives a plain HTTP 500 (no traceback is sent to the client, but it is not a JSON-RPC error).
+6. **Read-only: holds.** Three read tools only.
+7. **Open doors: none new.** Key required, so a web page cannot post to it (a custom `Authorization` header forces a preflight that the server does not allow).
+
+**R15-1, Medium: the connector returns what was said about people who did not opt in (`memory/store.py` `calls()`, used by `GET /connector/calls` and the MCP tool `recent_calls`).** A `calls` row stores the topic, the key points and the action labels of each finished call. `calls(limit, "connector")` filters only the `people` list, not the text. The key points are Muse's summary of the whole conversation, so a line such as "Maya is quitting her job" comes back even though Maya never ticked the Muse-app box. This defeats the opt-in. Smallest fix: return a call's topic, points and actions only if **every** person listed on it has `connector` in their scope, otherwise return just `endedAt`, `app` and the opted-in people. Strict xfail `test_the_connector_does_not_return_what_was_said_about_people_who_did_not_opt_in`.
+
+**R15-2, Medium: deleting a person leaves what was said about them in `calls`, and `calls` is never cleaned up.** `store.drop_from_calls` removes the person's **id** from a call's people list, but the key points that name them stay, and no code deletes old calls (`purge_expired` only handles people), so key points of every call are kept forever, including statements by people who were never remembered. It is also missing from `docs/privacy.md`. Smallest fix, in `store.delete_person` and `purge_expired`: `delete from calls where people @> %s` (the calls they were on), and at start `delete from calls where ended_at < now() - interval '365 days'`. Add the `calls` table (topic, key points, actions, who was there, kept one year) to the privacy page. Strict xfail `test_deleting_a_person_leaves_no_stored_call_text_naming_them`.
