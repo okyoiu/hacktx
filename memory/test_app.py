@@ -1,4 +1,5 @@
 """Insights, pause and AI responses through the real endpoints, with fake Muse Spark and SerpApi: no keys or database."""
+import asyncio
 import json
 import threading
 import time
@@ -812,3 +813,27 @@ def test_a_muse_outage_is_said_once_health_shows_it_and_the_stream_goes_on(http,
     http.post("/transcript", json=line("speaker_0", "Third sentence here."))
     wait_for(lambda: server.latest_insights is not None)
     assert http.get("/health").json()["muse"] is True
+
+
+def test_startup_logs_one_line_per_dependency_and_keeps_going_without_any_of_them(monkeypatch, tmp_path, capsys):
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    monkeypatch.delenv("SERPAPI_KEY", raising=False)
+    monkeypatch.setattr(notes, "NOTES", tmp_path / "blocked" / "notes")
+    (tmp_path / "blocked").write_text("a file where the folder should go")  # notes can't be created
+    monkeypatch.setattr(store, "conn", lambda: (_ for _ in ()).throw(psycopg.OperationalError("no database")))
+    with TestClient(server.app, client=LAPTOP) as client:  # the server still starts
+        assert client.post("/transcript", json=line("speaker_0", "Still works.")).status_code == 200
+        assert client.get("/health").json()["db"] == "error"
+    out = capsys.readouterr().out.splitlines()
+    assert [l.split(":")[0] for l in out if ":" in l][:4] == ["database", "Muse key", "SerpApi key", "notes folder"]
+    assert "NOT reachable (OperationalError)" in out[0] and "MISSING" in out[1] and "MISSING" in out[2] and "NOT writable" in out[3]
+
+
+def test_startup_lines_say_ok_when_everything_is_there(monkeypatch, tmp_path):
+    monkeypatch.setenv("MODEL_API_KEY", "k")
+    monkeypatch.setenv("SERPAPI_KEY", "k")
+    monkeypatch.setattr(notes, "NOTES", tmp_path / "notes")
+    monkeypatch.setattr(store, "conn", lambda: type("Db", (), {"execute": lambda self, sql: self})())
+    lines = asyncio.run(server.startup_checks())
+    assert lines == ["database: reachable", "Muse key: set", "SerpApi key: set", "notes folder: writable"]
+    assert not (tmp_path / "notes" / ".write-test").exists()

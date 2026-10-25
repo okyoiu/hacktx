@@ -66,11 +66,38 @@ actions: dict[str, dict] = {}  # action id -> {kind, label, query, personId}
 wake: asyncio.Event | None = None  # set when fresh lines wait for Muse Spark; made per event loop in lifespan
 
 
+def notes_writable() -> bool:
+    try:
+        notes.tighten()
+        probe = notes.private_folders() / ".write-test"
+        probe.write_text("")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+async def startup_checks() -> list[str]:
+    """One line per dependency. Nothing here stops the server: a missing piece switches its feature off, and the
+    feature says so when it is used (Muse and SerpApi errors already reach the overlay as plain sentences)."""
+    try:
+        await asyncio.wait_for(asyncio.to_thread(lambda: store.conn().execute("select 1")), 8)
+        db = "database: reachable"
+    except Exception as e:
+        db = f"database: NOT reachable ({type(e).__name__}); recognition and memory are off until it is up"
+    ok = await asyncio.to_thread(notes_writable)
+    return [db,
+            "Muse key: set" if os.getenv("MODEL_API_KEY") else "Muse key: MISSING; insights, summaries and Ask AI are off (set MODEL_API_KEY)",
+            "SerpApi key: set" if os.getenv("SERPAPI_KEY") else "SerpApi key: MISSING; place, event and web searches are off (set SERPAPI_KEY)",
+            "notes folder: writable" if ok else "notes folder: NOT writable; call notes and person files will not be saved"]
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global wake
     wake = asyncio.Event()
-    notes.tighten()
+    for report in await startup_checks():
+        print(report)
     worker = asyncio.create_task(insights_worker())
     yield
     worker.cancel()
