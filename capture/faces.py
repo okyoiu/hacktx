@@ -22,7 +22,7 @@ import mss
 import numpy as np
 from ultralytics import YOLO
 
-from capture.embed import faces_in, mouths_in
+from capture.embed import add_print, find_faces, mouths_in, warm_up
 from capture.speakers import Namer, listen
 from capture.window import CALL_APPS, call_window
 
@@ -110,6 +110,8 @@ def main() -> None:
         frames = screen_frames(None, follow=[args.app] if args.app else list(CALL_APPS))
 
     model = YOLO("yolo26n.pt")  # downloads on first run
+    warm_up()
+    model(np.zeros((64, 64, 3), np.uint8), verbose=False)
     memory_url = os.getenv("MEMORY_URL", "http://localhost:8000")
     http = httpx.Client(base_url=memory_url, timeout=10)
     printed: set[int] = set()  # track ids whose face print the memory service already has
@@ -136,7 +138,9 @@ def main() -> None:
             now = time.monotonic()
             wanting = {t for t in boxes.keys() - printed if now - tried.get(t, -RETRY) >= RETRY}
             if wanting:
-                found = assign(faces_in(frame), boxes)  # one full InsightFace pass gives prints and lips
+                found = assign(find_faces(frame), boxes)  # one InsightFace pass gives every face's lips
+                for tid in wanting & found.keys():
+                    add_print(frame, found[tid])  # prints only for people who need one
                 tried.update(dict.fromkeys(wanting, now))
             elif namer.wants_lips([p["id"] for p in people.values()], now):
                 found = assign(mouths_in(frame), boxes)

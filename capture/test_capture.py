@@ -8,7 +8,7 @@ import numpy as np
 from insightface.data import get_image
 
 from capture import faces
-from capture.embed import faces_in
+from capture.embed import add_print, faces_in, find_faces
 from capture.faces import assign, video_frames
 from capture.window import CALL_APPS, pick
 
@@ -122,3 +122,10 @@ def test_screen_frames_started_before_any_call_waits_quietly_then_follows(monkey
     assert capsys.readouterr().out.splitlines() == [  # one line per change, not per frame
         "waiting for a call window", "couldn't list windows: no permission", "following the Google Chrome window",
         "waiting for a call window"]
+
+
+def test_a_print_is_only_computed_for_the_face_that_asks_for_one():
+    found = find_faces(get_image("t1"))
+    assert len(found) == 6 and all(not hasattr(f, "embedding") or f.embedding is None for f in found)
+    add_print(get_image("t1"), found[0])
+    assert abs(np.linalg.norm(found[0].normed_embedding) - 1) < 1e-3 and found[1].embedding is None
