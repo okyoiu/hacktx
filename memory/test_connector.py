@@ -86,3 +86,12 @@ def test_a_tunnel_reaches_the_connector_and_nothing_else(monkeypatch):
                 with laptop.websocket_connect("/ws", headers={header: "x"}):
                     pass
         assert laptop.get("/people").status_code == 200  # the laptop itself is unaffected
+
+
+def test_the_detail_and_the_document_carry_how_we_met_and_context(web):
+    one = web.get("/connector/people/p_jordan", headers=auth()).json()
+    assert one["howMet"] == "Oct 25, 2026 on Zoom" and one["context"] == "work"
+    doc = web.get("/connector/openapi.json", headers=auth()).json()
+    assert "howMet" in doc["info"]["description"] and "context" in doc["info"]["description"]
+    props = doc["paths"]["/connector/people/{id}"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["properties"]
+    assert "howMet" in props and "context" in props and "first call" in props["howMet"]["description"]

@@ -527,3 +527,12 @@ def test_a_person_whose_role_is_me_is_marked_self_on_cards_and_in_the_list(db, e
         assert listed == {pid: True, other: False}
         http.patch(f"/people/{pid}", json={"role": "Your friend"})
         assert next(p for p in http.get("/people").json() if p["id"] == pid)["self"] is False
+
+
+def test_person_detail_returns_how_we_met_and_context(db, enroll):
+    pid, _ = enroll(random_print())
+    store.set_how_met(pid, "Oct 25, 2026 on Zoom: a demo")
+    store.add_encounter(pid, datetime.now().astimezone(), "x", "Chat.", "Demo", True, "personal")
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
+        got = http.get(f"/people/{pid}").json()
+    assert got["howMet"] == "Oct 25, 2026 on Zoom: a demo" and got["context"] == "personal"
