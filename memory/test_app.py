@@ -48,7 +48,7 @@ def fake_serpapi(url, params, timeout):
 def http(monkeypatch, tmp_path):
     """A fresh server: no call, transcript, insights or faces, and listening."""
     state = {"call": None, "history": [], "fresh": [], "actions": {}, "latest_insights": None, "tracks": {}, "unknown": {},
-             "speakers": {}, "clients": set(), "last_transcript_at": None, "last_refresh": None, "latest_window": None, "latest_recap": None, "thread": [], "thread_epoch": 0, "live": {}, "snippets": {}, "boxes": {}, "debug_scores": {}, "listening": {"type": "listening", "on": True, "startedAt": "2026-10-24T20:00:00Z"}}
+             "speakers": {}, "clients": set(), "last_transcript_at": None, "last_refresh": None, "latest_window": None, "latest_recap": None, "thread": [], "thread_epoch": 0, "live": {}, "live_since": None, "snippets": {}, "boxes": {}, "debug_scores": {}, "listening": {"type": "listening", "on": True, "startedAt": "2026-10-24T20:00:00Z"}}
     for name, value in state.items():
         monkeypatch.setattr(server, name, value)
     monkeypatch.setattr(server, "INSIGHTS_SECONDS", 0.3)
@@ -158,7 +158,7 @@ def test_websocket_only_for_this_laptop(http):
 def test_remember_saves_the_face_on_screen_only_with_consent(http, events, monkeypatch):
     enrolled = []
 
-    def enroll(name, face_print, selfie, role=""):
+    def enroll(name, face_print, selfie, role="", connector=False):
         enrolled.append((name, face_print.tolist(), selfie, role))
         return "p_new", "token123"
 
@@ -227,10 +227,10 @@ def test_insights_survive_a_failed_note_and_ignore_a_garbage_reply(http, events,
 def test_enroll_keeps_the_face_print_but_never_the_selfie(http, monkeypatch):
     saved = []
     monkeypatch.setattr("capture.embed.embed_image", lambda data: [0.1] * 512)
-    monkeypatch.setattr(store, "enroll", lambda name, face_print, selfie, role="": saved.append((name, selfie, role)) or ("p_new", "tok"))
+    monkeypatch.setattr(store, "enroll", lambda name, face_print, selfie, role="", connector=False: saved.append((name, selfie, role, connector)) or ("p_new", "tok"))
     form = {"name": " Sam ", "consent": "true", "role": " Your friend "}
     r = http.post("/enroll", data=form, files={"selfie": ("s.jpg", b"jpeg bytes", "image/jpeg")})
-    assert r.json() == {"id": "p_new", "deleteToken": "tok"} and saved == [("Sam", None, "Your friend")]
+    assert r.json() == {"id": "p_new", "deleteToken": "tok"} and saved == [("Sam", None, "Your friend", False)]
 
 
 def test_deleting_yourself_mid_call_removes_your_card_and_keeps_insights_flowing(http, events, monkeypatch):
@@ -722,7 +722,7 @@ def test_live_bullets_add_this_calls_facts_to_the_card_and_skip_when_nothing_is_
     def muse(prompt: str, seconds=None) -> str:
         if "just spoke" in prompt:
             live_prompts.append(prompt)
-            return json.dumps({"snippets": replies.pop(0)})
+            return json.dumps({"people": [{"personId": "p_jordan", "snippets": replies.pop(0)}]})
         return json.dumps({"topic": "", "points": [], "actions": []})
 
     monkeypatch.setattr(picks, "chat", muse)
@@ -884,3 +884,62 @@ def test_deleting_someone_mid_call_takes_them_out_of_the_call_the_recap_and_the_
     with http.websocket_connect("/ws") as ws:  # an overlay that connects now is told about Maya only
         assert ws.receive_json()["type"] == "listening"
         assert [p["id"] for p in ws.receive_json()["people"]] == ["p_maya"]
+
+
+def test_ten_people_talking_cost_one_muse_request_a_minute_for_live_bullets(http, events, monkeypatch):
+    monkeypatch.setattr(server, "LIVE_BULLET_SECONDS", 0.3)
+    names = {f"p_{i}": f"Person {i}" for i in range(10)}
+    monkeypatch.setattr(store, "person", lambda pid: {"id": pid, "name": names[pid], "role": "", "firstMet": date(2026, 10, 1)} if pid in names else None)
+    monkeypatch.setattr(store, "last_time", lambda pid: None)
+    monkeypatch.setattr(store, "latest_note", lambda pid: None)
+    monkeypatch.setattr(store, "card_extras", lambda pid, facts=2: ("", [], NEVER))
+    asked = []
+
+    def muse(prompt: str, seconds=None) -> str:
+        if "just spoke" not in prompt:
+            return json.dumps({"topic": "", "points": [], "actions": []})
+        asked.append(prompt)
+        listed = [pid for pid in names if f"{pid}: " in prompt]
+        return json.dumps({"people": [{"personId": pid, "snippets": [f"This call: fact about {pid}"] if pid[2:] in "02468" else []}
+                                      for pid in listed] + [{"personId": "p_stranger", "snippets": ["This call: ignored"]}]})
+
+    monkeypatch.setattr(picks, "chat", muse)
+    for i, (pid, name) in enumerate(names.items()):
+        server.tracks[i] = {"id": pid, "name": name, "role": "", "bullets": [], **NEVER}
+        http.post("/speakers", json={"label": f"speaker_{i}", "name": name})
+        http.post("/faces", json={"trackId": i, "screenBox": [i, 0, 5, 5]})
+
+    def everyone_talks():
+        for i in range(10):
+            http.post("/transcript", json=line(f"speaker_{i}", f"I have something to say here, number {i}, about my plans."))
+
+    everyone_talks()
+    time.sleep(0.35)
+    http.post("/transcript", json=line("speaker_0", "And one more thing about my plans, said later."))  # window over: one request
+    wait_for(lambda: len(asked) == 1)
+    assert all(f"{pid}: {name}" in asked[0] for pid, name in names.items())  # all ten in that one prompt
+    wait_for(lambda: len([e for e in events if e["type"] == "face" and e["person"] and e["person"].get("bullets")]) == 5)
+    assert sorted(server.snippets) == [f"p_{i}" for i in range(0, 10, 2)]  # only those Muse had something for; the stranger id is ignored
+
+    time.sleep(0.35)
+    http.post("/transcript", json=line("speaker_3", "Just one short line."))  # a window with too little said: no request
+    time.sleep(0.2)
+    assert len(asked) == 1
+    everyone_talks()
+    time.sleep(0.35)
+    http.post("/transcript", json=line("speaker_1", "Closing remark with enough words in it to count."))
+    wait_for(lambda: len(asked) == 2)  # ten more people talking: still one request
+
+
+def test_deleting_someone_clears_the_ask_ai_thread_that_may_name_them(http, events, monkeypatch):
+    prompts = []
+    monkeypatch.setattr(picks, "chat", lambda prompt, seconds=None: prompts.append(prompt) or "Jordan Lee works at Acme.")
+    rid = http.post("/ask", json={"question": "Who is Jordan Lee?"}).json()["id"]
+    wait_for(lambda: any(e.get("id") == rid and e["status"] == "done" for e in events))
+    assert server.thread
+    monkeypatch.setattr(store, "delete_person", lambda pid, token: True)
+    assert http.delete("/people/p_jordan").status_code == 200
+    assert server.thread == []
+    rid = http.post("/ask", json={"question": "And their job?"}).json()["id"]
+    wait_for(lambda: any(e.get("id") == rid and e["status"] == "done" for e in events))
+    assert "Jordan Lee" not in prompts[-1] and "Earlier in this chat" not in prompts[-1]

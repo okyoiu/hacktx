@@ -33,7 +33,8 @@ def test_main_exits_0_only_when_everything_is_ok(monkeypatch, capsys):
     monkeypatch.setattr(doctor, "checks", lambda: [("YOLO", True, "6 people in 80 ms", "uv sync")])
     with pytest.raises(SystemExit) as stop:
         doctor.main()
-    assert stop.value.code == 0 and capsys.readouterr().out.splitlines()[-1] == "all good"
+    lines = capsys.readouterr().out.splitlines()
+    assert stop.value.code == 0 and lines[-2] == "all good" and lines[-1].startswith("tunables (capture/tuning.py): ") and "STILL_SECONDS=3.0" in lines[-1]
     monkeypatch.setattr(doctor, "checks", lambda: [("memory", False, "ConnectError", "start it")])
     with pytest.raises(SystemExit) as stop:
         doctor.main()

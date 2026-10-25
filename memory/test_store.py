@@ -1,6 +1,7 @@
 """store.py, and the endpoints that read it, against the real database. Run with: uv run --env-file .env pytest
 Every test makes its own people and deletes them afterwards; nothing else is touched."""
 import json
+import re
 import os
 import secrets
 import time
@@ -527,3 +528,42 @@ def test_a_person_whose_role_is_me_is_marked_self_on_cards_and_in_the_list(db, e
         assert listed == {pid: True, other: False}
         http.patch(f"/people/{pid}", json={"role": "Your friend"})
         assert next(p for p in http.get("/people").json() if p["id"] == pid)["self"] is False
+
+
+def test_person_detail_returns_how_we_met_and_context(db, enroll):
+    pid, _ = enroll(random_print())
+    store.set_how_met(pid, "Oct 25, 2026 on Zoom: a demo")
+    store.add_encounter(pid, datetime.now().astimezone(), "x", "Chat.", "Demo", True, "personal")
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
+        got = http.get(f"/people/{pid}").json()
+    assert got["howMet"] == "Oct 25, 2026 on Zoom: a demo" and got["context"] == "personal"
+
+
+def test_consent_scope_defaults_to_what_the_person_saw_adds_connector_only_when_ticked_and_old_rows_only_lose_selfie(db, enroll):
+    base = ["facePrint", "name", "voice", "notes", "facts"]
+    scope = lambda p: db.execute("select scope from consents where person_id = %s", (p,)).fetchone()[0]
+    pid, _ = enroll(random_print())
+    assert scope(pid) == base and "connector" not in scope(pid)
+    ticked, _ = store.enroll("Test " + secrets.token_hex(3), random_print(), None, "", True)
+    old, _ = enroll(random_print())
+    custom, _ = enroll(random_print())
+    try:
+        assert scope(ticked) == base + ["connector"]
+        db.execute("update consents set scope = '{facePrint,selfie,notes}' where person_id = %s", (old,))
+        db.execute("update consents set scope = '{facePrint}' where person_id = %s", (custom,))
+        schema = Path(store.__file__).with_name("schema.sql").read_text()
+        db.execute(schema)
+        db.execute(schema)  # a second start changes nothing more
+        assert [scope(p) for p in (old, custom, ticked)] == [["facePrint", "notes"], ["facePrint"], base + ["connector"]]  # nothing added
+        with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
+            assert http.get(f"/people/{pid}").json()["scope"] == base
+            assert [p["scope"] for p in http.get("/people").json() if p["id"] == ticked] == [base + ["connector"]]
+    finally:
+        db.execute("delete from people where id = %s", (ticked,))
+    assert "selfie" not in db.execute("select column_default from information_schema.columns where table_name = 'consents' and column_name = 'scope'").fetchone()[0]
+
+def test_the_schema_never_gives_connector_by_default_or_adds_wording_people_never_saw():
+    lines = [l for l in Path(store.__file__).with_name("schema.sql").read_text().splitlines() if not l.strip().startswith("--")]
+    scope_lines = [l for l in lines if "scope" in l]
+    assert scope_lines and not any("connector" in l for l in scope_lines)  # a default or an update never includes it
+    assert not any(re.search(r"update consents.*(facts|voice)", l) for l in lines)  # an update adds nothing

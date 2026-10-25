@@ -84,21 +84,27 @@ def one_line(text: str) -> str:
 
 
 def write_person(pid: str) -> Path | None:
-    """notes/people/<id>.md: who they are to you, what they're about and every conversation, newest first.
+    """notes/people/<id>.md: the card's header (role, last seen, last spoke, about, context, how we met), Muse's facts,
+    every conversation newest first, then the user's own notes.
     Rewritten whole each time. The file is named by id, so names stay out of paths and can't escape the folder."""
     p = store.person(pid)
     if p is None:
         return None
     path = private_folders() / f"{pid}.md"
     about = next((e["about"] for e in p["encounters"] if e["about"]), "")
-    out = [f"# {one_line(p['name'])}", "", f"Who they are to you: {one_line(p['role']) or 'not set'}", "",
-           f"First met {day(p['firstMet'])}." + (f" How we met: {one_line(p['howMet'])}" if p.get("howMet") else ""), ""]
-    if about:
-        out += ["## About", "", one_line(about), ""]
-    out += ["## Conversations", ""]
-    out += [f"- {day(e['metAt'].astimezone())}: {one_line(e['lastTime'])}" for e in p["encounters"]] or ["Nothing yet."]
+    # the same facts the card shows, then Muse's facts, the conversations and the user's own notes
+    out = [f"# {one_line(p['name'])}", "",
+           f"- Who they are to you: {one_line(p['role']) or 'not set'}",
+           f"- Last seen: {p.get('lastSeen') or 'not yet'}",
+           f"- Last spoke: {p.get('lastSpoke') or 'not yet'}",
+           f"- About: {one_line(about) or 'unknown'}",
+           f"- Context: {p.get('context') or 'unknown'}",
+           f"- How we met: {one_line(p.get('howMet') or '') or 'unknown'}",
+           f"- First met: {day(p['firstMet'])}"]
     if p.get("facts"):
         out += ["", "## Facts (Muse)", ""] + [f"- {one_line(f['text'])}" for f in p["facts"]]
+    out += ["", "## Conversations", ""]
+    out += [f"- {day(e['metAt'].astimezone())}: {one_line(e['lastTime'])}" for e in p["encounters"]] or ["Nothing yet."]
     if p["notes"]:
         out += ["", "## Notes", ""] + [f"- {one_line(n['text'])}" for n in p["notes"]]
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # about real people: only this user can read it

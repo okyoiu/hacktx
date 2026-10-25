@@ -35,7 +35,7 @@ ENROLLS_PER_MINUTE = 5  # POST /enroll attempts per IP address; each one runs th
 # otherwise hold a response on "thinking" or stall Live insights for minutes. The abandoned thread finishes on its own.
 OUTBOUND_SECONDS = 45
 THREAD_TURNS = 6  # question/answer turns of an Ask AI chat that follow-ups can see
-LIVE_BULLET_SECONDS = 60  # check what a person has said at most this often
+LIVE_BULLET_SECONDS = 60  # check what people have said at most this often, all of them in one request
 LIVE_MIN_WORDS = 8  # fewer words than this since the last check is not worth a Muse call
 MAX_BULLETS = 3  # the card shows role, last seen, last spoke, topic and context itself
 TOPIC_CHARS = 60  # the topic shown on a card is kept short
@@ -54,7 +54,8 @@ history: list[str] = []  # lines Muse Spark has already seen, context for the ne
 fresh: list[str] = []  # final lines since the last insights refresh
 listening: dict = {"type": "listening", "on": True, "startedAt": utc_now()}  # latest listening event
 latest_insights: dict | None = None  # latest insights event
-live: dict[str, dict] = {}  # person id -> {since, lines}: what they said since the last live-bullets check
+live: dict[str, dict] = {}  # person id -> {name, lines}: what they said since the last live-bullets check
+live_since: float | None = None  # when the current live-bullets window began (monotonic)
 snippets: dict[str, list[str]] = {}  # person id -> this call's "This call: …" bullets (at most 2)
 boxes: dict[int, list[float]] = {}  # trackId -> latest screen box, to re-send a face event
 thread: list[tuple[str, str]] = []  # the Ask AI chat so far: (question, answer), the last THREAD_TURNS turns
@@ -165,12 +166,13 @@ def this_call() -> Call:
 
 def end_call() -> asyncio.Future:
     """Close the current call and write its note in a thread; the future resolves to the note's path or None."""
-    global call, latest_insights, last_refresh
+    global call, latest_insights, last_refresh, live_since
     if idle_timer:
         idle_timer.cancel()
     ended, call = call or Call(), None
     clear_thread()
     live.clear()
+    live_since = None
     snippets.clear()
     insights = latest_insights
     ended.topic = (insights or {}).get("topic", "")
@@ -401,6 +403,7 @@ class Remember(BaseModel):
     name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
     consent: bool
     role: Annotated[str, StringConstraints(strip_whitespace=True, max_length=picks.ROLE_CHARS)] = ""
+    connector: bool = False  # ticked: the Muse app may read this person
 
 
 @app.post("/faces/{track_id}/remember")
@@ -411,7 +414,7 @@ async def remember(track_id: int, body: Remember):
     face = unknown.pop(track_id, None)  # popped first, so a double click can't enroll them twice
     if face is None:
         raise HTTPException(409, "That face has left the call")
-    pid, token = await asyncio.to_thread(store.enroll, body.name, np.asarray(face["print"], dtype=np.float32), None, body.role)
+    pid, token = await asyncio.to_thread(store.enroll, body.name, np.asarray(face["print"], dtype=np.float32), None, body.role, body.connector)
     tracks[track_id] = await asyncio.to_thread(card_for, face["print"])
     saw_face(tracks[track_id])
     await push({"type": "face", "trackId": track_id, "screenBox": face["box"], "person": tracks[track_id]})
@@ -489,34 +492,40 @@ async def transcript(line: Line):
 
 
 def note_said(pid: str, name: str, text: str) -> None:
-    """Collect what a recognized person says; once LIVE_BULLET_SECONDS have passed, check it for new facts."""
+    """Collect what recognized people say. Once LIVE_BULLET_SECONDS have passed, everyone with something new is
+    checked in ONE Muse request, so a 10-person call costs one request a minute, not ten."""
+    global live_since
     now = time.monotonic()
-    entry = live.setdefault(pid, {"since": now, "lines": []})
-    entry["lines"].append(text)
-    if now - entry["since"] >= LIVE_BULLET_SECONDS:
-        lines, entry["lines"], entry["since"] = entry["lines"], [], now
-        if sum(len(l.split()) for l in lines) >= LIVE_MIN_WORDS:
-            task = asyncio.get_running_loop().create_task(live_bullets(pid, name, lines, call))
+    live_since = live_since if live_since is not None else now
+    live.setdefault(pid, {"name": name, "lines": []})["lines"].append(text)
+    if now - live_since >= LIVE_BULLET_SECONDS:
+        batch = {p: e for p, e in live.items() if sum(len(l.split()) for l in e["lines"]) >= LIVE_MIN_WORDS}
+        live.clear()
+        live_since = now
+        if batch:
+            task = asyncio.get_running_loop().create_task(live_bullets(batch, call))
             background.add(task)
             task.add_done_callback(background.discard)
 
 
-async def live_bullets(pid: str, name: str, lines: list[str], owner: Call | None) -> None:
-    """Ask Muse for new "This call: …" facts and re-send that person's card with them as extra bullets."""
+async def live_bullets(batch: dict[str, dict], owner: Call | None) -> None:
+    """Ask Muse once for new "This call: …" facts about everyone in the batch and re-send each changed card."""
     try:
-        new = await asyncio.wait_for(asyncio.to_thread(picks.live_snippets, name, lines, snippets.get(pid, [])), OUTBOUND_SECONDS)
-        if not new or call is not owner:  # nothing new, or the call ended meanwhile
+        asked = {pid: {**e, "earlier": snippets.get(pid, [])} for pid, e in batch.items()}
+        found = await asyncio.wait_for(asyncio.to_thread(picks.live_snippets, asked), OUTBOUND_SECONDS)
+        if call is not owner:  # the call ended meanwhile
             return
-        snippets[pid] = (snippets.get(pid, []) + [n for n in new if n not in snippets.get(pid, [])])[-2:]
-        person = await asyncio.to_thread(store.person, pid)
-        if person is None:  # deleted themselves while Muse thought
-            snippets.pop(pid, None)
-            return
-        for t, shown in list(tracks.items()):
-            if shown and shown["id"] == pid:
-                tracks[t] = await asyncio.to_thread(card, person)
-                if t in boxes:
-                    await push({"type": "face", "trackId": t, "screenBox": boxes[t], "person": tracks[t]})
+        for pid, new in found.items():
+            snippets[pid] = (snippets.get(pid, []) + [n for n in new if n not in snippets.get(pid, [])])[-2:]
+            person = await asyncio.to_thread(store.person, pid)
+            if person is None:  # deleted themselves while Muse thought
+                snippets.pop(pid, None)
+                continue
+            for t, shown in list(tracks.items()):
+                if shown and shown["id"] == pid:
+                    tracks[t] = await asyncio.to_thread(card, person)
+                    if t in boxes:
+                        await push({"type": "face", "trackId": t, "screenBox": boxes[t], "person": tracks[t]})
     except Exception as e:  # a failed check just means no new bullets
         print(f"live bullets skipped: {e!r}")
 
@@ -707,6 +716,7 @@ async def enroll(
     name: str = Form(min_length=1, max_length=80),
     consent: bool = Form(),
     role: str = Form("", max_length=picks.ROLE_CHARS),
+    connector: bool = Form(False),  # ticked on the enroll page: the Muse app may read them
     code: str = Form("", max_length=200),
     selfie: UploadFile = File(),
 ):
@@ -727,7 +737,7 @@ async def enroll(
     face_print = await asyncio.to_thread(embed_image, data)
     if face_print is None:
         raise HTTPException(422, "No face found in that photo. Try again facing the camera in good light.")
-    pid, token = await asyncio.to_thread(store.enroll, name.strip(), face_print, None, role.strip())  # the selfie is never kept
+    pid, token = await asyncio.to_thread(store.enroll, name.strip(), face_print, None, role.strip(), connector)  # the selfie is never kept
     return {"id": pid, "deleteToken": token}
 
 
@@ -784,6 +794,7 @@ async def forget(pid: str, request: Request, x_delete_token: str | None = Header
         latest_recap["people"] = [p for p in latest_recap["people"] if p["id"] != pid]
     snippets.pop(pid, None)
     live.pop(pid, None)
+    clear_thread()  # an Ask AI answer may name them, and follow-ups would send that to Muse again
     for t, card in list(tracks.items()):  # their card comes off the screen, and nothing about them goes to Muse again
         if card and card["id"] == pid:
             for state in (tracks, unknown, boxes, debug_scores):

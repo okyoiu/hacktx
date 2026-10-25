@@ -33,8 +33,13 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-def run_video(tmp_path, monkeypatch, frames: list[np.ndarray], still_after=1e9, reply=None) -> list:
-    monkeypatch.setattr(faces, "STILL_AFTER", still_after)  # identical test frames would otherwise count as pictures
+def live(image: np.ndarray, n: int, sigma: float = 1.0) -> list[np.ndarray]:
+    """n frames of an image as a camera would deliver them: a little sensor noise, so they read as live video, not a picture."""
+    rng = np.random.default_rng(0)
+    return [np.clip(image + rng.normal(0, sigma, image.shape), 0, 255).astype(np.uint8) for _ in range(n)]
+
+
+def run_video(tmp_path, monkeypatch, frames: list[np.ndarray], reply=None) -> list:
     path = str(tmp_path / "call.avi")
     # FFV1 is lossless and deterministic; MJPG's first frames of an identical sequence come out slightly different
     out = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"FFV1"), 30, frames[0].shape[1::-1])
@@ -59,8 +64,9 @@ def test_video_posts_each_face_once_with_a_print_then_face_gone(tmp_path, monkey
     monkeypatch.setenv("HELLO_DEBUG", "1") if debug else monkeypatch.delenv("HELLO_DEBUG", raising=False)
     monkeypatch.setattr(faces, "QUIET_AFTER", 0)  # say so on every frame without a person, instead of every 30 s
     t1 = get_image("t1")  # six people around a table
-    posts = run_video(tmp_path, monkeypatch, [t1] * 8 + [np.zeros_like(t1)] * 4)
-    assert capsys.readouterr().out.count("following the region, no person seen for") == 4  # once per blank frame
+    posts = run_video(tmp_path, monkeypatch, live(t1, 8) + [np.zeros_like(t1)] * 4)
+    # the first frame (nobody proven live yet) and the four blank ones
+    assert capsys.readouterr().out.count("following the region, no person seen for") == 5
     seen = [body for path, body in posts if path == "/faces"]
     printed = [b for b in seen if "facePrint" in b]
     tracks = {b["trackId"] for b in printed}
@@ -113,8 +119,8 @@ def test_leaving_the_call_clears_the_cards_and_coming_back_brings_them_again(mon
     monkeypatch.setattr(faces.mss, "MSS", Screen)
     monkeypatch.setattr(faces, "FOLLOW_EVERY", -1)
     monkeypatch.setattr(faces, "call_window", call_window)
-    monkeypatch.setattr(faces, "grab", lambda window_id: t1)  # the window's own pixels, whatever is in front of it
-    monkeypatch.setattr(faces, "STILL_AFTER", 1e9)  # identical test frames would otherwise count as pictures
+    camera = iter(live(t1, 40))
+    monkeypatch.setattr(faces, "grab", lambda window_id: next(camera))  # the window's own pixels, whatever is in front of it
     try:
         with pytest.raises(Stop):
             faces.main()
@@ -132,14 +138,11 @@ def test_leaving_the_call_clears_the_cards_and_coming_back_brings_them_again(mon
 def test_pictures_get_no_card_but_live_video_does(tmp_path, monkeypatch):
     t1 = get_image("t1")
     kinds = lambda posts: [p if "facePrint" not in b else "print" for p, b in posts]
-    # the same frame over and over, checked every frame: six cards, then all cleared as pictures, and nothing more
-    frozen = kinds(run_video(tmp_path, monkeypatch, [t1] * 6, still_after=0))
-    assert [k for k in frozen if k != "/window"] == ["print"] * 6 + ["/faces/gone"] * 6
-    rng = np.random.default_rng(0)
-    camera = [np.clip(t1 + rng.normal(0, 2, t1.shape), 0, 255).astype(np.uint8) for _ in range(6)]  # sensor noise
-    live = kinds(run_video(tmp_path, monkeypatch, camera, still_after=0))
-    assert live.count("print") == 6 and live.count("/faces") > 6  # cards stay and keep moving...
-    assert live.index("/faces/gone") > max(i for i, k in enumerate(live) if k in ("/faces", "print"))  # ...until the video ends
+    frozen = kinds(run_video(tmp_path, monkeypatch, [t1] * 6))  # the same frame over and over: pictures, never people
+    assert [k for k in frozen if k != "/window"] == []  # no print, no card, nothing to clear
+    moving = kinds(run_video(tmp_path, monkeypatch, live(t1, 6, sigma=2)))
+    assert moving.count("print") == 6 and moving.count("/faces") > 6  # cards stay and keep moving...
+    assert moving.index("/faces/gone") > max(i for i, k in enumerate(moving) if k in ("/faces", "print"))  # ...until the video ends
 
 
 def test_yolo_is_skipped_while_the_grab_is_unchanged_and_the_minute_line_sums_up(tmp_path, monkeypatch, capsys):
@@ -161,10 +164,11 @@ def test_yolo_is_skipped_while_the_grab_is_unchanged_and_the_minute_line_sums_up
             return self.model(*a, **kw)
 
     monkeypatch.setattr(faces, "YOLO", Counting)
-    t1 = get_image("t1")
-    posts = run_video(tmp_path, monkeypatch, [t1] * 5)  # the same bytes five times: a still window
-    assert len(widths) == 1  # YOLO ran once; the other four frames reused its boxes
-    assert sum("facePrint" in b for p, b in posts if p == "/faces") == 6 and sum(p == "/faces" for p, _ in posts) == 30  # cards kept moving
+    a, b, c = live(get_image("t1"), 3)
+    posts = run_video(tmp_path, monkeypatch, [a, a, b, b, c])  # a grab repeated: the same bytes, YOLO would say the same
+    assert len(widths) == 3  # frames 2 and 4 reused the boxes of 1 and 3
+    # people are proven live at frame 3 (first change) and printed then; cards posted on frames 3, 4, 5
+    assert sum("facePrint" in b for p, b in posts if p == "/faces") == 6 and sum(p == "/faces" for p, _ in posts) == 18
     lines = [l for l in capsys.readouterr().out.splitlines() if l.startswith("capture: ")]
     assert len(lines) == 5 and all(re.fullmatch(r"capture: [\d.]+ fps, YOLO \d+ ms, InsightFace \d+ ms, cpu \d+%", l) for l in lines)
 
@@ -178,7 +182,7 @@ def test_your_own_tile_is_told_gone_once_and_then_left_alone(tmp_path, monkeypat
             return {"person": {"id": "p_me", "name": "Cesar", "role": "Me!"}}
         return {}
 
-    posts = run_video(tmp_path, monkeypatch, [get_image("t1")] * 5, reply=reply)
+    posts = run_video(tmp_path, monkeypatch, live(get_image("t1"), 5), reply=reply)
     about_me = [(p, b) for p, b in posts if b.get("trackId") == me[0]]
     assert [p for p, _ in about_me] == ["/faces", "/faces/gone"]  # the print, gone once, nothing more
     others = [b["trackId"] for p, b in posts if p == "/faces" and b["trackId"] != me[0]]
@@ -204,11 +208,8 @@ def test_an_error_in_one_frame_is_logged_and_the_loop_goes_on(tmp_path, monkeypa
             return self.model(*a, **kw)
 
     monkeypatch.setattr(faces, "YOLO", Flaky)
-    rng = np.random.default_rng(0)
-    t1 = get_image("t1")
-    frames = [np.clip(t1 + rng.normal(0, 2, t1.shape), 0, 255).astype(np.uint8) for _ in range(4)]  # all different: YOLO runs each
-    posts = run_video(tmp_path, monkeypatch, frames)
-    assert len(calls) == 4 and sum(p == "/faces" for p, _ in posts) >= 3 * 6  # frames 1, 3 and 4 posted; frame 2 was skipped
+    posts = run_video(tmp_path, monkeypatch, live(get_image("t1"), 4, sigma=2))  # all different: YOLO runs on each
+    assert len(calls) == 4 and sum(p == "/faces" for p, _ in posts) >= 2 * 6  # frames 3 and 4 posted; frame 2 was skipped
     out = capsys.readouterr().out
     assert out.count("skipped a frame after an error") == 1 and "CUDA fell over" in out
 
@@ -223,3 +224,42 @@ def test_a_face_that_just_left_comes_back_as_the_same_person():
     assert recent.find(again, now=5.0)["id"] == "p_maya"
     assert recent.find(jordan, now=5.0) is None  # someone else
     assert recent.find(again, now=31.0) is None  # too long ago
+
+
+def call_clip(n: int = 40) -> tuple[list[np.ndarray], np.ndarray]:
+    """A synthetic call: InsightFace's six-person photo panned and slightly zoomed (reads as live video), and beside it one
+    of those people frozen (a profile picture). Returns the frames and the frozen tile's region as x1, y1, x2, y2."""
+    t1 = get_image("t1")
+    h, w = t1.shape[:2]
+    frozen = t1[219:648, 337:735]  # the person in the middle
+    frames = []
+    for i in range(n):
+        zoom = 1.04 + 0.05 * i / n
+        big = cv2.resize(t1, None, fx=zoom, fy=zoom)
+        x, y = i, i // 2  # pan a pixel a frame
+        canvas = np.zeros((h, w + frozen.shape[1], 3), np.uint8)
+        canvas[:, :w] = big[y:y + h, x:x + w]
+        canvas[:frozen.shape[0], w:] = frozen
+        frames.append(canvas)
+    return frames, np.array([w, 0, w + frozen.shape[1], frozen.shape[0]])
+
+
+def test_a_synthetic_call_gets_one_print_per_moving_face_none_for_the_profile_picture(tmp_path, monkeypatch, capsys):
+    import time
+
+    monkeypatch.setenv("HELLO_DEBUG", "1")
+    frames, tile = call_clip()
+    started = time.perf_counter()
+    posts = run_video(tmp_path, monkeypatch, frames)
+    seconds = time.perf_counter() - started
+    seen = [b for p, b in posts if p == "/faces"]
+    printed = [b for b in seen if "facePrint" in b]
+    assert len(printed) == 6 and len({b["trackId"] for b in printed}) == 6  # one print per moving face
+    assert {b["trackId"] for b in seen} == {b["trackId"] for b in printed}  # nothing at all for the frozen tile...
+    out = capsys.readouterr().out
+    assert out.count("on screen, looking for a face") >= 7  # ...although YOLO tracked it as a person
+    assert not any(tile[0] <= b["screenBox"][0] for b in seen)  # no card ever sat over the frozen tile
+    kinds = [p for p, _ in posts]
+    assert kinds[-6:] == ["/faces/gone"] * 6 and kinds.index("/faces/gone") > max(i for i, k in enumerate(kinds) if k == "/faces")
+    assert all(set(b["debug"]) == {"personBox", "faceBox", "fps"} for b in seen)  # HELLO_DEBUG=1 adds the debug field
+    print(f"synthetic call: {len(frames)} frames in {seconds:.1f} s")

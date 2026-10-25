@@ -13,8 +13,8 @@ FAILS_PER_MINUTE = 20  # wrong keys, all callers together: through a tunnel ever
 failures: list[float] = []
 
 SUMMARY = ("Hello Again memory: people the user has met on video calls, who agreed to be remembered. For each person: "
-           "who they are to the user, when they last met and last spoke, what the last conversation was about, plain facts "
-           "they shared about themselves, how they met, and the user's own notes. Read-only; there is nothing to change.")
+           "who they are to the user, when they last met and last spoke, what the last conversation was about, whether it was "
+           "work or personal (context), plain facts they shared about themselves, how they first met (howMet), and the user's own notes. Read-only; there is nothing to change.")
 
 
 def require_key(request: Request) -> None:
@@ -40,14 +40,14 @@ def health():
 @router.get("/people", dependencies=[Depends(require_key)])
 def people():
     keep = ("id", "name", "role", "lastSeen", "lastSpoke", "topic", "context")
-    return [{k: p[k] for k in keep} for p in store.people()]
+    return [{k: p[k] for k in keep} for p in store.people() if "connector" in p["scope"]]  # only people who ticked it
 
 
 @router.get("/people/{pid}", dependencies=[Depends(require_key)])
 def one_person(pid: str):
     p = store.person(pid)
-    if p is None:
-        raise HTTPException(404, "Nobody with that id (or their consent has run out).")
+    if p is None or "connector" not in p["scope"]:
+        raise HTTPException(404, "Nobody with that id (or they did not agree to the connector).")
     latest = p["encounters"][0] if p["encounters"] else None
     return {**{k: p[k] for k in ("id", "name", "role", "lastSeen", "lastSpoke", "topic", "context", "howMet")},
             "facts": [f["text"] for f in p["facts"]],
@@ -79,7 +79,8 @@ OPENAPI = {
             "operationId": "getPerson", "summary": "One person in full: facts, how they met, the last conversation and notes",
             "parameters": [{"name": "id", "in": "path", "required": True, "schema": STR}],
             "responses": {"200": {"description": "The person", "content": {"application/json": {"schema": schema(PERSON | {
-                "howMet": STR, "facts": {"type": "array", "items": STR}, "about": NULLABLE, "lastTime": NULLABLE,
+                "howMet": {"type": "string", "description": "One line about the first call together: date, app and what it was about; may be empty"},
+                "facts": {"type": "array", "items": STR}, "about": NULLABLE, "lastTime": NULLABLE,
                 "notes": {"type": "array", "items": STR, "description": "The user's own notes"}}, ["id", "name"])}}},
                           "404": {"description": "Unknown person"}}}},
     },

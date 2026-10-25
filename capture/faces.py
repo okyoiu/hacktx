@@ -24,20 +24,11 @@ from ultralytics import YOLO
 
 from capture.embed import add_print, find_faces, mouths_in, warm_up
 from capture.speakers import Namer, listen
+from capture.tuning import (FOLLOW_EVERY, QUIET_AFTER, RECENT_SECONDS, REPORT_EVERY, RETRY, SAME_FACE, STILL_DIFF, STILL_SECONDS,
+                            YOLO_LONG_SIDE)
 from capture.window import CALL_APPS, NoScreenRecording, call_window, grab
 
 PERSON = 0  # COCO class id YOLO uses for people
-FOLLOW_EVERY = 3  # seconds between window position checks (each takes ~0.1 s)
-RETRY = 3.0  # seconds before another InsightFace pass for a person whose face wasn't visible last time
-QUIET_AFTER = 30  # seconds without a person in the followed window before the log says so (and again every 30 s)
-STILL_AFTER = 3.0  # seconds between two looks at a person box; the same picture both times means an image, not a person
-# Mean abs grey difference (0-255) under which two grabs are the same picture. Measured on t1, 64x64 sampled: the same image
-# grabbed again 0.00; the cleanest simulated camera noise (sigma 0.5) 0.52, sigma 2 1.13, a 1 px move 4.36.
-# shortcut: a still tile with a flashing icon in it reads 0.78 and so counts as a person; use the median if that shows up
-STILL = 0.25
-REPORT_EVERY = 60  # seconds between "capture: N fps, YOLO x ms, InsightFace y ms, cpu z%" log lines
-RECENT_FOR = 30.0  # seconds a face that left is remembered, so a layout change (every track id new) doesn't start people over
-SAME_FACE = 0.1  # cosine distance under which a new print is the same face as a remembered one
 ME = ("me", "me!", "myself")  # roles people give their own face when they enroll it, so their own tile gets no card
 
 
@@ -107,7 +98,7 @@ def video_frames(video: cv2.VideoCapture, fps: float):
 
 class Recent:
     """Prints of faces that just left, with who memory said they were. Zoom's gallery/speaker switch gives everyone a new
-    track id; the same face within RECENT_FOR seconds reuses the person instead of starting as "Recalling…" again."""
+    track id; the same face within RECENT_SECONDS seconds reuses the person instead of starting as "Recalling…" again."""
 
     def __init__(self):
         self.faces: list[tuple[float, np.ndarray, dict]] = []  # (when it left, print, person)
@@ -116,7 +107,7 @@ class Recent:
         self.faces.append((now, np.asarray(face_print, dtype=np.float32), person))
 
     def find(self, face_print, now: float) -> dict | None:
-        self.faces = [f for f in self.faces if now - f[0] < RECENT_FOR]
+        self.faces = [f for f in self.faces if now - f[0] < RECENT_SECONDS]
         best = max(self.faces, key=lambda f: float(f[1] @ face_print), default=None)
         return best[2] if best is not None and 1 - float(best[1] @ face_print) <= SAME_FACE else None
 
@@ -124,6 +115,12 @@ class Recent:
 def is_me(person: dict) -> bool:
     """Memory's reply names the user themself (their own tile is a person in every call)."""
     return bool(person.get("self")) or str(person.get("role") or "").strip().lower() in ME
+
+
+def shrink(frame: np.ndarray) -> tuple[np.ndarray, float]:
+    """The frame with its long side at most YOLO_LONG_SIDE px (when set), and the factor that scales its boxes back up."""
+    k = max(frame.shape[:2]) / YOLO_LONG_SIDE if YOLO_LONG_SIDE else 1.0
+    return (cv2.resize(frame, None, fx=1 / k, fy=1 / k, interpolation=cv2.INTER_AREA), k) if k > 1 else (frame, 1.0)
 
 
 def cpu_seconds() -> float:
@@ -139,26 +136,30 @@ def grey(frame: np.ndarray, box) -> np.ndarray:
 
 
 class Pictures:
-    """Which tracked boxes are pictures (a photo, a stock image, a Zoom profile picture) rather than people: live video always
-    differs a little between grabs, a picture doesn't. Every STILL_AFTER seconds the same screen patch is compared with its
-    copy from last time, so a tile that starts moving (camera turned on) is a person again at the next check."""
+    """Which tracked boxes are pictures (a photo, a stock image, a Zoom profile picture) rather than people. A box is a person
+    while its pixels changed within the last STILL_SECONDS: live video always differs a little between grabs (camera noise),
+    a picture never does. A new track counts as a picture until it first changes: one frame on live video, never for a
+    picture, so a profile picture gets no print and no card at all. Each frame is compared with the last at the last box, so
+    YOLO's box jitter doesn't read as motion. Measured on the sample photo, 64x64 sampled grey: the same image grabbed again
+    0.00; camera noise sigma 0.5 → 0.52, sigma 2 → 1.13; a 1 px move 4.36.
+    shortcut: a still tile with a flashing icon inside the box reads 0.78 and counts as a person; use the median if that shows up
+    """
 
     def __init__(self):
-        self.last: dict[int, tuple[float, list[float], np.ndarray]] = {}  # track id -> (when, box, grey copy)
-        self.still: set[int] = set()
+        self.last: dict[int, tuple[list[float], np.ndarray]] = {}  # track id -> (box, grey copy) from the last frame
+        self.moved: dict[int, float] = {}  # track id -> when its patch last changed
 
     def update(self, frame: np.ndarray, boxes: dict[int, list[float]], now: float) -> set[int]:
         for tid, box in boxes.items():
-            when, where, last = self.last.get(tid, (now, box, None))
-            if last is not None and now - when < STILL_AFTER:
-                continue
-            if last is not None:
-                (self.still.add if np.abs(grey(frame, where) - last).mean() < STILL else self.still.discard)(tid)
-            self.last[tid] = (now, box, grey(frame, box))
+            if tid in self.last:
+                where, last = self.last[tid]
+                if np.abs(grey(frame, where) - last).mean() >= STILL_DIFF:
+                    self.moved[tid] = now
+            self.last[tid] = (box, grey(frame, box))
         for tid in self.last.keys() - boxes.keys():
             del self.last[tid]
-            self.still.discard(tid)
-        return self.still
+            self.moved.pop(tid, None)
+        return {tid for tid in boxes if now - self.moved.get(tid, -math.inf) >= STILL_SECONDS}
 
 
 def face_in(face: list[float] | None, person: list[float]) -> list[float] | None:
@@ -233,6 +234,7 @@ def main() -> None:
     window = {}  # the call window (app and rect) memory was last told about
     last_person = quiet_told = time.monotonic()  # when a person was last in the frame, and when the log last said nobody is
     last_frame = result = None  # the last grab and YOLO's answer for it: a grab with the same bytes (a still window) reuses it
+    k = 1.0  # how much bigger the frame is than what YOLO saw (shrink)
     report_at, frames_done, yolo_ms, insight_ms, cpu0 = time.monotonic(), 0, 0.0, 0.0, cpu_seconds()
     for frame, (x, y, w, app, calls) in frames:
         started = time.time()
@@ -247,14 +249,14 @@ def main() -> None:
                 result = last_frame = None
             elif last_frame is None or not np.array_equal(frame, last_frame):
                 t0 = time.perf_counter()
-                # YOLO resizes to 640 itself; shrinking the frame first was measured as a loss (TASKS.md, round 8)
-                result = model.track(frame, persist=True, classes=[PERSON], verbose=False)[0]
+                small, k = shrink(frame)
+                result = model.track(small, persist=True, classes=[PERSON], verbose=False)[0]
                 yolo_ms += (time.perf_counter() - t0) * 1000
                 last_frame = frame
 
             live: set[int] = set()  # empty while the call window is gone or isn't a call, so every card clears
             if result is not None and result.boxes is not None and result.boxes.is_track:
-                boxes = dict(zip(result.boxes.id.int().tolist(), result.boxes.xyxy.tolist()))
+                boxes = dict(zip(result.boxes.id.int().tolist(), (np.array(result.boxes.xyxy.tolist()) * k).tolist()))
                 for tid in boxes.keys() - seen:
                     print(f"person {tid} on screen, looking for a face")
                     seen.add(tid)
