@@ -318,15 +318,19 @@ def test_the_wifi_and_web_pages_cannot_post_the_window():
 
 
 def test_the_app_build_never_packs_secrets_or_data():
-    """Reads the build config in overlay/package.json (electron-builder / packager keys) once it exists."""
-    cfg = json.loads((ROOT / "overlay/package.json").read_text())
-    build = cfg.get("build") or cfg.get("config") or {}
-    if not build and not any("package" in k or "dist" in k for k in cfg.get("scripts", {})):
-        pytest.skip("no packaging config yet")
-    listed = [str(x) for key in ("files", "extraResources", "extraFiles", "asarUnpack") for x in (build.get(key) or [])]
-    listed = [x for x in listed if not x.startswith("!")]  # exclusions are fine
-    banned = re.compile(r"(^|[/*])(\.env|notes|logs|\.git)(/|\*|$)|^\.\.|(^|/)\*\*$|\.pt$|\.onnx$")
-    assert [x for x in listed if banned.search(x)] == []
+    """overlay/package.js builds Hello Again.app: Electron plus a shim, never the repo's secrets or data."""
+    script = ROOT / "overlay/package.js"
+    if not script.exists():
+        pytest.skip("no packaging script yet")
+    code = "\n".join(re.sub(r"\s//.*$", "", line) for line in script.read_text().splitlines() if not line.strip().startswith("//"))
+    # nothing from the repo that holds secrets or people's data is named, read or copied
+    assert not re.search(r"['\"/`]\.env|notes|logs|\.git\b|\.pt\b|\bMODEL_API_KEY|SERPAPI|DATABASE_URL|\bfaces\b|memory/|capture/", code)
+    # the only things copied in are Electron itself and the icon
+    for call in re.findall(r"(?:copyFileSync|cpSync|execFileSync\('ditto')\(?,?\s*([^\n]*)", code):
+        assert re.search(r"electron|icon\.(icns|ico)", call), call
+    # the PATH additions are absolute folders, and the signature is ad hoc
+    assert not re.search(r"PATH\s*=\s*\[[^\]]*(process\.cwd|'\.'|\"\.\")", code)
+    assert "codesign" not in code or "'--sign', '-'" in code
 
 
 @pytest.mark.xfail(strict=True, reason="R5-6: the recap kept for a late overlay still names someone who deleted themselves")
