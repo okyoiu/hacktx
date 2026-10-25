@@ -43,7 +43,7 @@ def purge_expired() -> None:
 def match(face_print: np.ndarray) -> dict | None:
     """Closest consenting person, or None when nobody is close enough."""
     row = conn().execute(
-        """select p.id, p.name, p.first_met, 1 - (f.print <=> %s) as score
+        """select p.id, p.name, p.first_met, 1 - (f.print <=> %s) as score, p.role
            from faces f
            join people p on p.id = f.person_id
            join consents c on c.person_id = p.id
@@ -54,7 +54,7 @@ def match(face_print: np.ndarray) -> dict | None:
     ).fetchone()
     if row is None or row[3] < MATCH_MIN:
         return None
-    return {"id": row[0], "name": row[1], "firstMet": row[2], "score": round(float(row[3]), 3)}
+    return {"id": row[0], "name": row[1], "firstMet": row[2], "role": row[4], "score": round(float(row[3]), 3)}
 
 
 def digest(token: str) -> str:
@@ -134,6 +134,14 @@ def last_time(pid: str) -> str | None:
         "select last_time from encounters where person_id = %s order by met_at desc, id desc limit 1", (pid,)
     ).fetchone()
     return row[0] if row else None
+
+
+def key_fact(pid: str) -> str | None:
+    """One thing worth remembering about them: what Muse wrote they're about, else their newest note."""
+    row = conn().execute(
+        "select about from encounters where person_id = %s and about <> '' order by met_at desc, id desc limit 1", (pid,)
+    ).fetchone()
+    return row[0] if row else latest_note(pid)
 
 
 def add_note(pid: str, text: str) -> None:

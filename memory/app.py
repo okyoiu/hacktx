@@ -185,11 +185,14 @@ def card_for(face_print: list[float]) -> dict | None:
         return None
     met = person["firstMet"]
     last = store.last_time(person["id"])
+    fact = store.key_fact(person["id"])
     return {
         "id": person["id"],
         "name": person["name"],
+        "role": person["role"],
         "line": f"Last time: {last}" if last else store.latest_note(person["id"]) or "",
         "met": f"Met {met:%b} {met.day}",
+        "bullets": [b for b in (person["role"], f"Last time: {last}" if last else "", fact) if b],
     }
 
 

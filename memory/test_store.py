@@ -142,6 +142,20 @@ def test_a_role_you_typed_is_never_replaced_by_muses_suggestion(db, enroll):
         db.execute("delete from people where id = %s", (typed,))
 
 
+def test_face_card_has_role_last_time_and_a_key_fact_as_at_most_three_bullets(db, enroll):
+    face = random_print()
+    pid, _ = enroll(face)
+    assert server.card_for(face.tolist())["bullets"] == [] and server.card_for(face.tolist())["role"] == ""
+    store.set_role(pid, "Your team lead", "user")
+    store.add_note(pid, "Has a dog named Biscuit")
+    card = server.card_for(face.tolist())
+    assert card["bullets"] == ["Your team lead", "Has a dog named Biscuit"]  # no call yet: the note is the key fact
+    store.add_encounter(pid, datetime.now().astimezone(), "Starts a fintech job Monday", "Talked about his move.")
+    card = server.card_for(face.tolist())
+    assert card["role"] == "Your team lead" and card["line"] == "Last time: Talked about his move."
+    assert card["bullets"] == ["Your team lead", "Last time: Talked about his move.", "Starts a fintech job Monday"]
+
+
 def test_person_returns_notes_newest_first(db, enroll):
     pid, _ = enroll(random_print())
     store.add_note(pid, "Moved to Austin")

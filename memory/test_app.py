@@ -160,10 +160,11 @@ def test_remember_saves_the_face_on_screen_only_with_consent(http, events, monke
         return "p_new", "token123"
 
     monkeypatch.setattr(store, "enroll", enroll)
-    monkeypatch.setattr(store, "match", lambda p: {"id": "p_new", "name": "Kai Park", "firstMet": date(2026, 10, 24), "score": 1.0}
+    monkeypatch.setattr(store, "match", lambda p: {"id": "p_new", "name": "Kai Park", "firstMet": date(2026, 10, 24), "role": "Your team lead", "score": 1.0}
                         if enrolled else None)
     monkeypatch.setattr(store, "last_time", lambda pid: None)
     monkeypatch.setattr(store, "latest_note", lambda pid: None)
+    monkeypatch.setattr(store, "key_fact", lambda pid: None)
     monkeypatch.setattr(store, "person", lambda pid: None)  # read by the call note at /calls/end
     face = [0.0] * 511 + [1.0]
     box = [10.0, 20.0, 100.0, 120.0]
@@ -181,7 +182,8 @@ def test_remember_saves_the_face_on_screen_only_with_consent(http, events, monke
     assert saved.json() == {"id": "p_new", "deleteToken": "token123"}
     assert enrolled == [("Kai Park", face, None, "Your team lead")]  # the print from the call, no selfie
     assert events[-1] == {"type": "face", "trackId": 7, "screenBox": box,
-                          "person": {"id": "p_new", "name": "Kai Park", "line": "", "met": "Met Oct 24"}}
+                          "person": {"id": "p_new", "name": "Kai Park", "role": "Your team lead", "line": "", "met": "Met Oct 24",
+                                     "bullets": ["Your team lead"]}}
     assert "p_new" in server.call.people  # counted in this call from now on
     assert http.post("/faces/7/remember", json={"name": "Kai Park", "consent": True}).status_code == 409  # already saved
 
