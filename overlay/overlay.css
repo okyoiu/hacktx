@@ -245,20 +245,25 @@ body[data-view="all"] .people { display: none; }
 }
 /* a closed known card is just the name tag */
 .card.known:not(.open) { width: auto; padding: 0 11px 0 9px; border-radius: 999px; }
-.card.known:not(.open) :is(.role, .close) { display: none; }
-.card .row { display: flex; align-items: baseline; gap: 8px; }
+.card.known:not(.open) .close { display: none; }
+.card .row { display: flex; align-items: center; gap: 8px; }
 .card .tag { display: flex; align-items: center; gap: 7px; min-width: 0; height: 28px; padding: 0; border: 0; background: none; text-align: left; }
 .card .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--mint); flex: none; }
 .card .name { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; white-space: nowrap; }
 .card.known:not(.open) .name { font-size: 13px; font-weight: 600; }
-.card .role { font-size: 12.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* two sizes on the card: 15px name and 13.5px text, plus the 11px labels; the role is the dim line under the name */
+.card .role { margin-top: -2px; font-size: 13.5px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .role:empty { display: none; }
+.card .facts { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 10px 0 0; padding-top: 10px; border-top: 1px solid var(--rule); }
+.card .facts div { min-width: 0; }
+.card .facts dt { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); white-space: nowrap; }
+.card .facts dd { margin: 1px 0 0; font-size: 13.5px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card .more { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 0.4s var(--ease), opacity 0.3s ease; }
 .card .more > div { min-height: 0; overflow: hidden; }
 .card.open .more { grid-template-rows: 1fr; opacity: 1; }
 .card .bullets { margin: 10px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; color: var(--ink-2); font-size: 13.5px; }
 .card .bullets li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card .bullets li::before { content: "·"; margin-right: 7px; color: var(--ink-3); }
-.card .met { margin-top: 6px; color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
 /* ✕ closes the pop-up for this person for the rest of the call; it shows only while the open card is hovered */
 .card .close {
   flex: none; display: grid; place-items: center; width: 22px; height: 22px; margin: -2px -6px -2px auto; padding: 0; align-self: center;

@@ -184,11 +184,20 @@ function fillCard(card, person, oldBullets = new Set()) {
       syncOpen(card)
     })
     const row = el('div', 'row')
-    row.append(tag, el('span', 'role', person.role || ''), close)
+    row.append(tag, close)
+    // the memory jogger: name and role, the facts row, then three one-line bullets
+    const facts = el('dl', 'facts')
+    for (const f of cardFacts(person, Date.now())) {
+      const item = el('div')
+      const value = el('dd', null, f.value)
+      if (f.title) value.title = f.title // "Oct 18" says "a week ago" on hover
+      item.append(el('dt', null, f.label), value)
+      facts.append(item)
+    }
     const bullets = el('ul', 'bullets')
-    bullets.append(...bulletsOf(person).map((b) => fresh(el('li', null, b), oldBullets.has(b))))
+    bullets.append(...cardBullets(person).map((b) => fresh(el('li', null, oneLine(b, 44)), oldBullets.has(b))))
     const inner = el('div')
-    inner.append(bullets, el('div', 'met', person.met))
+    inner.append(el('div', 'role', person.role || ''), facts, bullets)
     const more = el('div', 'more')
     more.append(inner)
     card.replaceChildren(row, more)

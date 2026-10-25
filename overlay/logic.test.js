@@ -431,6 +431,53 @@ test('the island keeps its centre as it grows (Teams: its left edge) and stays o
   assert.equal(layoutFor('Microsoft Teams', null, WORK).bar.anchor, 'left')
 })
 
+// ---------- the memory-jogger card ----------
+const { relativeDate, oneLine, cardFacts, cardBullets } = require('./logic')
+
+test('relative dates read like a person would say them', () => {
+  const now = Date.parse('2026-10-25T12:00:00Z')
+  assert.equal(relativeDate('2026-10-25T09:00:00Z', now), 'today')
+  assert.equal(relativeDate('2026-10-24', now), 'yesterday')
+  assert.equal(relativeDate('2026-10-20', now), '5 days ago')
+  assert.equal(relativeDate('2026-10-18', now), 'a week ago')
+  assert.equal(relativeDate('2026-10-04', now), '3 weeks ago')
+  assert.equal(relativeDate('2026-08-20', now), '2 months ago')
+  assert.equal(relativeDate('2024-09-01', now), '2 years ago')
+  assert.equal(relativeDate(null, now), '')
+  assert.equal(relativeDate('nonsense', now), '')
+})
+
+test('one line: trimmed, single-spaced, cut with an ellipsis at a word', () => {
+  assert.equal(oneLine('  Starts a new   fintech job Monday '), 'Starts a new fintech job Monday')
+  assert.equal(oneLine('Jordan moved to Austin last week and starts a fintech job on Monday morning', 40), 'Jordan moved to Austin last week and…')
+  assert.equal(oneLine('x'.repeat(50), 20), 'x'.repeat(19) + '…', 'no word to break at')
+  assert.equal(oneLine(null), '')
+})
+
+test('the facts row: last seen, last spoke, about, work or personal; empty before a first call together', () => {
+  const now = Date.parse('2026-10-25T12:00:00Z')
+  const facts = cardFacts({ lastSeen: '2026-10-18', lastSpoke: '2026-10-18', topic: 'his move to Austin', context: 'personal' }, now)
+  assert.deepEqual(facts, [
+    { label: 'Last seen', value: 'Oct 18', title: 'a week ago' },
+    { label: 'Last spoke', value: 'Oct 18', title: 'a week ago' },
+    { label: 'About', value: 'his move to Austin', title: 'his move to Austin' },
+    { label: 'Context', value: 'Personal', title: '' },
+  ])
+  assert.deepEqual(cardFacts({ lastSeen: null, lastSpoke: null, topic: null, context: '' }, now), [
+    { label: 'Last seen', value: 'First call', title: '' },
+    { label: 'Last spoke', value: '—', title: '' },
+  ], 'nothing to say yet: no About, no Context')
+  assert.equal(cardFacts({ context: 'work' }, now).at(-1).value, 'Work')
+})
+
+test('the card shows three bullets: the role is already in the header, "This call" lines win over the rest', () => {
+  const person = { role: 'Friend from climbing', bullets: ['Friend from climbing', 'Loves F1', 'Last time: the move', 'Met at the gym', 'This call: found a gym', 'This call: new job'] }
+  assert.deepEqual(cardBullets(person), ['Loves F1', 'This call: found a gym', 'This call: new job'])
+  assert.deepEqual(cardBullets({ role: 'Lead', bullets: ['Lead', 'a', 'b'] }), ['a', 'b'])
+  assert.deepEqual(cardBullets({ role: '', bullets: ['a', 'b', 'c'] }), ['a', 'b', 'c'])
+  assert.deepEqual(cardBullets({ role: 'Lead', line: 'Last time: x' }), ['Last time: x'], 'an older server: the label and the last-time line')
+})
+
 test('the transcript strip and Recap have fixed sizes the layout can count on', () => {
   assert.ok(STRIP.height > 0 && RECAP.width > PANEL.width)
 })

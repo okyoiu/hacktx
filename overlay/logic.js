@@ -111,6 +111,49 @@ function bulletsOf(person) {
   return list.filter((b) => typeof b === 'string' && b.trim()).slice(0, 5)
 }
 
+// ---------- the memory-jogger card ----------
+
+// "3 weeks ago", from an ISO date; "" when there is none.
+function relativeDate(iso, now) {
+  const t = iso ? Date.parse(iso) : NaN
+  if (!Number.isFinite(t)) return ''
+  const days = Math.floor((now - t) / 86_400_000)
+  const ago = (n, unit) => (n === 1 ? `a ${unit} ago` : `${n} ${unit}s ago`)
+  if (days < 1) return 'today'
+  if (days === 1) return 'yesterday'
+  if (days < 7) return `${days} days ago`
+  if (days < 30) return ago(Math.floor(days / 7), 'week')
+  if (days < 365) return ago(Math.floor(days / 30), 'month')
+  return ago(Math.floor(days / 365), 'year')
+}
+
+// One line of text: single-spaced and cut at a word with an ellipsis past `max` characters.
+function oneLine(text, max = 60) {
+  const clean = String(text ?? '').trim().replace(/\s+/g, ' ')
+  if (clean.length <= max) return clean
+  const cut = clean.slice(0, max - 1)
+  const word = cut.lastIndexOf(' ')
+  return (word > max / 2 ? cut.slice(0, word) : cut) + '…'
+}
+
+// The small-label row: when you last saw and spoke to them, the topic and whether it was work or personal.
+// Before a first call together only the first two show, saying so.
+function cardFacts({ lastSeen, lastSpoke, topic, context }, now) {
+  const date = (iso, empty) => (iso && shortDate(iso) ? { value: shortDate(iso), title: relativeDate(iso, now) } : { value: empty, title: '' })
+  const facts = [{ label: 'Last seen', ...date(lastSeen, 'First call') }, { label: 'Last spoke', ...date(lastSpoke, '—') }]
+  if (topic) facts.push({ label: 'About', value: oneLine(topic, 40), title: String(topic) })
+  if (context === 'work' || context === 'personal') facts.push({ label: 'Context', value: context === 'work' ? 'Work' : 'Personal', title: '' })
+  return facts
+}
+
+// At most three bullets under the facts: the role is already the card's header, so it goes; when more than
+// three remain, keep the first (Muse's fact) and the two newest ("This call: …").
+function cardBullets(person) {
+  const list = person.bullets?.length ? person.bullets : [person.line]
+  const rest = list.filter((b) => typeof b === 'string' && b.trim() && b !== person.role)
+  return rest.length > 3 ? [rest[0], ...rest.slice(-2)] : rest
+}
+
 // ---------- People dashboard ----------
 
 // Search matches the name or the label, ignoring case; an empty search lists everyone.
@@ -380,4 +423,4 @@ function debugLabel({ trackId, score, decision }) {
   return `#${trackId} · ${scored} · ${decision}`
 }
 
-if (typeof module !== 'undefined') module.exports = { presetFor, layoutFor, askPlace, cardRect, recapFrom, debugLabel, devMode, shouldMove, islandStage, islandBounds, ISLAND, NOTICE_MS, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
+if (typeof module !== 'undefined') module.exports = { relativeDate, oneLine, cardFacts, cardBullets, presetFor, layoutFor, askPlace, cardRect, recapFrom, debugLabel, devMode, shouldMove, islandStage, islandBounds, ISLAND, NOTICE_MS, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
