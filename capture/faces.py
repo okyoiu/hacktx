@@ -24,7 +24,7 @@ from ultralytics import YOLO
 
 from capture.embed import add_print, find_faces, mouths_in, warm_up
 from capture.speakers import Namer, listen
-from capture.window import CALL_APPS, call_window, grab
+from capture.window import CALL_APPS, NoScreenRecording, call_window, grab
 
 PERSON = 0  # COCO class id YOLO uses for people
 FOLLOW_EVERY = 3  # seconds between window position checks (each takes ~0.1 s)
@@ -48,7 +48,10 @@ def screen_frames(region: tuple[int, int, int, int] | None, follow: list[str] | 
                 why = "waiting for a call window"
                 try:
                     found = call_window(follow)
-                except SystemExit as e:  # the window list isn't readable (no osascript, no permission): keep waiting
+                except NoScreenRecording as e:  # frames would be wallpaper: stop, so the launcher shows faces as down
+                    print(e)
+                    raise SystemExit(3) from None
+                except SystemExit as e:  # the window list isn't readable (no osascript): keep waiting
                     found, why = None, str(e)
                 checked = time.time()
                 app, region, window_id = (found.app, found.rect, found.id) if found else (None, None, None)

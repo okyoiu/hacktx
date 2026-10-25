@@ -65,8 +65,25 @@ def pick(windows: list[dict], apps) -> Window | None:
     return Window(app, (int(b["X"]), int(b["Y"]), int(b["Width"]), int(b["Height"])), w.get("kCGWindowNumber"), behind)
 
 
+NO_PERMISSION = ("Screen Recording permission is off for the app that launched Hello Again (System Settings > Privacy & Security > "
+                 "Screen & System Audio Recording); it sees only the wallpaper")
+
+
+class NoScreenRecording(Exception):
+    pass
+
+
+def can_record(windows: list[dict]) -> bool:
+    """False when macOS hides every other app's window name: that is how it says this process may not record the screen
+    (its grabs would show only the wallpaper). An empty list says nothing, so it counts as fine."""
+    return not windows or any("kCGWindowName" in w for w in windows)
+
+
 def call_window(apps=CALL_APPS) -> Window | None:
-    return pick(windows(), apps)
+    found = windows()
+    if not can_record(found):
+        raise NoScreenRecording(NO_PERMISSION)
+    return pick(found, apps)
 
 
 def grab(window_id: int) -> np.ndarray | None:

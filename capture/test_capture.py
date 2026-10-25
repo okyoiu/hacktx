@@ -5,13 +5,14 @@ from types import SimpleNamespace
 
 import cv2
 import numpy as np
+import pytest
 from insightface.data import get_image
 
 from capture import faces
 from capture.embed import add_print, faces_in, find_faces
 from capture.faces import assign, video_frames
 from capture import window as win
-from capture.window import CALL_APPS, Window, pick
+from capture.window import CALL_APPS, NO_PERMISSION, NoScreenRecording, Window, can_record, pick
 
 
 def test_video_frames_skips_to_keep_real_speed(tmp_path):
@@ -66,6 +67,26 @@ def test_pick_follows_the_frontmost_app_when_no_call_app_is_open():
     assert pick([window("Terminal", 0, 0, 200, 100)], CALL_APPS) is None  # nothing of a real size
     assert pick([window("Electron", 0, 0, 3000, 2000)], CALL_APPS) is None
     assert pick([], CALL_APPS) is None
+
+
+def test_missing_screen_recording_permission_shows_as_windows_without_names(monkeypatch):
+    named = [dict(window("Terminal", 0, 0, 800, 600), kCGWindowName="bash"), window("Zoom", 0, 0, 1100, 700)]
+    assert can_record(named)  # one named window is enough: some windows have no name even with permission
+    assert can_record([dict(window("Finder", 0, 0, 800, 600), kCGWindowName="")])  # present but empty still counts
+    assert not can_record([window("Terminal", 0, 0, 800, 600), window("Zoom", 0, 0, 1100, 700)])
+    assert can_record([])  # nothing on screen: can't tell, so don't give up
+    monkeypatch.setattr(win, "windows", lambda: [window("Zoom", 0, 0, 1100, 700)])
+    with pytest.raises(NoScreenRecording):
+        win.call_window(["Zoom"])
+
+
+def test_screen_frames_exits_with_code_3_when_the_screen_cannot_be_recorded(monkeypatch, capsys):
+    monkeypatch.setattr(faces.mss, "MSS", FakeScreen)
+    monkeypatch.setattr(faces, "call_window", lambda apps: (_ for _ in ()).throw(NoScreenRecording(NO_PERMISSION)))
+    with pytest.raises(SystemExit) as stop:
+        next(faces.screen_frames(None, follow=["Zoom"]))
+    assert stop.value.code == 3
+    assert capsys.readouterr().out.strip() == NO_PERMISSION
 
 
 def test_grab_decodes_what_screencapture_hands_over_and_gives_none_once_the_window_is_gone(monkeypatch):
