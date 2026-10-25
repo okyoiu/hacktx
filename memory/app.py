@@ -4,6 +4,7 @@ Run: uv run --env-file .env uvicorn memory.app:app --reload
 Keep it on localhost or your LAN; nothing here is authenticated except deleting a person.
 """
 import asyncio
+import math
 import os
 import secrets
 import time
@@ -32,6 +33,10 @@ ENROLLS_PER_MINUTE = 5  # POST /enroll attempts per IP address; each one runs th
 # Hard stop for one Muse Spark or SerpApi job: the clients time out per request and retry, so a slow service could
 # otherwise hold a response on "thinking" or stall Live insights for minutes. The abandoned thread finishes on its own.
 OUTBOUND_SECONDS = 45
+THREAD_TURNS = 6  # question/answer turns of an Ask AI chat that follow-ups can see
+LIVE_BULLET_SECONDS = 60  # check what a person has said at most this often
+LIVE_MIN_WORDS = 8  # fewer words than this since the last check is not worth a Muse call
+MAX_BULLETS = 5  # a card past this gets a shorter "Met …" line, then fewer facts
 NOTE_POINTS = 10  # Muse rephrases points every refresh, so the call note keeps only the latest few
 
 
@@ -47,6 +52,13 @@ history: list[str] = []  # lines Muse Spark has already seen, context for the ne
 fresh: list[str] = []  # final lines since the last insights refresh
 listening: dict = {"type": "listening", "on": True, "startedAt": utc_now()}  # latest listening event
 latest_insights: dict | None = None  # latest insights event
+live: dict[str, dict] = {}  # person id -> {since, lines}: what they said since the last live-bullets check
+snippets: dict[str, list[str]] = {}  # person id -> this call's "This call: …" bullets (at most 2)
+boxes: dict[int, list[float]] = {}  # trackId -> latest screen box, to re-send a face event
+thread: list[tuple[str, str]] = []  # the Ask AI chat so far: (question, answer), the last THREAD_TURNS turns
+thread_epoch = 0  # bumped whenever the thread is cleared
+latest_recap: dict | None = None  # recap of the call that just ended, until the next call starts
+latest_window: dict | None = None  # latest window event: where the followed call window is, for Ask AI placement
 last_refresh: float | None = None  # when the last insights refresh started (monotonic); None = the next one is immediate
 last_transcript_at: str | None = None  # when the last line was accepted, for the control bar's status dot
 actions: dict[str, dict] = {}  # action id -> {kind, label, query, personId}
@@ -88,6 +100,8 @@ class Call:
     points: list[str] = field(default_factory=list)  # the latest NOTE_POINTS distinct insight points, in order
     responses: list[dict] = field(default_factory=list)  # finished response events
     lines: list[str] = field(default_factory=list)  # every final transcript line, "who: text"
+    app: str | None = None  # the call app followed while it ran, e.g. "zoom.us"
+    topic: str = ""  # what its insights ended up about
 
 
 call: Call | None = None  # None between calls
@@ -96,9 +110,10 @@ background: set[asyncio.Task] = set()  # pushes started from sync code, kept ref
 
 
 def this_call() -> Call:
-    global call
+    global call, latest_recap
     if call is None:
         call = Call()
+        latest_recap = None
         listening["startedAt"] = utc_now()  # the control bar's call timer starts with the call
         task = asyncio.get_running_loop().create_task(push(dict(listening)))
         background.add(task)
@@ -112,28 +127,66 @@ def end_call() -> asyncio.Future:
     if idle_timer:
         idle_timer.cancel()
     ended, call = call or Call(), None
+    clear_thread()
+    live.clear()
+    snippets.clear()
+    insights = latest_insights
+    ended.topic = (insights or {}).get("topic", "")
     latest_insights = None  # the next call, and overlays connecting later, start clean
     last_refresh = None  # the next call's first insights don't wait out this call's interval
     history.clear()
     unknown.clear()  # strangers' prints never outlive the call
     fresh.clear()
     loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, remember_encounters, ended)  # Muse Spark is slow; the note doesn't wait for it
+    task = loop.create_task(send_recap(ended, insights))  # Muse Spark is slow; the note doesn't wait for it
+    background.add(task)
+    task.add_done_callback(background.discard)
     return loop.run_in_executor(None, notes.write, ended.started, ended.people, ended.points, ended.responses)
 
 
-def remember_encounters(ended: Call) -> None:
-    """Runs in a thread: store Muse Spark's about/last-time summary for each recognized person of a finished call."""
+async def send_recap(ended: Call, insights: dict | None) -> None:
+    """Once the summaries are saved, broadcast the finished call's recap and keep it for an overlay that connects later."""
+    global latest_recap
+    lasts = await asyncio.get_running_loop().run_in_executor(None, remember_encounters, ended)
+    people = [{"id": p["id"], "name": p["name"], "role": p["role"], "lastTime": lasts.get(p["id"], "")}
+              for p in map(store.person, ended.people) if p]
+    recap = {"type": "recap", "topic": (insights or {}).get("topic", ""), "points": (insights or {}).get("points", []),
+             "actions": (insights or {}).get("actions", []), "people": people}
+    if call is not None or not (recap["topic"] or recap["points"] or recap["actions"] or people):
+        return  # a new call already started, or there was no call to recap
+    latest_recap = recap
+    await push(recap)
+
+
+APP_NAMES = {"zoom.us": "Zoom", "facetime": "FaceTime", "microsoft teams": "Teams", "google chrome": "Chrome"}
+
+
+def how_met(ended: Call) -> str:
+    """"Oct 25, 2026 on Zoom: <what that call was about>", from facts we already have (no Muse call)."""
+    app = ended.app and APP_NAMES.get(ended.app.casefold(), ended.app)
+    return f"{notes.day(ended.started)} on {app or 'a call'}" + (f": {ended.topic}" if ended.topic else "")
+
+
+def remember_encounters(ended: Call) -> dict[str, str]:
+    """Runs in a thread: store Muse Spark's about/last-time summary for each recognized person of a finished call.
+    Returns person id -> this call's last-time line (empty when the summary was skipped)."""
+    lasts: dict[str, str] = {}
     try:
         # store.person drops anyone who deleted themselves or whose consent ran out; unenrolled faces never got here
-        people = {p["id"]: {"name": p["name"], "role": p["role"], "notes": [n["text"] for n in p["notes"][:5]]}
+        people = {p["id"]: {"name": p["name"], "role": p["role"], "notes": [n["text"] for n in p["notes"][:5]],
+                            "facts": [f["text"] for f in p.get("facts", [])]}
                   for p in map(store.person, ended.people) if p}
+        first_call = {p["id"]: not p["encounters"] for p in map(store.person, ended.people) if p}
         if not people or not ended.lines:
             return  # the finally below still refreshes their files
         for s in picks.summarise(people, ended.lines):
             store.add_encounter(s["personId"], ended.started.astimezone(), s["about"], s["lastTime"])
+            lasts[s["personId"]] = s["lastTime"]
             if s["role"]:
                 store.set_role(s["personId"], s["role"], "muse")  # never replaces a role the user typed
+            store.add_facts(s["personId"], s["facts"])
+            if first_call.get(s["personId"]):
+                store.set_how_met(s["personId"], how_met(ended))
     except Exception as e:  # e.g. no MODEL_API_KEY: the call still ends and its note is still written
         print(f"encounter summaries skipped: {e}")
     finally:
@@ -142,12 +195,16 @@ def remember_encounters(ended: Call) -> None:
                 notes.write_person(pid)
             except Exception as e:
                 print(f"person file skipped: {e}")
+    return lasts
 
 
 def saw_face(card: dict | None) -> None:
     """Count this face toward the current call and restart the idle countdown that ends it."""
     global idle_timer
-    people = this_call().people
+    current = this_call()
+    people = current.people
+    if latest_window and latest_window["app"]:
+        current.app = latest_window["app"]
     if card:
         people.setdefault(card["id"], [])
     if idle_timer:
@@ -168,7 +225,7 @@ async def overlay_socket(ws: WebSocket):
     if not from_this_laptop(ws):  # the http middleware doesn't see WebSockets
         return await ws.close(code=1008)
     await ws.accept()
-    for event in (listening, latest_insights):  # catch up an overlay that starts mid-call
+    for event in (listening, latest_insights, latest_window, latest_recap):  # catch up an overlay that starts mid-call
         if event:
             await ws.send_json(event)
     clients.add(ws)
@@ -181,10 +238,17 @@ async def overlay_socket(ws: WebSocket):
 
 # --- faces (from capture/faces.py) ---
 
+class Debug(BaseModel):
+    personBox: list[float] = Field(min_length=4, max_length=4)
+    faceBox: list[float] | None = Field(default=None, min_length=4, max_length=4)
+    fps: float
+
+
 class FaceTrack(BaseModel):
     trackId: int
     screenBox: list[float] = Field(min_length=4, max_length=4)  # x, y, width, height in screen points
     facePrint: list[float] | None = Field(default=None, min_length=512, max_length=512)
+    debug: Debug | None = None  # only sent by capture in developer mode
 
 
 class Gone(BaseModel):
@@ -200,37 +264,89 @@ def card(person: dict) -> dict:
     """The face-event card for a store.match or store.person result."""
     met = person["firstMet"]
     last = store.last_time(person["id"])
-    fact = store.key_fact(person["id"])
+    how, facts = store.card_extras(person["id"])
+    last_bullet = f"Last time: {last}" if last else ""
+    live = snippets.get(person["id"], [])
+    met_bullet = f"Met {how}" if how else ""
+    if sum(map(bool, (person["role"], last_bullet, met_bullet))) + len(facts) + len(live) > MAX_BULLETS:
+        met_bullet = f"Met {how.split(':')[0]}" if how else ""  # just the date and app
+        facts = facts[:max(0, MAX_BULLETS - len(live) - sum(map(bool, (person["role"], last_bullet, met_bullet))))]
     return {
         "id": person["id"],
         "name": person["name"],
         "role": person["role"],
         "line": f"Last time: {last}" if last else store.latest_note(person["id"]) or "",
         "met": f"Met {met:%b} {met.day}",
-        "bullets": [b for b in (person["role"], f"Last time: {last}" if last else "", fact) if b],
+        "bullets": [b for b in (person["role"], *facts, last_bullet, met_bullet) if b] + live,
     }
+
+
+debug_scores: dict[int, float | None] = {}  # trackId -> best similarity of its print; filled only in developer mode
+
+
+async def send_debug(t: FaceTrack) -> None:
+    """Developer mode (HELLO_DEBUG=1 on the server): tell the debug view what the matcher thinks of this track."""
+    if t.facePrint is not None:
+        try:
+            debug_scores[t.trackId] = await asyncio.to_thread(store.nearest_score, np.asarray(t.facePrint, dtype=np.float32))
+        except Exception:  # the debug view must never break face tracking
+            debug_scores[t.trackId] = None
+    shown = tracks.get(t.trackId)
+    decision = shown["name"] if shown else f"below {store.MATCH_MIN}" if t.trackId in debug_scores else "no face yet"
+    await push({"type": "debug", "trackId": t.trackId, "personBox": t.debug.personBox, "faceBox": t.debug.faceBox,
+                "score": debug_scores.get(t.trackId), "decision": decision, "fps": t.debug.fps})
 
 
 @app.post("/faces")
 async def faces(t: FaceTrack):
+    debugging = t.debug is not None and os.getenv("HELLO_DEBUG") == "1"  # otherwise `debug` is ignored
     if t.facePrint is not None:
         tracks[t.trackId] = await asyncio.to_thread(card_for, t.facePrint)
     elif t.trackId not in tracks:
+        if debugging:
+            await send_debug(t)
         return {"needPrint": True}  # we restarted and lost this track; capture resends its print
     if tracks[t.trackId] is None:  # can't name them: hold the print in RAM in case they agree to be remembered
         if t.facePrint is not None:
             unknown[t.trackId] = {"print": t.facePrint}
         if t.trackId in unknown:
             unknown[t.trackId]["box"] = t.screenBox
+    boxes[t.trackId] = t.screenBox
     saw_face(tracks[t.trackId])
     await push({"type": "face", "trackId": t.trackId, "screenBox": t.screenBox, "person": tracks[t.trackId]})
+    if debugging:
+        await send_debug(t)
     return {"person": tracks[t.trackId]}
+
+
+class Window(BaseModel):
+    app: str | None  # the followed app's name, e.g. "zoom.us"; null together with rect
+    rect: list | None  # checked by hand: pydantic's own 422 would echo an infinite number back and fail to serialize it
+
+
+def good_rect(rect: list | None) -> bool:
+    nums = isinstance(rect, list) and len(rect) == 4 and all(type(n) in (int, float) and math.isfinite(n) for n in rect)
+    return rect is None or (nums and rect[2] > 0 and rect[3] > 0)
+
+
+@app.post("/window")
+async def set_window(w: Window):
+    global latest_window
+    if not good_rect(w.rect):
+        raise HTTPException(422, "rect must be null or [x, y, w, h] as finite numbers with w and h above 0")
+    if (w.app is None) != (w.rect is None) or (w.app is not None and not 0 < len(w.app.strip()) <= 100):
+        raise HTTPException(422, "app and rect must both be null, or an app name (up to 100 characters) with its rect")
+    latest_window = {"type": "window", "app": w.app and w.app.strip(), "rect": w.rect}
+    await push(latest_window)
+    return {"ok": True}
 
 
 @app.post("/faces/gone")
 async def face_gone(g: Gone):
     tracks.pop(g.trackId, None)
     unknown.pop(g.trackId, None)
+    debug_scores.pop(g.trackId, None)
+    boxes.pop(g.trackId, None)
     await push({"type": "face_gone", "trackId": g.trackId})
     return {"ok": True}
 
@@ -313,7 +429,43 @@ async def transcript(line: Line):
         fresh.append(f"{who}: {line.text}")
         this_call().lines.append(f"{who}: {line.text}")
         wake.set()
+        for shown in {c["id"]: c for c in tracks.values() if c}.values():
+            if shown["name"] == who:
+                note_said(shown["id"], who, line.text)
     return {"ok": True}
+
+
+def note_said(pid: str, name: str, text: str) -> None:
+    """Collect what a recognized person says; once LIVE_BULLET_SECONDS have passed, check it for new facts."""
+    now = time.monotonic()
+    entry = live.setdefault(pid, {"since": now, "lines": []})
+    entry["lines"].append(text)
+    if now - entry["since"] >= LIVE_BULLET_SECONDS:
+        lines, entry["lines"], entry["since"] = entry["lines"], [], now
+        if sum(len(l.split()) for l in lines) >= LIVE_MIN_WORDS:
+            task = asyncio.get_running_loop().create_task(live_bullets(pid, name, lines, call))
+            background.add(task)
+            task.add_done_callback(background.discard)
+
+
+async def live_bullets(pid: str, name: str, lines: list[str], owner: Call | None) -> None:
+    """Ask Muse for new "This call: …" facts and re-send that person's card with them as extra bullets."""
+    try:
+        new = await asyncio.wait_for(asyncio.to_thread(picks.live_snippets, name, lines, snippets.get(pid, [])), OUTBOUND_SECONDS)
+        if not new or call is not owner:  # nothing new, or the call ended meanwhile
+            return
+        snippets[pid] = (snippets.get(pid, []) + [n for n in new if n not in snippets.get(pid, [])])[-2:]
+        person = await asyncio.to_thread(store.person, pid)
+        if person is None:  # deleted themselves while Muse thought
+            snippets.pop(pid, None)
+            return
+        for t, shown in list(tracks.items()):
+            if shown and shown["id"] == pid:
+                tracks[t] = await asyncio.to_thread(card, person)
+                if t in boxes:
+                    await push({"type": "face", "trackId": t, "screenBox": boxes[t], "person": tracks[t]})
+    except Exception as e:  # a failed check just means no new bullets
+        print(f"live bullets skipped: {e!r}")
 
 
 async def insights_worker() -> None:
@@ -374,6 +526,7 @@ async def refresh_insights() -> None:
 
 class Ask(BaseModel):
     question: str = Field(min_length=1, max_length=500)
+    new: bool = False  # start a fresh thread instead of following up
 
 
 class NoAnswer(Exception):
@@ -385,6 +538,8 @@ async def ask(q: Ask, tasks: BackgroundTasks):
     question = q.question.strip()
     if not question:
         raise HTTPException(422, "Type a question first.")
+    if q.new:
+        clear_thread()
     return await respond(tasks, question, "ask", question)
 
 
@@ -402,14 +557,24 @@ async def respond(tasks: BackgroundTasks, query: str, kind: str, arg: str | None
              "status": "thinking", "text": "", "sources": []}
     await push(event)
     present = {p["id"]: p["name"] for p in tracks.values() if p}
-    tasks.add_task(finish, event, kind, arg, present, history[-12:] + fresh)
+    tasks.add_task(finish, event, kind, arg, present, history[-12:] + fresh, thread[:], thread_epoch)
     return {"id": event["id"]}
 
 
-async def finish(event: dict, kind: str, arg: str | None, present: dict[str, str], lines: list[str]) -> None:
+def clear_thread() -> None:
+    global thread_epoch
+    thread.clear()
+    thread_epoch += 1  # an answer still on its way belongs to the old thread and is dropped
+
+
+async def finish(event: dict, kind: str, arg: str | None, present: dict[str, str], lines: list[str],
+                 earlier: list[tuple[str, str]], epoch: int) -> None:
     try:
-        text, sources = await asyncio.wait_for(asyncio.to_thread(answer, kind, arg, present, lines), OUTBOUND_SECONDS)
+        text, sources = await asyncio.wait_for(asyncio.to_thread(answer, kind, arg, present, lines, earlier), OUTBOUND_SECONDS)
         event = event | {"status": "done", "text": text, "sources": sources}
+        if kind == "ask" and epoch == thread_epoch:
+            thread.append((event["query"], text))
+            del thread[:-THREAD_TURNS]
         if call and kind != "recall":  # recall only repeats the database, about someone who may delete themselves
             call.responses.append(event)
     except (NoAnswer, picks.MuseError, pipeline.SerpApiError) as e:
@@ -422,7 +587,8 @@ async def finish(event: dict, kind: str, arg: str | None, present: dict[str, str
     await push(event)
 
 
-def answer(kind: str, arg: str | None, present: dict[str, str], lines: list[str]) -> tuple[str, list[dict]]:
+def answer(kind: str, arg: str | None, present: dict[str, str], lines: list[str],
+           earlier: list[tuple[str, str]] | None = None) -> tuple[str, list[dict]]:
     """Runs in a thread: the text and sources for one question or action."""
     if kind == "recall":
         return recall(arg), []
@@ -432,7 +598,7 @@ def answer(kind: str, arg: str | None, present: dict[str, str], lines: list[str]
     people = {pid: {"name": name, "notes": known.get(pid, [])} for pid, name in present.items()}
     if kind == "search":
         return pipeline.search(arg, people, lines)
-    return picks.answer(kind, arg or "", people, lines), []
+    return picks.answer(kind, arg or "", people, lines, thread=earlier if kind == "ask" else None), []
 
 
 def recall(pid: str) -> str:

@@ -38,5 +38,17 @@ create table if not exists encounters (
 alter table people add column if not exists role text not null default '';
 alter table people add column if not exists role_source text not null default 'muse';
 
+-- one line about the first call together; written once
+alter table people add column if not exists how_met text not null default '';
+
+-- plain things Muse noticed a person say about themselves ("Loves F1"); the user's own notes stay in `notes`
+create table if not exists facts (
+  id bigserial primary key,
+  person_id text not null references people(id) on delete cascade,
+  text text not null,
+  created_at timestamptz not null default now()
+);
+create unique index if not exists facts_once on facts (person_id, lower(text));
+
 -- delete tokens are stored as sha256 hex; this upgrades older plain tokens (22 characters) once and does nothing after
 update people set delete_token = encode(sha256(convert_to(delete_token, 'UTF8')), 'hex') where length(delete_token) <> 64;

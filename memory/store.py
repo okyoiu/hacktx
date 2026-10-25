@@ -62,6 +62,16 @@ def digest(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def nearest_score(face_print: np.ndarray) -> float | None:
+    """Best cosine similarity to any consenting person, even below MATCH_MIN. Developer mode only."""
+    row = conn().execute(
+        """select max(1 - (f.print <=> %s)) from faces f join consents c on c.person_id = f.person_id
+           where c.expires_at >= current_date""",
+        (face_print,),
+    ).fetchone()
+    return None if row is None or row[0] is None else round(float(row[0]), 3)
+
+
 def enroll(name: str, face_print: np.ndarray, selfie: bytes | None, role: str = "") -> tuple[str, str]:
     """Save a consenting person; returns (personId, deleteToken)."""
     pid, token = "p_" + secrets.token_hex(4), secrets.token_urlsafe(16)
@@ -105,13 +115,14 @@ def set_role(pid: str, role: str, source: str) -> None:
 def people() -> list[dict]:
     """Everyone with valid consent, most recently met first, for the dashboard."""
     rows = conn().execute(
-        """select p.id, p.name, p.role, p.first_met,
+        """select p.id, p.name, p.role, p.first_met, p.how_met,
                   coalesce((select max(met_at) from encounters where person_id = p.id), p.first_met::timestamptz) as last_met,
                   (select last_time from encounters where person_id = p.id order by met_at desc, id desc limit 1)
            from people p join consents c on c.person_id = p.id
            where c.expires_at >= current_date
            order by last_met desc, p.first_met desc, p.id""").fetchall()
-    return [{"id": i, "name": n, "role": r, "firstMet": f, "lastMet": m, "lastTime": t} for i, n, r, f, m, t in rows]
+    return [{"id": i, "name": n, "role": r, "howMet": h, "firstMet": f, "lastMet": m, "lastTime": t}
+            for i, n, r, f, h, m, t in rows]
 
 
 def rename(pid: str, name: str) -> None:
@@ -121,7 +132,7 @@ def rename(pid: str, name: str) -> None:
 def person(pid: str) -> dict | None:
     """Name, first-met date, every encounter and note, newest first; None if unknown or their consent has run out."""
     row = conn().execute(
-        """select p.name, p.first_met, p.role from people p join consents c on c.person_id = p.id
+        """select p.name, p.first_met, p.role, p.how_met from people p join consents c on c.person_id = p.id
            where p.id = %s and c.expires_at >= current_date""",
         (pid,),
     ).fetchone()
@@ -133,13 +144,18 @@ def person(pid: str) -> dict | None:
     notes = conn().execute(
         "select text, created_at from notes where person_id = %s order by created_at desc, id desc", (pid,)
     ).fetchall()
+    facts = conn().execute(
+        "select text, created_at from facts where person_id = %s order by created_at desc, id desc", (pid,)
+    ).fetchall()
     return {
         "id": pid,
         "name": row[0],
         "role": row[2],
+        "howMet": row[3],
         "firstMet": row[1],
         "encounters": [{"metAt": at, "about": about, "lastTime": last} for at, about, last in encounters],
         "notes": [{"text": t, "createdAt": at} for t, at in notes],
+        "facts": [{"text": t, "createdAt": at} for t, at in facts],
     }
 
 
@@ -158,12 +174,22 @@ def last_time(pid: str) -> str | None:
     return row[0] if row else None
 
 
-def key_fact(pid: str) -> str | None:
-    """One thing worth remembering about them: what Muse wrote they're about, else their newest note."""
-    row = conn().execute(
-        "select about from encounters where person_id = %s and about <> '' order by met_at desc, id desc limit 1", (pid,)
-    ).fetchone()
-    return row[0] if row else latest_note(pid)
+def card_extras(pid: str, facts: int = 2) -> tuple[str, list[str]]:
+    """What a card shows beyond role and last time: how we met, and the newest facts."""
+    how = conn().execute("select how_met from people where id = %s", (pid,)).fetchone()
+    rows = conn().execute("select text from facts where person_id = %s order by created_at desc, id desc limit %s", (pid, facts)).fetchall()
+    return (how[0] if how else ""), [r[0] for r in rows]
+
+
+def set_how_met(pid: str, line: str) -> None:
+    """Written once, at the first encounter; never rewritten."""
+    conn().execute("update people set how_met = %s where id = %s and how_met = ''", (line, pid))
+
+
+def add_facts(pid: str, texts: list[str]) -> None:
+    """Muse's facts about a person; one it already has (any capitalisation) is skipped."""
+    for text in texts:
+        conn().execute("insert into facts (person_id, text) values (%s, %s) on conflict do nothing", (pid, text))
 
 
 def add_note(pid: str, text: str) -> None:

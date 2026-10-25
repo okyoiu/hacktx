@@ -24,19 +24,28 @@ from ultralytics import YOLO
 
 from capture.embed import add_print, find_faces, mouths_in, warm_up
 from capture.speakers import Namer, listen
-from capture.window import CALL_APPS, call_window
+from capture.window import CALL_APPS, NoScreenRecording, call_window, grab
 
 PERSON = 0  # COCO class id YOLO uses for people
 FOLLOW_EVERY = 3  # seconds between window position checks (each takes ~0.1 s)
 RETRY = 3.0  # seconds before another InsightFace pass for a person whose face wasn't visible last time
+QUIET_AFTER = 30  # seconds without a person in the followed window before the log says so (and again every 30 s)
+STILL_AFTER = 3.0  # seconds between two looks at a person box; the same picture both times means an image, not a person
+# Mean abs grey difference (0-255) under which two grabs are the same picture. Measured on t1, 64x64 sampled: the same image
+# grabbed again 0.00; the cleanest simulated camera noise (sigma 0.5) 0.52, sigma 2 1.13, a 1 px move 4.36.
+# shortcut: a still tile with a flashing icon in it reads 0.78 and so counts as a person; use the median if that shows up
+STILL = 0.25
 
 
 def screen_frames(region: tuple[int, int, int, int] | None, follow: list[str] | None = None):
-    """Yield (frame, (x, y, width)) of the region in screen points; with follow (app names), move with that app's window.
+    """Yield (frame, (x, y, width, app, calls)) in screen points; calls says whether to look for faces (capture/window.has_call). With follow (app names), move with that app's frontmost window
+    and grab the window itself (capture/window.grab), so a terminal in front of the call doesn't get in the way; app is
+    its name as capture/window.py reports it. With a fixed region, grab the screen there (app is None).
     While there is no such window (not started yet, or the user left the call) it yields (None, ...) instead and keeps
-    looking, logging one line when that changes."""
+    looking. One log line per change: which window, whether another app's window covers it."""
     checked = time.time() if region else 0  # no region yet: look right away
-    shown = None
+    shown = behind = app = window_id = failed = None  # failed: the window id screencapture last gave nothing for
+    calls = True  # a fixed region was asked for: look for faces in it
     with mss.MSS() as screen:
         while True:
             if follow and time.time() - checked > FOLLOW_EVERY:
@@ -45,20 +54,40 @@ def screen_frames(region: tuple[int, int, int, int] | None, follow: list[str] | 
                 why = "waiting for a call window"
                 try:
                     found = call_window(follow)
-                except SystemExit as e:  # the window list isn't readable (no osascript, no permission): keep waiting
+                except NoScreenRecording as e:  # frames would be wallpaper: stop, so the launcher shows faces as down
+                    print(e)
+                    raise SystemExit(3) from None
+                except SystemExit as e:  # the window list isn't readable (no osascript): keep waiting
                     found, why = None, str(e)
                 checked = time.time()
-                region = found[1] if found else None
-                state = f"following the {found[0]} window" if found else why
+                app, region, window_id, calls = (found.app, found.rect, found.id, found.calls) if found else (None, None, None, False)
+                state = f"following the {app} window" + ("" if found.calls else " (not a call: no faces)") if found else why
                 if state != shown:
                     print(state)
                     shown = state
+                covered = found.behind if found else None
+                if covered != behind:
+                    if covered:
+                        print(f"the {app} window is behind {covered}")
+                    elif found:
+                        print(f"the {app} window is clear again")
+                    behind = covered
             if region is None:
-                yield None, (0, 0, 1)
+                yield None, (0, 0, 1, None, False)
                 continue
             x, y, w, h = region
-            frame = cv2.cvtColor(np.array(screen.grab({"left": x, "top": y, "width": w, "height": h})), cv2.COLOR_BGRA2BGR)
-            yield frame, (x, y, w)
+            if window_id is not None:
+                frame = grab(window_id)
+                if frame is None:  # it closed since the last look, or this app may not record the screen: say so once
+                    if window_id != failed:
+                        print(f"couldn't capture the {app} window; if it is still open, allow Screen Recording for this app")
+                        failed = window_id
+                    region = None  # no frames until the next look (FOLLOW_EVERY)
+                    continue
+                failed = None
+            else:
+                frame = cv2.cvtColor(np.array(screen.grab({"left": x, "top": y, "width": w, "height": h})), cv2.COLOR_BGRA2BGR)
+            yield frame, (x, y, w, app, calls)
 
 
 def video_frames(video: cv2.VideoCapture, fps: float):
@@ -67,9 +96,46 @@ def video_frames(video: cv2.VideoCapture, fps: float):
         ok, frame = video.read()
         if not ok:
             return
-        yield frame, (0, 0, frame.shape[1])  # video pixels stand in for screen points
+        yield frame, (0, 0, frame.shape[1], None, True)  # video pixels stand in for screen points
         for _ in range(skip):
             video.grab()
+
+
+def grey(frame: np.ndarray, box) -> np.ndarray:
+    """A 64x64 grey copy of a box, sampled rather than averaged: averaging would smooth away the camera noise we look for."""
+    x1, y1, x2, y2 = (int(v) for v in box)
+    patch = frame[y1:max(y2, y1 + 1), x1:max(x2, x1 + 1)]
+    return cv2.resize(cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY), (64, 64), interpolation=cv2.INTER_NEAREST).astype(np.int16)
+
+
+class Pictures:
+    """Which tracked boxes are pictures (a photo, a stock image, a Zoom profile picture) rather than people: live video always
+    differs a little between grabs, a picture doesn't. Every STILL_AFTER seconds the same screen patch is compared with its
+    copy from last time, so a tile that starts moving (camera turned on) is a person again at the next check."""
+
+    def __init__(self):
+        self.last: dict[int, tuple[float, list[float], np.ndarray]] = {}  # track id -> (when, box, grey copy)
+        self.still: set[int] = set()
+
+    def update(self, frame: np.ndarray, boxes: dict[int, list[float]], now: float) -> set[int]:
+        for tid, box in boxes.items():
+            when, where, last = self.last.get(tid, (now, box, None))
+            if last is not None and now - when < STILL_AFTER:
+                continue
+            if last is not None:
+                (self.still.add if np.abs(grey(frame, where) - last).mean() < STILL else self.still.discard)(tid)
+            self.last[tid] = (now, box, grey(frame, box))
+        for tid in self.last.keys() - boxes.keys():
+            del self.last[tid]
+            self.still.discard(tid)
+        return self.still
+
+
+def face_in(face: list[float] | None, person: list[float]) -> list[float] | None:
+    """The last face box if its centre is still inside the person's box (they haven't moved off it), else None."""
+    if face and person[0] <= face[0] + face[2] / 2 <= person[0] + person[2] and person[1] <= face[1] + face[3] / 2 <= person[1] + person[3]:
+        return face
+    return None
 
 
 def assign(faces: list, boxes: dict[int, list[float]]) -> dict[int, object]:
@@ -114,6 +180,7 @@ def main() -> None:
     model(np.zeros((64, 64, 3), np.uint8), verbose=False)
     memory_url = os.getenv("MEMORY_URL", "http://localhost:8000")
     http = httpx.Client(base_url=memory_url, timeout=10)
+    seen: set[int] = set()  # track ids logged once, so the log shows what the camera side is doing
     printed: set[int] = set()  # track ids whose face print the memory service already has
     people: dict[int, dict] = {}  # track id -> the recognized person memory replied with
     tried: dict[int, float] = {}  # track id -> when InsightFace last looked for its face
@@ -125,17 +192,33 @@ def main() -> None:
             return http.post(path, json=body).json()
         except httpx.HTTPError as e:
             print(f"memory service unreachable ({e!r}); is uvicorn running?")
-            return {}
+            return {"unreachable": True}
 
-    for frame, (x, y, w) in frames:
+    debug = os.getenv("HELLO_DEBUG") == "1"  # developer mode: /faces also says what the computer vision saw
+    stamps: deque[float] = deque(maxlen=10)  # when the last frames were processed, for fps
+    face_boxes: dict[int, list[float]] = {}  # track id -> last InsightFace box in screen points
+    pictures = Pictures()
+    window = {}  # the call window (app and rect) memory was last told about
+    last_person = quiet_told = time.monotonic()  # when a person was last in the frame, and when the log last said nobody is
+    for frame, (x, y, w, app, calls) in frames:
         started = time.time()
         scale = frame.shape[1] / w if frame is not None else 1  # pixels per screen point (2.0 on Retina)
-        result = model.track(frame, persist=True, classes=[PERSON], verbose=False)[0] if frame is not None else None
+        rect = None if frame is None else [x, y, w, frame.shape[0] / scale]
+        if {"app": app, "rect": rect} != window and not send("/window", {"app": app, "rect": rect}).get("unreachable"):
+            window = {"app": app, "rect": rect}  # on change only; if memory was down it is told again next frame
+        if frame is not None:
+            stamps.append(time.monotonic())
+        result = model.track(frame, persist=True, classes=[PERSON], verbose=False)[0] if frame is not None and calls else None
 
-        live: set[int] = set()  # empty while the call window is gone, so every card clears
+        live: set[int] = set()  # empty while the call window is gone or isn't a call, so every card clears
         if result is not None and result.boxes is not None and result.boxes.is_track:
             boxes = dict(zip(result.boxes.id.int().tolist(), result.boxes.xyxy.tolist()))
+            for tid in boxes.keys() - seen:
+                print(f"person {tid} on screen, looking for a face")
+                seen.add(tid)
             now = time.monotonic()
+            still = pictures.update(frame, boxes, now)
+            boxes = {t: b for t, b in boxes.items() if t not in still}  # a picture is not a person: no card, no print
             wanting = {t for t in boxes.keys() - printed if now - tried.get(t, -RETRY) >= RETRY}
             if wanting:
                 found = assign(find_faces(frame), boxes)  # one InsightFace pass gives every face's lips
@@ -152,12 +235,21 @@ def main() -> None:
             for tid, (x1, y1, x2, y2) in boxes.items():
                 live.add(tid)
                 body = {"trackId": tid, "screenBox": [x + x1 / scale, y + y1 / scale, (x2 - x1) / scale, (y2 - y1) / scale]}
+                if tid in found:
+                    fx1, fy1, fx2, fy2 = map(float, found[tid].bbox)
+                    face_boxes[tid] = [x + fx1 / scale, y + fy1 / scale, (fx2 - fx1) / scale, (fy2 - fy1) / scale]
+                if debug:
+                    body["debug"] = {"personBox": body["screenBox"], "faceBox": face_in(face_boxes.get(tid), body["screenBox"]),
+                                     "fps": round((len(stamps) - 1) / max(stamps[-1] - stamps[0], 1e-6), 1) if len(stamps) > 1 else 0}
                 if tid not in printed:
                     if tid not in wanting or tid not in found:
                         continue  # face not visible yet (turned away); looked again after RETRY
                     body["facePrint"] = found[tid].normed_embedding.tolist()
                     printed.add(tid)
                 reply = send("/faces", body)
+                if "facePrint" in body:
+                    who = reply.get("person")
+                    print(f"person {tid}: face print sent, memory says {who['name'] if who else 'nobody yet (Recalling… card)'}")
                 if reply.get("needPrint"):
                     printed.discard(tid)
                 if reply.get("person"):
@@ -165,10 +257,17 @@ def main() -> None:
                     namer.met(reply["person"])
 
         tried = {t: v for t, v in tried.items() if t in live}
+        face_boxes = {t: v for t, v in face_boxes.items() if t in live}
         for tid in printed - live:
             send("/faces/gone", {"trackId": tid})
             printed.discard(tid)
             people.pop(tid, None)
+        now = time.monotonic()
+        if frame is None or not calls or live:
+            last_person = quiet_told = now
+        elif now - quiet_told >= QUIET_AFTER:
+            print(f"following {app or 'the region'}, no person seen for {int(now - last_person)} s")
+            quiet_told = now
         while captions:
             if named := namer.caption(*captions.popleft()):
                 send("/speakers", {"label": named[0], "name": named[1]})

@@ -6,6 +6,8 @@ contextBridge.exposeInMainWorld('overlay', {
   onPeople: (fn) => ipcRenderer.on('people-open', () => fn()),
   onLaunch: (fn) => ipcRenderer.on('launch', (_e, statuses) => fn(statuses)),
   onAsk: (fn) => ipcRenderer.on('ask', () => fn()),
+  onTranscriptShown: (fn) => ipcRenderer.on('transcript-shown', (_e, shown) => fn(shown)),
+  onDebugShow: (fn) => ipcRenderer.on('debug-show', (_e, on) => fn(on)), // main only sends this in developer mode
   api: (route, body, method) => ipcRenderer.invoke('api', route, body, method),
   fit: (height) => ipcRenderer.send('fit', height),
   setIdle: (idle) => ipcRenderer.send('panel-idle', idle),
@@ -14,7 +16,11 @@ contextBridge.exposeInMainWorld('overlay', {
   focusCards: (on) => ipcRenderer.send('cards-focus', on),
   copyInvite: () => ipcRenderer.send('copy-invite'),
   togglePeople: () => ipcRenderer.send('people-toggle'),
+  toggleTranscript: () => ipcRenderer.send('transcript-toggle'),
+  toggleDebug: () => ipcRenderer.send('debug-toggle'), // nobody listens in the normal app
   ask: () => ipcRenderer.send('ask'),
+  setAskBusy: (busy) => ipcRenderer.send('ask-busy', busy),
   toggleAll: () => ipcRenderer.send('toggle-all'),
   closeResponse: (id) => ipcRenderer.send('close-response', id),
+  closeRecap: () => ipcRenderer.send('close-recap'),
 })

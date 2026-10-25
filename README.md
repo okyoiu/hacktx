@@ -41,7 +41,7 @@ The app creates its tables on first start.
 
 ### 5. Open the app
 
-**Double-click `Hello Again.command`** in the `hacktx` folder (or run `cd overlay && npm start`). The overlay app opens and starts everything else: the local database, the memory server, face capture and transcription. The first run also installs anything missing, so it takes a few minutes.
+Build the app once: `cd overlay && npm run package`. Then **double-click `overlay/dist/Hello Again.app`** (drag it to the Dock if you like). It runs the code in this folder, so `git pull` updates it without rebuilding. `Hello Again.command` in the `hacktx` folder still works as a fallback (or run `cd overlay && npm start`). On Windows: `overlay\dist\Hello Again\Hello Again.exe`. The overlay app opens and starts everything else: the local database, the memory server, face capture and transcription. The first run also installs anything missing, so it takes a few minutes.
 
 You should see a small glass **control bar** at the top right. If one part isn't running, it shows a warning naming it; each part's log is in `logs/<name>.log`.
 
@@ -75,7 +75,7 @@ Anyone can delete themselves from the link they get after enrolling.
 | Problem | Fix |
 |---|---|
 | `address already in use` | A server is already running on port 8000. The app reuses it; if you started one by hand, that's fine too. |
-| No card appears next to a face | Make the call window bigger and the person's face clearly visible; check `logs/faces.log`. |
+| No card appears next to a face | Capture follows the frontmost window: a known call app (Zoom, Teams, FaceTime, Discord…) if one is open, otherwise whatever app is in front (for the layout). It looks for faces only in call apps, and in a browser only when the window is on a call site (Meet, Zoom web, Teams web, Webex…); never in other apps. A still image (a photo, a profile picture, a stock image) is never treated as a person: only video that moves counts. It grabs the window by its id, so other windows on top don't matter (another desktop does). Check `logs/faces.log`: it says which window it follows, when a person appears, and when it has seen nobody for 30 s. Make the person's face bigger if it sees nobody. |
 | Captions show `speaker_0` instead of names | Names come from whose lips move; give it a moment, or name them yourself: `curl -X POST localhost:8000/speakers -H 'content-type: application/json' -d '{"label":"speaker_0","name":"Their Name"}'` |
 | No captions at all | Microphone permission (System Settings → Privacy & Security); check `logs/transcribe.log`. To pick another input: `uv run python -m capture.transcribe --list-devices`. |
 | Live insights stays empty | Say a few full sentences, then wait about 10 seconds; check `MODEL_API_KEY` in `.env`. |
@@ -143,8 +143,11 @@ The look is pinned by [`docs/ui-reference.png`](docs/ui-reference.png): dark smo
 - **Who they are to you.** Each person can have a short label ("Your team lead", "Recruiter at Meta"). You can type it when you remember someone or in the dashboard; after a call, Muse suggests one if there isn't one, but never overwrites a label you typed. It shows first on the pop-up.
 - **People dashboard.** A glass **People** window, opened from the control bar or with `⌘⇧P`: search everyone you've met, see who they are to you, every past conversation and notes, edit the label, and delete someone (with a confirm step inside the window). It works without a call running.
 - **One launch.** Opening the overlay app starts the local database, the memory server, face capture and transcription, and stops them all when you quit. The control bar shows if something isn't running. Ports: only `8000`, on this laptop (plus the local database on `5432`, also laptop-only).
-- **Live insights come at the end.** During the call Hello Again only listens and collects; nothing pops up but name cards. When the call ends (**End call**, or 60 s after the last face leaves), a **Recap** panel opens: the topic, the key points, one-click actions (places, events, search), and what you talked about with each person. It stays until you close it.
-- **Ask AI places itself.** `⌘↵` opens a chat panel in the emptiest spot: it knows where the call window and the faces are, and picks the largest free area that covers no face and no call controls (outside the call window when there's room, otherwise the quietest corner). It never jumps while you're typing.
+- **Every call app has a layout.** The overlay knows which app the call is in (the `window` event's `app`) and uses a preset for it: where the control strip, the **live insights** (Top picks and recommendations), Ask AI and the transcript go so they never cover the people or the app's own controls. Presets for Zoom, Teams, FaceTime and Meet in a browser, plus a general one for anything else. Live insights stay on during the call, in their spot, and update as the conversation moves.
+- **Recap at the end.** When the call ends (**End call**, or 60 s after the last face leaves), a **Recap** panel opens: the topic, the key points, one-click actions (places, events, search), and what you talked about with each person. It stays until you close it.
+- **Ask AI places itself and keeps the thread.** `⌘↵` opens a chat panel in the preset's spot, nudged to the largest free area that covers no face and no call controls. It never jumps while you're typing. Enter asks a follow-up in the same conversation (the server keeps the thread); `⌘↵` or the Ask AI button starts a fresh one, and the thread clears when the call ends.
+- **The pop-up stays put.** The card is anchored beside the face and only glides (one smooth motion) when the face has clearly moved; it never jitters with the tracker. ✕ closes it; clicking the name tag reopens it.
+- **The memory pop-up is a memory jogger.** A known person's card is one quiet panel beside their face: their name and who they are to you; then small labels with the facts that jog a memory (**Last seen**, **Last spoke**, **About**: the topic, and whether it was work or personal); then at most three short bullets (Muse's facts, what you talked about last time, how you met, "This call: …"). Labels small, bullets readable, nothing else. While they talk, Muse adds what they said this call ("This call: …") so the card is a live cheat sheet, not just history.
 - **Debug view (developers only).** In developer mode, a toggle in the control strip (and `⌘⌥D`) draws what the computer sees over the call: each person's box and track number, the face box, the match score against the 0.45 cutoff and the decision (name, or why it stayed "Recalling…"), plus frames per second. It is drawn on the click-through layer and hidden from screen shares like everything else.
 - **A real app.** `Hello Again.app` (built with `cd overlay && npm run package`, into `overlay/dist/`) has its own icon: drag it to the Dock or Applications and double-click to start everything. It runs the code from this repo folder, so `git pull` updates it without rebuilding.
 - **Name cards beside faces stay**, restyled to the same glass. Faces we can't name yet keep the thinking sparkle and "Recalling…", never an "unknown" label.
@@ -161,9 +164,10 @@ On connect the server first sends the latest `listening` and `insights` events, 
 ```jsonc
 {"type": "face", "trackId": 3, "screenBox": [x, y, w, h],          // screen points
  "person": {"id": "p_1a2b", "name": "Jordan Lee", "role": "Your team lead", "line": "Last time: …", "met": "Met Sep 24",
-            "bullets": ["Your team lead", "Last time: talked about his move to Austin", "Starts a fintech job Monday"]}}  // null = can't name them yet (thinking card); role may be ""; bullets has at most 3
+            "lastSeen": "2026-10-18", "lastSpoke": "2026-10-18", "topic": "his move to Austin", "context": "work",   // context: "work" | "personal" | "" (Muse's call)
+            "bullets": ["Your team lead", "Last time: talked about his move to Austin", "Starts a fintech job Monday"]}}  // null = can't name them yet (thinking card); role may be ""; bullets has at most 5; lastSeen/lastSpoke/topic null before a first call together
 {"type": "face_gone", "trackId": 3}
-{"type": "window", "rect": [x, y, w, h]}   // the followed call window in screen points; null when there is none (for Ask AI placement)
+{"type": "window", "app": "Zoom", "rect": [x, y, w, h]}   // the followed window: its app (as capture/window.py names it; a known call app if one is open, else the frontmost app) and screen points; both null when there is none
 {"type": "recap", "topic": "…", "points": ["…"], "actions": [{"id": "x1", "kind": "places", "label": "…"}],
  "people": [{"id": "p_1a2b", "name": "Jordan Lee", "role": "…", "lastTime": "…"}]}   // once per call, when it ends; also sent to an overlay that connects later
 {"type": "debug", "trackId": 3, "personBox": [x, y, w, h], "faceBox": [x, y, w, h] | null, "score": 0.62 | null,
@@ -180,7 +184,7 @@ On connect the server first sends the latest `listening` and `insights` events, 
  "status": "thinking|done|error", "text": "…", "sources": [{"title": "…", "url": "https://…"}]}  // "thinking" first, then the same id with "done" or "error"
 ```
 
-`insights` events still arrive during the call; the overlay keeps them for the Recap instead of showing them. The old `pick` event is retired: places and events from the conversation become `places`/`events` actions, and facts become insight points.
+`insights` events show in the preset's live-insights spot during the call and are kept for the Recap. The old `pick` event is retired: places and events from the conversation become `places`/`events` actions, and facts become insight points.
 
 ## Memory API (capture, overlay and enrollment → memory)
 
@@ -188,16 +192,16 @@ On connect the server first sends the latest `listening` and `insights` events, 
 |---|---|---|
 | `POST /faces` | `{trackId, screenBox, facePrint?, debug?}`; the 512-number print only for a new track; `debug` = `{personBox, faceBox, fps}` only when capture runs with `HELLO_DEBUG=1` | `capture/faces.py` |
 | `POST /faces/gone` | `{trackId}` | `capture/faces.py` |
-| `POST /window` | `{rect}` (screen points, or `null`), sent when the followed window moves, appears or goes away | `capture/faces.py` |
+| `POST /window` | `{app, rect}` (the app name and screen points, or both `null`), sent when the followed window moves, appears or goes away | `capture/faces.py` |
 | `POST /transcript` | `{speaker, text, final}`; ignored while paused | `capture/transcribe.py` |
 | `POST /speakers` | `{label, name}` | `capture/` (names voices from faces) or you |
 | `POST /listening` | `{on: bool}` → emits `listening` | overlay pause button |
-| `POST /ask` | `{question}` (≤ 500 characters) → `{id}`, then `response` events | overlay `Ask AI` |
+| `POST /ask` | `{question, new?}` (≤ 500 characters) → `{id}`, then `response` events; the server keeps the last turns as a thread until `new: true` or the call ends | overlay `Ask AI` |
 | `POST /actions/{id}` | none → `{id}`, then `response` events | overlay action click |
 | `POST /faces/{trackId}/remember` | `{name, consent: true, role?}` → `{id, deleteToken}`; saves the print of the face on screen in that track, then pushes its updated `face` event; `409` if that face has left | overlay "Remember them" |
 | `POST /calls/end` | none → `{note}`, the path of the end-of-call note | overlay or you |
 | `GET /people` | none → `[{id, name, role, firstMet, lastMet, lastTime}]`, newest first | overlay People dashboard |
-| `GET /people/{id}` | none → name, role, first met, encounters (about, last time) and notes | overlay dashboard, recall action |
+| `GET /people/{id}` | none → name, role, first met, `howMet` (one line Muse writes at the first encounter: date, app, what that call was about), `facts` (plain things Muse noticed across calls, e.g. "Loves F1", at most 3 new per call, no repeats, never mixed into the user's notes), encounters (about, last time) and notes (the user's own) | overlay dashboard, recall action |
 | `PATCH /people/{id}` | `{role?, name?}` (role ≤ 60, name ≤ 80 characters) → the updated person; a role set here is never replaced by Muse | overlay dashboard |
 | `GET /enroll`, `POST /enroll` | form: `name`, `consent`, `selfie`, optional `role`, and `code` (must match `ENROLL_CODE` when it's set; the invite link carries it as `?code=`) → `{id, deleteToken}` | guest's phone |
 | `DELETE /people/{id}` | from this laptop: nothing; from another device: header `X-Delete-Token` | dashboard, guest's phone |
