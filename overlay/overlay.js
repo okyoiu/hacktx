@@ -14,6 +14,8 @@ document.body.dataset.view = view
 $('bar').hidden = !shows('bar')
 $('insights').hidden = !shows('insights')
 $('people').hidden = view !== 'people' // the dashboard has its own window
+$('hint').hidden = !shows('cards')
+setTimeout(() => ($('hint').hidden = true), 45_000) // nothing extra on screen for long
 if (!/Mac/.test(navigator.platform)) for (const key of document.querySelectorAll('kbd.mod')) key.textContent = 'Ctrl'
 
 function el(tag, className, text) {
@@ -28,7 +30,10 @@ const api = (route, body, method) => (window.overlay ? window.overlay.api(route,
 
 function handle(e) {
   if (shows('cards')) {
-    if (e.type === 'face') placeCard(e)
+    if (e.type === 'face') {
+      $('hint').hidden = true // a face showed up; the hint has done its job
+      placeCard(e)
+    }
     if (e.type === 'face_gone') removeCard(e.trackId)
     if (e.type === 'caption') heard(e.speaker)
   }
@@ -37,6 +42,7 @@ function handle(e) {
     if (e.type === 'caption') energy = 1
   }
   if (shows('insights')) {
+    if (e.type === 'listening') setInsightsEmpty(e.on)
     if (e.type === 'insights') showInsights(e)
     if (e.type === 'caption') addCaption(e)
   }
@@ -307,9 +313,24 @@ function setListening({ on, startedAt }) {
   renderBar()
 }
 
+// The status dot: green, or amber with what's wrong, from GET /health every 10 s and from the launcher.
+let launchDown = ''
+async function checkHealth() {
+  const problems = healthProblems(connected ? await api('/health', undefined, 'GET') : { error: 'offline' }, launchDown)
+  $('health').dataset.state = problems.length ? 'warn' : 'ok'
+  $('health').title = problems.length ? problems.join('. ') + '.' : 'Everything is running'
+  $('health').setAttribute('aria-label', $('health').title)
+}
+if (shows('bar')) {
+  checkHealth()
+  setInterval(checkHealth, 10_000)
+}
+
 // One launch: the launcher says which parts it couldn't keep running.
 window.overlay?.onLaunch((statuses) => {
   const down = launchWarning(statuses)
+  launchDown = down
+  checkHealth()
   $('warn').hidden = !down
   $('warn').textContent = down && '⚠ ' + down
   $('warn').title = down && down + ' stopped. See the logs folder.'
@@ -319,16 +340,17 @@ function renderBar() {
   const live = connected && listening.on
   $('bar').dataset.state = barState(connected, listening.on)
   $('pause').disabled = !connected
+  $('endBtn').disabled = !connected
   $('pause').setAttribute('aria-label', listening.on ? 'Pause listening' : 'Resume listening')
   tick()
   if (live && !calm.matches) requestAnimationFrame(wave)
   else drawWave(live ? 'icon' : 'flat')
 }
 
-let notSentUntil = 0 // a failed pause shows "Not sent" in the timer's place for a few seconds
+let flash = { text: '', until: 0 } // "Not sent" or "Saved what you talked about" takes the timer's place for a few seconds
 
 function tick() {
-  $('timer').textContent = timerText({ connected, notSent: Date.now() < notSentUntil, startedAt: listening.startedAt, now: Date.now() })
+  $('timer').textContent = timerText({ connected, flash: Date.now() < flash.until ? flash.text : '', startedAt: listening.startedAt, now: Date.now() })
 }
 
 const BARS = [...$('wave').children]
@@ -370,7 +392,15 @@ if (shows('bar')) {
     const { error } = await api('/listening', { on: !listening.on }) // the bar updates when the `listening` event comes back
     $('pause').disabled = !connected
     $('timer').title = error || ''
-    if (error) notSentUntil = Date.now() + 3000
+    if (error) flash = { text: 'Not sent', until: Date.now() + 3000 }
+    tick()
+  })
+  $('endBtn').addEventListener('click', async () => {
+    $('endBtn').disabled = true
+    const { error } = await api('/calls/end')
+    $('endBtn').disabled = false
+    flash = { text: error ? 'Not saved' : 'Saved what you talked about', until: Date.now() + 4000 }
+    $('timer').title = error || ''
     tick()
   })
   $('askBtn').addEventListener('click', () => window.overlay?.ask())
@@ -396,6 +426,11 @@ function showInsights(next) {
   $('actionsTitle').hidden = !next.actions.length
   $('actions').replaceChildren(...shownActions(next.actions).map((a) => fresh(actionRow(a), had.has(a.id))))
 }
+
+function setInsightsEmpty(on) {
+  $('insightsEmpty').textContent = insightsEmptyText(on)
+}
+setInsightsEmpty()
 
 // new lines blur in; lines that were already there stay still
 function fresh(node, old = false) {
@@ -603,7 +638,7 @@ function personRow(p) {
 function renderPeople() {
   const found = filterPeople(everyone, $('peopleSearch').value)
   $('peopleList').replaceChildren(...found.map(personRow))
-  $('peopleEmpty').textContent = found.length ? '' : everyone.length ? 'Nobody matches that.' : "Nobody yet. Use Remember them on a call."
+  $('peopleEmpty').textContent = found.length ? '' : everyone.length ? 'Nobody matches that.' : 'No one yet. Remember someone from a call.'
 }
 
 async function loadPeople() {
