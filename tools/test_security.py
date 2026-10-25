@@ -280,8 +280,8 @@ def _face_events(monkeypatch, headers=None, params=None, extra=None):
     monkeypatch.setattr(server, "unknown", {})
     monkeypatch.setattr(server, "saw_face", lambda card: None)
     monkeypatch.setattr(store, "match", lambda p: {"id": "p_x", "name": "Sam", "role": "", "firstMet": date(2026, 10, 1), "score": 0.62})
-    for name in ("last_time", "key_fact", "latest_note"):
-        monkeypatch.setattr(store, name, lambda pid: None)
+    for name in ("last_time", "key_fact", "latest_note"):  # key_fact is gone since the facts round; patch what exists
+        monkeypatch.setattr(store, name, lambda pid: None, raising=False)
     body = {"trackId": 1, "screenBox": [0, 0, 10, 10], "facePrint": [0.044] * 512} | (extra or {})
     r = TestClient(server.app, client=LAPTOP).post("/faces", json=body, headers=headers or {}, params=params or {})
     return pushed, r
