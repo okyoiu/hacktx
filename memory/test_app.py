@@ -95,7 +95,7 @@ def test_insights_refresh_at_most_every_interval_and_actions_answer(http, events
     time.sleep(server.INSIGHTS_SECONDS * 2)
 
     assert len(muse.prompts) == 2  # no new lines, no third call
-    assert muse.times[1] - muse.times[0] >= server.INSIGHTS_SECONDS
+    assert muse.times[1] - muse.times[0] >= server.INSIGHTS_SECONDS - 0.05  # paced from each refresh's start, a few ms before its Muse call
     assert "New lines:\n<transcript>\nspeaker_1: Found a gym yet?\nspeaker_0: Not yet.\n</transcript>" in muse.prompts[1]
     assert "speaker_0: We moved to Austin." in muse.prompts[1].split("New lines:")[0]
     assert "partial words" not in "".join(muse.prompts)

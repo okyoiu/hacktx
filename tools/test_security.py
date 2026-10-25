@@ -222,7 +222,6 @@ def test_the_launcher_never_uses_a_shell():
     assert "shell: true" not in src and not re.search(r"\bexec\(|execSync|spawnSync", src)
 
 
-@pytest.mark.xfail(strict=True, reason="R4-2: call notes are created with the default mode, readable by other accounts")
 def test_a_call_note_is_readable_only_by_you(monkeypatch, tmp_path):
     from datetime import datetime
 

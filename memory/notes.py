@@ -32,15 +32,31 @@ def render(started: datetime, people: list[dict], points: list[str], responses: 
     return "\n".join(out)
 
 
+def private_folders() -> Path:
+    """notes/ and notes/people/, readable by this account only; returns the people folder."""
+    for folder in (NOTES, NOTES / "people"):
+        folder.mkdir(mode=0o700, exist_ok=True)
+        folder.chmod(0o700)  # mkdir's mode is skipped for a folder that already exists
+    return NOTES / "people"
+
+
+def tighten() -> None:
+    """On startup: make notes written by older versions private too."""
+    if NOTES.is_dir():
+        private_folders()
+        for path in [*NOTES.glob("*.md"), *(NOTES / "people").glob("*.md")]:
+            path.chmod(0o600)
+
+
 def write(started: datetime, learned: dict[str, list[str]], points: list[str], responses: list[dict]) -> Path | None:
     """learned: person id -> notes added this call. None (no file) when the call left nothing to write down."""
     # store.person is None for anyone who deleted themselves or whose consent ran out mid-call: leave them out
     people = [p | {"learned": learned[p["id"]]} for p in map(store.person, learned) if p]
     if not people and not points and not responses:
         return None
-    NOTES.mkdir(exist_ok=True)
+    private_folders()
     path = NOTES / f"{started:%Y-%m-%d-%H%M}.md"
-    with path.open("a") as f:  # a second call starting in the same minute appends instead of overwriting
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), "a") as f:  # a second call starting in the same minute appends instead of overwriting
         f.write(render(started, people, points, responses) + "\n")  # blank line before any call appended later
     return path
 
@@ -73,9 +89,7 @@ def write_person(pid: str) -> Path | None:
     p = store.person(pid)
     if p is None:
         return None
-    folder = NOTES / "people"
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"{pid}.md"
+    path = private_folders() / f"{pid}.md"
     about = next((e["about"] for e in p["encounters"] if e["about"]), "")
     out = [f"# {one_line(p['name'])}", "", f"Who they are to you: {one_line(p['role']) or 'not set'}", "",
            f"First met {day(p['firstMet'])}.", ""]
