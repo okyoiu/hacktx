@@ -1,6 +1,6 @@
 # Hello Again
 
-A private overlay for any video call (Zoom, FaceTime, Teams, Meet…). When someone you've met shows up, a glass card next to their face says who they are and **what you talked about last time**. While you talk, **Live insights** turns what Muse hears into a running summary and one-click actions, answered in an **AI response** panel. Only people who agreed to be remembered are recognized, and only you see the overlay. HackTX 26.
+A private memory for video calls (Zoom, FaceTime, Teams, Meet…). When someone you've met shows up, a see-through card pops open beside their face with a few bullets: who they are to you, what you talked about last time, a key fact. Then it shrinks out of the way. While you talk, **Live insights** turns what Muse hears into a running summary and one-click actions. After the call, Muse condenses what you learned about each person, and the **People** dashboard lets you browse everyone anytime. Opening the app starts everything. Only people who agreed to be remembered are recognized, and only you see it. HackTX 26.
 
 **New here? Do the Quick start below, top to bottom.** It takes about 15 minutes the first time.
 
@@ -129,6 +129,10 @@ guest's phone ─ web/enroll.html ───────────────�
 The look is pinned by [`docs/ui-reference.png`](docs/ui-reference.png): dark smoked glass with real blur, floating over the call.
 
 - **Three glass pieces.** A **control bar** (pause/resume, live waveform, call timer, `Ask AI ⌘↵`, `Show/Hide ⌘\`), a **Live insights** panel (topic, a few points, `Show transcript`, copy, and an **Actions** list), and an **AI response** panel (the question as a chip, copy, close, the answer and its sources).
+- **Memory pop-up.** When someone you know appears, their card pops open beside their face with up to 3 bullets (who they are to you, what you talked about last time, a key fact) for about 10 seconds, then shrinks to a name tag. Hovering opens it again. With reduce-motion on, it appears and shrinks without animation.
+- **Who they are to you.** Each person can have a short label ("Your team lead", "Recruiter at Meta"). You can type it when you remember someone or in the dashboard; after a call, Muse suggests one if there isn't one, but never overwrites a label you typed. It shows first on the pop-up.
+- **People dashboard.** A glass **People** window, opened from the control bar or with `⌘⇧P`: search everyone you've met, see who they are to you, every past conversation and notes, edit the label, and delete someone (with a confirm step inside the window). It works without a call running.
+- **One launch.** Opening the overlay app starts the local database, the memory server, face capture and transcription, and stops them all when you quit. The control bar shows if something isn't running. Ports: only `8000`, on this laptop (plus the local database on `5432`, also laptop-only).
 - **Name cards beside faces stay**, restyled to the same glass. Faces we can't name yet keep the thinking sparkle and "Recalling…", never an "unknown" label.
 - **Enroll from the call, no photo needed.** Hovering a "Recalling…" pill reveals **Remember them**: type their name and confirm they said yes, and the face print capture already has from the call is saved. Nothing about an unknown face is stored before that; its print lives only in the server's memory while it's on screen.
 - **Computer vision is never shown to users.** No boxes, track numbers or scores in the product; `tools/cv_check.py` is for debugging only.
@@ -142,7 +146,8 @@ On connect the server first sends the latest `listening` and `insights` events, 
 
 ```jsonc
 {"type": "face", "trackId": 3, "screenBox": [x, y, w, h],          // screen points
- "person": {"id": "p_1a2b", "name": "Jordan Lee", "line": "Moved to Austin", "met": "Met Sep 24"}}  // null = can't name them yet (thinking card)
+ "person": {"id": "p_1a2b", "name": "Jordan Lee", "role": "Your team lead", "line": "Last time: …", "met": "Met Sep 24",
+            "bullets": ["Your team lead", "Last time: talked about his move to Austin", "Starts a fintech job Monday"]}}  // null = can't name them yet (thinking card); role may be ""; bullets has at most 3
 {"type": "face_gone", "trackId": 3}
 {"type": "caption", "speaker": "Jordan Lee", "text": "We finally finished the move…", "final": false}  // the overlay keeps these for "Show transcript"
 {"type": "listening", "on": true, "startedAt": "2026-10-24T21:40:00Z"}   // pause state; the timer counts from startedAt
@@ -169,11 +174,19 @@ The old `pick` event is retired: places and events from the conversation become 
 | `POST /listening` | `{on: bool}` → emits `listening` | overlay pause button |
 | `POST /ask` | `{question}` (≤ 500 characters) → `{id}`, then `response` events | overlay `Ask AI` |
 | `POST /actions/{id}` | none → `{id}`, then `response` events | overlay action click |
-| `POST /faces/{trackId}/remember` | `{name, consent: true}` → `{id, deleteToken}`; saves the print of the face on screen in that track, then pushes its updated `face` event; `409` if that face has left | overlay "Remember them" |
+| `POST /faces/{trackId}/remember` | `{name, consent: true, role?}` → `{id, deleteToken}`; saves the print of the face on screen in that track, then pushes its updated `face` event; `409` if that face has left | overlay "Remember them" |
 | `POST /calls/end` | none → `{note}`, the path of the end-of-call note | overlay or you |
-| `GET /people/{id}` | none → name, first met, notes | anyone |
-| `GET /enroll`, `POST /enroll` | form: `name`, `consent`, `selfie` → `{id, deleteToken}` | guest's phone |
-| `DELETE /people/{id}` | header `X-Delete-Token` | guest's phone |
+| `GET /people` | none → `[{id, name, role, firstMet, lastMet, lastTime}]`, newest first | overlay People dashboard |
+| `GET /people/{id}` | none → name, role, first met, encounters (about, last time) and notes | overlay dashboard, recall action |
+| `PATCH /people/{id}` | `{role?, name?}` (role ≤ 60, name ≤ 80 characters) → the updated person; a role set here is never replaced by Muse | overlay dashboard |
+| `GET /enroll`, `POST /enroll` | form: `name`, `consent`, `selfie`, optional `role` → `{id, deleteToken}` | guest's phone |
+| `DELETE /people/{id}` | from this laptop: nothing; from another device: header `X-Delete-Token` | dashboard, guest's phone |
+
+## Files it keeps on this laptop
+
+- `notes/<date-time>.md`: one note per call (who was there, insights, answers).
+- `notes/people/<name>.md`: one file per person, rewritten after every call: who they are to you, what they're about, and every past conversation, newest first. It's the readable copy of what the dashboard shows. Deleting someone deletes their file.
+- Both are git-ignored, because they're about real people.
 
 ## Known limits
 
