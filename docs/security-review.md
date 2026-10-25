@@ -491,3 +491,27 @@ Strict xfail: `test_the_tunnel_reaches_nothing_but_the_connector` (it fails toda
 ### Mockup pages (`overlay/mockups/*.html`)
 
 Static HTML with sample people drawn in CSS and SVG; the only script clones a template; no `http(s)` URL, `fetch`, form, import or external link; the index shows the three pages in same-folder iframes. Not served by the memory server. `test_the_mockup_pages_never_touch_the_network` checks all of this and passes on the merged copy.
+
+---
+
+## Fresh-clone check (main `253d438`, in this sandbox)
+
+`git clone` into `/tmp/fresh`, then the Quick start's test steps with no `.env` and no API keys (`MODEL_API_KEY`, `SERPAPI_KEY`, `ENROLL_CODE`, `MUSE_CONNECTOR_KEY` all unset).
+
+| Step | Result |
+|---|---|
+| `uv sync --frozen` | Nothing to install here: the sandbox sets `UV_PROJECT_ENVIRONMENT=/opt/venv`, so it reused an existing environment. **Not a real test of the first-time download** (PyTorch, a few minutes, needs the internet). |
+| `uv run pytest -q`, `DATABASE_URL` set | **164 passed, 2 skipped, 5 xfailed.** Needs no keys. |
+| `uv run pytest -q`, `DATABASE_URL` unset (what someone without `.env` sees) | 139 passed, 24 skipped, 5 xfailed, **3 failed**. The 22 database tests in `memory/test_store.py` skip with "run uv run --env-file .env pytest", which is right. The failures: see below. |
+| `cd overlay && npm ci --omit=dev && node --test` | Installs nothing (Electron is a dev dependency), **48 passed, 0 failed.** |
+
+### The three failures without a database
+
+1. `tools/test_security.py::test_without_hello_debug_nothing_debug_reaches_the_overlay`: mine. It patched the old store helpers, not the new `store.card_extras`, so it reached the database. **Fixed** (it patches `card_extras` too); `uv run pytest tools` now passes with and without `DATABASE_URL`.
+2. `memory/test_app.py::test_call_ends_by_itself_when_no_face_has_been_seen_for_the_idle_time` and 3. `::test_the_call_remembers_the_followed_app_and_its_last_topic_for_how_we_met`: both call the real `store.match`/`store.person` (the traceback goes through `memory/store.py:25 conn`) and die with `KeyError: 'DATABASE_URL'`. These are the memory owner's files. Smallest fix: patch `store.match`/`store.person` in those two tests, or add the same "skip if `DATABASE_URL` is not set" guard that `test_store.py` uses.
+
+### Also found
+
+- **Flaky by the clock: `capture/test_video.py:60`** counts the exact text `following the region, no person seen for 0 s` four times. It prints whole elapsed seconds, so when the machine is busy (a frame takes over a second) the text becomes `1 s` and the test fails. It failed for me twice under load and passed alone. Fix for the capture owner: count the pattern `no person seen for \d+ s` instead of `0 s`. The same applies to `memory/test_app.py::test_insights_refresh_at_most_every_interval_and_actions_answer`, which failed once under load.
+- **First run needs the internet and about 300 MB.** `capture/faces.py:184` loads `YOLO("yolo26n.pt")` (5.5 MB, fetched from Ultralytics on first use; `*.pt` is git-ignored), and InsightFace downloads `buffalo_l` (about 280 MB zipped, 600 MB unpacked, into `~/.insightface`). This sandbox had both cached, so I could not prove a cold start. A venue network that blocks downloads will leave capture dead on the day: **run `uv run python -m capture.faces --help`-style first launch (or one test call) at home, on a good network, and check `~/.insightface/models/buffalo_l` exists.** Worth a line in the README Quick start.
+- No test reads a real key or contacts Muse/SerpApi; all external calls are faked.
