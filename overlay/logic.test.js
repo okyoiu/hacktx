@@ -320,8 +320,8 @@ test('Ask AI stays in its spot when it covers nothing, else moves to a free area
   for (const o of [face, strip, ...bands]) assert.equal(overlap(placed, o), 0, 'covers nothing')
   const under = askPlace({ work: WORK, spot: { x: 400, y: 40 }, faces: [], blocks: [strip], panel })
   assert.equal(overlap({ ...under, ...panel }, strip), 0, 'never under the control strip')
-  const card = cardRect([1000, 150, 200, 250], { x: 0, y: 0, width: 1440, height: 900 })
-  assert.deepEqual(card, { x: 1212, y: 150, width: 208, height: 248 }, 'the card sits to the right of its face')
+  const card = cardRect([800, 150, 200, 250], { x: 0, y: 0, width: 1440, height: 900 })
+  assert.deepEqual(card, { x: 1012, y: 150, width: 300, height: 170 }, 'the card sits to the right of its face')
   const offCard = askPlace({ work: WORK, spot: { x: 968, y: 100 }, faces: [], blocks: [], cards: [card], panel })
   assert.equal(overlap({ ...offCard, ...panel }, card), 0, 'name cards are kept clear too')
 })
@@ -405,6 +405,30 @@ test('a card follows its face only when the face really moved, never tracker jit
   assert.ok(shouldMove(face, [220, 260, 200, 260]), 'moved 40 px across')
   assert.ok(shouldMove(face, [180, 300, 200, 260]), 'moved 40 px down')
   assert.ok(!shouldMove(face, [204, 284, 200, 260]), 'exactly the threshold stays')
+})
+
+// ---------- round 6: the island ----------
+const { islandStage, islandBounds, ISLAND, NOTICE_MS } = require('./logic')
+
+test('the island is a pill, widens to a notice for a moment, opens as a sheet, and is the Recap at the end', () => {
+  const now = 10_000
+  assert.equal(islandStage({ recap: false, open: false, noticeUntil: 0, now }), 'pill')
+  assert.equal(islandStage({ recap: false, open: false, noticeUntil: now + NOTICE_MS, now }), 'notice')
+  assert.equal(islandStage({ recap: false, open: false, noticeUntil: now, now }), 'pill', 'the notice is over')
+  assert.equal(islandStage({ recap: false, open: true, noticeUntil: now + 100, now }), 'sheet', 'open beats the notice')
+  assert.equal(islandStage({ recap: true, open: true, noticeUntil: now + 100, now }), 'recap', 'the Recap beats everything')
+})
+
+test('the island keeps its centre as it grows (Teams: its left edge) and stays on screen', () => {
+  const spot = { x: 440, y: 31, width: BAR.width, height: BAR.height, anchor: 'center' }
+  assert.deepEqual(islandBounds(spot, { width: ISLAND.pill, height: 44 }, WORK), { x: 440 + (BAR.width - ISLAND.pill) / 2, y: 31, width: ISLAND.pill, height: 44 })
+  assert.deepEqual(islandBounds(spot, { width: BAR.width, height: 420 }, WORK), { x: 440, y: 31, width: BAR.width, height: 420 })
+  const left = islandBounds({ ...spot, x: 24, anchor: 'left' }, { width: ISLAND.pill, height: 44 }, WORK)
+  assert.equal(left.x, 24, 'Teams: grows to the right from the same left edge')
+  const tall = islandBounds(spot, { width: BAR.width, height: 2000 }, WORK)
+  assert.equal(tall.y + tall.height, WORK.y + WORK.height - 12, 'clipped to the work area')
+  assert.equal(layoutFor('zoom.us', null, WORK).bar.anchor, 'center')
+  assert.equal(layoutFor('Microsoft Teams', null, WORK).bar.anchor, 'left')
 })
 
 test('the transcript strip and Recap have fixed sizes the layout can count on', () => {

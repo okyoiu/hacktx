@@ -9,7 +9,7 @@ contextBridge.exposeInMainWorld('overlay', {
   onTranscriptShown: (fn) => ipcRenderer.on('transcript-shown', (_e, shown) => fn(shown)),
   onDebugShow: (fn) => ipcRenderer.on('debug-show', (_e, on) => fn(on)), // main only sends this in developer mode
   api: (route, body, method) => ipcRenderer.invoke('api', route, body, method),
-  fit: (height) => ipcRenderer.send('fit', height),
+  fit: (size) => ipcRenderer.send('fit', size), // a height, or { width, height } for the island
   setIdle: (idle) => ipcRenderer.send('panel-idle', idle),
   copy: (text) => ipcRenderer.send('copy', text),
   setClickThrough: (on) => ipcRenderer.send('click-through', on),
@@ -19,8 +19,5 @@ contextBridge.exposeInMainWorld('overlay', {
   toggleTranscript: () => ipcRenderer.send('transcript-toggle'),
   toggleDebug: () => ipcRenderer.send('debug-toggle'), // nobody listens in the normal app
   ask: () => ipcRenderer.send('ask'),
-  setAskBusy: (busy) => ipcRenderer.send('ask-busy', busy),
   toggleAll: () => ipcRenderer.send('toggle-all'),
-  closeResponse: (id) => ipcRenderer.send('close-response', id),
-  closeRecap: () => ipcRenderer.send('close-recap'),
 })

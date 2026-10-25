@@ -208,7 +208,9 @@ function shouldMove(prev, next) {
 // ---------- fixed spots per call app ----------
 
 // Window sizes the layout counts on, in screen points. Panels grow downwards from their spot (main.js `fit`).
-const BAR = { width: 760, height: 56 }
+// The strip's spot is the island at its widest (the sheet); as a pill it sits centred in that spot.
+const BAR = { width: 560, height: 44 }
+const ISLAND = { pill: 236, sheet: 560 }
 const PANEL = { width: 448, gap: 12, margin: 24 }
 const STRIP = { width: 720, height: 64 } // the transcript strip along the bottom
 const RECAP = { width: 560, height: 440 } // height: a guess for centring; the window fits its content
@@ -258,6 +260,7 @@ function layoutFor(app, rect, work, insightsHeight = INSIGHTS_GUESS) {
     ...BAR,
     x: clampTo(p.strip === 'left' ? win.x + margin : win.x + (win.width - BAR.width) / 2, BAR.width, work.x + margin, right - margin),
     y: barAbove ? win.y - gap - BAR.height : win.y + gap / 2,
+    anchor: p.strip === 'left' ? 'left' : 'center', // what stays put as the island grows
   }
 
   const roomRight = right - winRight
@@ -296,7 +299,7 @@ const area = (a, b) => Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math
 
 // The open name card beside a face, in screen points, for keeping panels off it (the renderer places the
 // real card the same way, so this is where it is).
-const CARD_SIZE = { width: 208, height: 248 } // an open card with five bullets
+const CARD_SIZE = { width: 300, height: 170 } // an open card: name, the facts row, three bullets
 const PILL_SIZE = { width: 132, height: 36 } // a "Recalling…" pill
 function cardRect([x, y, w, h], screen, known = true) {
   const size = known ? CARD_SIZE : PILL_SIZE
@@ -333,6 +336,28 @@ function askPlace({ work, spot, faces, blocks, cards = [], panel, fixedX = false
   return { x: best.x, y: best.y }
 }
 
+// ---------- the island ----------
+
+// One glass object at the top of the call: a pill while you talk, a one-line notice for NOTICE_MS when a new
+// insight arrives, a sheet when opened (⌘↵, a click, an answer), and the Recap when the call ends.
+const NOTICE_MS = 6000
+function islandStage({ recap, open, noticeUntil, now }) {
+  return recap ? 'recap' : open ? 'sheet' : now < noticeUntil ? 'notice' : 'pill'
+}
+
+// The island window for a content size: it grows around its anchor (the spot's centre, or its left edge for
+// apps whose own controls sit top right) and never leaves the work area.
+function islandBounds(spot, size, work) {
+  const x = spot.anchor === 'left' ? spot.x : spot.x + (spot.width - size.width) / 2
+  const bottom = work.y + work.height - PANEL.gap
+  return {
+    x: clampTo(x, size.width, work.x + PANEL.gap, work.x + work.width - PANEL.gap),
+    y: spot.y,
+    width: size.width,
+    height: Math.min(Math.ceil(size.height), bottom - spot.y),
+  }
+}
+
 // ---------- Recap ----------
 
 // A Recap built on this laptop when the server sends none within a few seconds of End call: the last topic,
@@ -355,4 +380,4 @@ function debugLabel({ trackId, score, decision }) {
   return `#${trackId} · ${scored} · ${decision}`
 }
 
-if (typeof module !== 'undefined') module.exports = { presetFor, layoutFor, askPlace, cardRect, recapFrom, debugLabel, devMode, shouldMove, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
+if (typeof module !== 'undefined') module.exports = { presetFor, layoutFor, askPlace, cardRect, recapFrom, debugLabel, devMode, shouldMove, islandStage, islandBounds, ISLAND, NOTICE_MS, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
