@@ -626,7 +626,7 @@ Run with `ponytail:ponytail-audit` on main `253d438`, plus what the security rou
 
 ---
 
-## Island (`review-design` `d387bb8`, `e3f5c2e`)
+## Island (`review-design` `d387bb8`, `e3f5c2e`, finished build `025bbcb`)
 
 2026-10-25, Security agent, read-only (`git diff HEAD...review-design`). I also merged it into a scratch copy of main `75c3e70`: 40 security tests pass, 5 expected xfails, and `node --test` passes 54 of 54. **Verdict: no findings above Low.**
 
@@ -641,3 +641,5 @@ Run with `ponytail:ponytail-audit` on main `253d438`, plus what the security rou
 **R10-1, Low: the `fit` handler accepts `Infinity`.** `on('fit')` checks `height > 0` and `width > 0`, which `Infinity` passes; `win.setBounds` then throws in the main process (an uncaught-exception dialog). Only our own page can send it, and only through a bug. Fix: `if (!Number.isFinite(width) || !Number.isFinite(height)) return` before the `islandSize = ...` line. Strict xfail `test_the_fit_handler_only_accepts_finite_sizes`; delete its marker when fixed.
 
 **Not checked:** how it looks and behaves on a Mac (animation, focus, the pill at the screen edge), the reduce-motion path, and the mock demo.
+
+**Finished build `025bbcb` (checked after the first pass):** the only change since `e3f5c2e` is two CSS lines and a timer in `wakePanel()` (`overlay.js:826-833`): after 20 seconds of quiet an open sheet folds back into the pill, unless a question is being typed or the Recap is showing. It adds no IPC channel, no text sink and no network use; `node --check` passes, and in a scratch merge with main the security tests give 40 passed and 5 expected xfails, and `node --test` 54 of 54. A small plus: a sheet that shows insights and names no longer stays open on the screen when nobody touches it. The verdict above stands.
