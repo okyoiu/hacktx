@@ -9,7 +9,7 @@ from memory import app, pipeline
 def test_places_use_only_the_query_muse_wrote(monkeypatch):
     search = Mock(return_value={"title": "Real gym", "detail": "Austin"})
     monkeypatch.setattr(pipeline.serp, "lookup", search)
-    text, sources = pipeline.lookup("places", "  climbing gyms Austin ")
+    text, sources, items = pipeline.lookup("places", "  climbing gyms Austin ")
     search.assert_called_once_with("place", "climbing gyms Austin")
     assert text == "Real gym\nAustin"
     assert sources == [{"title": "Real gym", "url": "https://www.google.com/maps/search/?api=1&query=Real+gym"}]
@@ -20,15 +20,15 @@ def test_blank_queries_never_reach_serpapi(monkeypatch, query):
     lookup, web = Mock(), Mock()
     monkeypatch.setattr(pipeline.serp, "lookup", lookup)
     monkeypatch.setattr(pipeline.serp, "search", web)
-    assert pipeline.lookup("events", query) == ("There was nothing to search for.", [])
-    assert pipeline.search(query, {}, []) == ("There was nothing to search for.", [])
+    assert pipeline.lookup("events", query) == ("There was nothing to search for.", [], [])
+    assert pipeline.search(query, {}, []) == ("There was nothing to search for.", [], [])
     lookup.assert_not_called()
     web.assert_not_called()
 
 
 def test_no_result_is_said_plainly_and_never_invented(monkeypatch):
     monkeypatch.setattr(pipeline.serp, "lookup", Mock(return_value=None))
-    assert pipeline.lookup("events", "Austin climbing meetup") == ('Nothing found for "Austin climbing meetup".', [])
+    assert pipeline.lookup("events", "Austin climbing meetup") == ('Nothing found for "Austin climbing meetup".', [], [])
 
 
 def test_search_answers_from_results_and_cites_them(monkeypatch):
@@ -36,10 +36,11 @@ def test_search_answers_from_results_and_cites_them(monkeypatch):
     monkeypatch.setattr(pipeline.serp, "search", Mock(return_value=results))
     summarise = Mock(return_value="Cognition bought Windsurf [1].")
     monkeypatch.setattr(pipeline.picks, "answer", summarise)
-    text, sources = pipeline.search("who bought Windsurf", {}, ["Neel: who bought Windsurf?"])
+    text, sources, items = pipeline.search("who bought Windsurf", {}, ["Neel: who bought Windsurf?"])
     summarise.assert_called_once_with("search", "who bought Windsurf", {}, ["Neel: who bought Windsurf?"], results)
     assert text == "Cognition bought Windsurf [1]."
     assert sources == [{"title": "Windsurf deal", "url": "https://example.com/a"}]
+    assert items == [{"title": "Windsurf deal", "detail": "…", "url": "https://example.com/a"}]
 
 
 def test_search_failure_surfaces_as_serpapi_error(monkeypatch):

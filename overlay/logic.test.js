@@ -125,6 +125,12 @@ test('a card shows at most 5 bullets (the server appends "This call: …"), fall
   assert.deepEqual(bulletsOf({ bullets: [], role: '', line: '' }), [])
 })
 
+test('Remember them sends connector: true only when the optional Muse-app tick is on', () => {
+  assert.deepEqual(rememberBody('Maya Chen', '', true), { name: 'Maya Chen', consent: true, connector: true })
+  assert.deepEqual(rememberBody('Maya Chen', ''), { name: 'Maya Chen', consent: true })
+  assert.ok(!('connector' in rememberBody('Maya Chen', '', false)))
+})
+
 test('Remember them sends the optional role only when typed, at most 60 characters', () => {
   assert.deepEqual(rememberBody(' Maya  Chen ', ''), { name: 'Maya Chen', consent: true })
   assert.deepEqual(rememberBody('Maya', '  Your   team lead '), { name: 'Maya', consent: true, role: 'Your team lead' })
@@ -320,8 +326,8 @@ test('Ask AI stays in its spot when it covers nothing, else moves to a free area
   for (const o of [face, strip, ...bands]) assert.equal(overlap(placed, o), 0, 'covers nothing')
   const under = askPlace({ work: WORK, spot: { x: 400, y: 40 }, faces: [], blocks: [strip], panel })
   assert.equal(overlap({ ...under, ...panel }, strip), 0, 'never under the control strip')
-  const card = cardRect([1000, 150, 200, 250], { x: 0, y: 0, width: 1440, height: 900 })
-  assert.deepEqual(card, { x: 1212, y: 150, width: 208, height: 248 }, 'the card sits to the right of its face')
+  const card = cardRect([800, 150, 200, 250], { x: 0, y: 0, width: 1440, height: 900 })
+  assert.deepEqual(card, { x: 1012, y: 150, width: 340, height: 300 }, 'the card sits to the right of its face')
   const offCard = askPlace({ work: WORK, spot: { x: 968, y: 100 }, faces: [], blocks: [], cards: [card], panel })
   assert.equal(overlap({ ...offCard, ...panel }, card), 0, 'name cards are kept clear too')
 })
@@ -405,6 +411,217 @@ test('a card follows its face only when the face really moved, never tracker jit
   assert.ok(shouldMove(face, [220, 260, 200, 260]), 'moved 40 px across')
   assert.ok(shouldMove(face, [180, 300, 200, 260]), 'moved 40 px down')
   assert.ok(!shouldMove(face, [204, 284, 200, 260]), 'exactly the threshold stays')
+})
+
+// ---------- round 6: the island ----------
+const { islandStage, islandBounds, ISLAND, NOTICE_MS } = require('./logic')
+
+test('the island is a pill, widens to a notice for a moment, opens as a sheet, and is the Recap at the end', () => {
+  const now = 10_000
+  assert.equal(islandStage({ recap: false, open: false, noticeUntil: 0, now }), 'pill')
+  assert.equal(islandStage({ recap: false, open: false, noticeUntil: now + NOTICE_MS, now }), 'notice')
+  assert.equal(islandStage({ recap: false, open: false, noticeUntil: now, now }), 'pill', 'the notice is over')
+  assert.equal(islandStage({ recap: false, open: true, noticeUntil: now + 100, now }), 'sheet', 'open beats the notice')
+  assert.equal(islandStage({ recap: true, open: true, noticeUntil: now + 100, now }), 'recap', 'the Recap beats everything')
+})
+
+test('hover opens, leaving backs off after a grace period, and a pinned thing stays open', () => {
+  const { hoverOpen, HOVER_GRACE } = require('./logic')
+  const now = 50_000
+  assert.ok(hoverOpen({ pinned: false, over: true, leftAt: null, now, grace: 600 }), 'pointer over')
+  assert.ok(hoverOpen({ pinned: false, over: false, leftAt: now - 200, now, grace: 600 }), 'just left: still open')
+  assert.ok(!hoverOpen({ pinned: false, over: false, leftAt: now - 600, now, grace: 600 }), 'the grace is over')
+  assert.ok(!hoverOpen({ pinned: false, over: false, leftAt: null, now, grace: 600 }), 'never hovered')
+  assert.ok(hoverOpen({ pinned: true, over: false, leftAt: now - 5000, now, grace: 600 }), 'pinned (⌘↵ or a click) stays')
+  assert.deepEqual(HOVER_GRACE, { island: 600, card: 800 })
+  assert.equal(islandStage({ recap: false, open: false, noticeUntil: 0, now, hover: true }), 'notice', 'the pill grows while hovered')
+  assert.equal(islandStage({ recap: false, open: true, noticeUntil: 0, now, hover: true }), 'sheet', 'an open sheet stays a sheet')
+  assert.equal(islandStage({ recap: true, open: false, noticeUntil: 0, now, hover: true }), 'recap', 'the Recap is unaffected')
+})
+
+test('the ⋯ menu: People, the transcript toggle, Debug only in developer mode, then Quit', () => {
+  const { menuModel } = require('./logic')
+  assert.deepEqual(menuModel({ dev: false, transcriptShown: false, debugOn: false }), [
+    { id: 'people', label: 'People' },
+    { id: 'transcript', label: 'Show transcript' },
+    { type: 'separator' },
+    { id: 'quit', label: 'Quit Hello Again' },
+  ])
+  const dev = menuModel({ dev: true, transcriptShown: true, debugOn: true })
+  assert.equal(dev[1].label, 'Hide transcript')
+  assert.deepEqual(dev[2], { id: 'debug', label: 'Debug view', type: 'checkbox', checked: true })
+  assert.equal(dev.at(-1).id, 'quit')
+})
+
+test('mute: the mic toggle flattens and dims the waveform without pausing everything', () => {
+  const { micState } = require('./logic')
+  assert.deepEqual(micState({ connected: true, on: true, muted: false }), { wave: 'live', label: 'Mute', dim: false })
+  assert.deepEqual(micState({ connected: true, on: true, muted: true }), { wave: 'flat', label: 'Unmute', dim: true })
+  assert.deepEqual(micState({ connected: true, on: false, muted: false }), { wave: 'flat', label: 'Mute', dim: false }, 'paused: flat but not dimmed')
+  assert.deepEqual(micState({ connected: false, on: true, muted: false }), { wave: 'flat', label: 'Mute', dim: false }, 'offline')
+  assert.ok(validCall('/mute', { on: true }), 'the mute route is allowed')
+  assert.ok(!validCall('/mute/x', { on: true }))
+})
+
+test('result rows: three, then "+N more" that expands; prose only when there are no items', () => {
+  const { itemRows } = require('./logic')
+  const items = [1, 2, 3, 4, 5].map((n) => ({ title: 'Place ' + n, detail: n + ' mi', url: 'https://maps.example/' + n }))
+  assert.deepEqual(itemRows(items, false), { shown: items.slice(0, 3), more: 2 })
+  assert.deepEqual(itemRows(items, true), { shown: items, more: 0 })
+  assert.deepEqual(itemRows(items.slice(0, 3), false), { shown: items.slice(0, 3), more: 0 }, 'three or fewer: no cutoff')
+  assert.deepEqual(itemRows(undefined, false), { shown: [], more: 0 })
+  assert.deepEqual(itemRows([{ title: 'x' }, { nope: 1 }, 'bad'], false).shown, [{ title: 'x' }], 'only rows with a title')
+})
+
+test('the header tools fit inside the sheet at every width the layout can produce', () => {
+  const { headerFits, toolsWidth, sheetWidthFor, HEAD } = require('./logic')
+  for (const width of [448, BAR.width, ISLAND.sheet]) assert.ok(headerFits(width), `fits at ${width}`)
+  assert.ok(headerFits(448, true), 'and compact')
+  assert.ok(toolsWidth(true) < toolsWidth(false), 'compact is narrower')
+  assert.equal(sheetWidthFor(600, toolsWidth()), 600, 'the content minimum when the tools already fit')
+  assert.equal(sheetWidthFor(600, 500), 500 + HEAD.left + HEAD.gap + 2 * HEAD.pad, 'grows to fit wider tools, never the reverse')
+})
+
+test('hover is decided from where the pointer is: inside the island plus a margin, and for how long outside', () => {
+  const { insideBounds, hoverStep, HOVER_MARGIN } = require('./logic')
+  const b = { x: 420, y: 31, width: 600, height: 130 }
+  assert.equal(HOVER_MARGIN, 12)
+  assert.ok(insideBounds({ x: 700, y: 80 }, b, HOVER_MARGIN), 'the middle')
+  assert.ok(insideBounds({ x: 425, y: 80 }, b, HOVER_MARGIN), 'near the left end, past where the pill was')
+  assert.ok(insideBounds({ x: 410, y: 80 }, b, HOVER_MARGIN), 'within the margin outside the left edge')
+  assert.ok(insideBounds({ x: 1029, y: 170 }, b, HOVER_MARGIN), 'within the margin at the bottom right')
+  assert.ok(!insideBounds({ x: 407, y: 80 }, b, HOVER_MARGIN), 'past the margin')
+  assert.ok(!insideBounds({ x: 700, y: 174 }, b, HOVER_MARGIN), 'below it')
+
+  const grace = 600
+  let s = { outsideSince: null }
+  s = hoverStep(s, { inside: true, now: 0, grace })
+  assert.deepEqual(s, { outsideSince: null, collapse: false })
+  s = hoverStep(s, { inside: false, now: 100, grace })
+  assert.deepEqual(s, { outsideSince: 100, collapse: false }, 'just left: remember when')
+  s = hoverStep(s, { inside: false, now: 600, grace })
+  assert.equal(s.collapse, false, 'outside for 500 ms: not yet')
+  s = hoverStep(s, { inside: true, now: 650, grace })
+  assert.deepEqual(s, { outsideSince: null, collapse: false }, 'back inside: forgotten')
+  s = hoverStep(s, { inside: false, now: 700, grace })
+  s = hoverStep(s, { inside: false, now: 1299, grace })
+  assert.equal(s.collapse, false)
+  s = hoverStep(s, { inside: false, now: 1300, grace })
+  assert.equal(s.collapse, true, 'outside for 600 ms: back off')
+})
+
+test('the island keeps its centre as it grows (Teams: its left edge) and stays on screen', () => {
+  const spot = { x: 440, y: 31, width: BAR.width, height: BAR.height, anchor: 'center' }
+  assert.deepEqual(islandBounds(spot, { width: ISLAND.pill, height: 44 }, WORK), { x: 440 + (BAR.width - ISLAND.pill) / 2, y: 31, width: ISLAND.pill, height: 44 })
+  assert.deepEqual(islandBounds(spot, { width: BAR.width, height: 420 }, WORK), { x: 440, y: 31, width: BAR.width, height: 420 })
+  const left = islandBounds({ ...spot, x: 24, anchor: 'left' }, { width: ISLAND.pill, height: 44 }, WORK)
+  assert.equal(left.x, 24, 'Teams: grows to the right from the same left edge')
+  const tall = islandBounds(spot, { width: BAR.width, height: 2000 }, WORK)
+  assert.equal(tall.y + tall.height, WORK.y + WORK.height - 12, 'clipped to the work area')
+  assert.equal(layoutFor('zoom.us', null, WORK).bar.anchor, 'center')
+  assert.equal(layoutFor('Microsoft Teams', null, WORK).bar.anchor, 'left')
+})
+
+// ---------- the memory-jogger card ----------
+const { relativeDate, oneLine, cardFacts, cardBullets } = require('./logic')
+
+test('relative dates read like a person would say them', () => {
+  const now = Date.parse('2026-10-25T12:00:00Z')
+  assert.equal(relativeDate('2026-10-25T09:00:00Z', now), 'today')
+  assert.equal(relativeDate('2026-10-24', now), 'yesterday')
+  assert.equal(relativeDate('2026-10-20', now), '5 days ago')
+  assert.equal(relativeDate('2026-10-18', now), 'a week ago')
+  assert.equal(relativeDate('2026-10-04', now), '3 weeks ago')
+  assert.equal(relativeDate('2026-08-20', now), '2 months ago')
+  assert.equal(relativeDate('2024-09-01', now), '2 years ago')
+  assert.equal(relativeDate(null, now), '')
+  assert.equal(relativeDate('nonsense', now), '')
+})
+
+test('one line: trimmed, single-spaced, cut with an ellipsis at a word', () => {
+  assert.equal(oneLine('  Starts a new   fintech job Monday '), 'Starts a new fintech job Monday')
+  assert.equal(oneLine('Jordan moved to Austin last week and starts a fintech job on Monday morning', 40), 'Jordan moved to Austin last week and…')
+  assert.equal(oneLine('x'.repeat(50), 20), 'x'.repeat(19) + '…', 'no word to break at')
+  assert.equal(oneLine(null), '')
+})
+
+test('the facts row: last seen, last spoke, about, work or personal; empty before a first call together', () => {
+  const now = Date.parse('2026-10-25T12:00:00Z')
+  const facts = cardFacts({ lastSeen: '2026-10-18', lastSpoke: '2026-10-18', topic: 'his move to Austin', context: 'personal' }, now)
+  assert.deepEqual(facts, [
+    { label: 'Last seen', value: 'Oct 18', title: 'a week ago' },
+    { label: 'Last spoke', value: 'Oct 18', title: 'a week ago' },
+    { label: 'About', value: 'his move to Austin', title: 'his move to Austin' },
+    { label: 'Context', value: 'Personal', title: '' },
+  ])
+  assert.deepEqual(cardFacts({ lastSeen: null, lastSpoke: null, topic: null, context: '' }, now), [
+    { label: 'Last seen', value: 'First call', title: '' },
+    { label: 'Last spoke', value: '—', title: '' },
+  ], 'nothing to say yet: no About, no Context')
+  assert.equal(cardFacts({ context: 'work' }, now).at(-1).value, 'Work')
+})
+
+test('the card shows three bullets: the role is already in the header, "This call" lines win over the rest', () => {
+  const person = { role: 'Friend from climbing', bullets: ['Friend from climbing', 'Loves F1', 'Last time: the move', 'Met at the gym', 'This call: found a gym', 'This call: new job'] }
+  assert.deepEqual(cardBullets(person), ['Loves F1', 'This call: found a gym', 'This call: new job'])
+  assert.deepEqual(cardBullets({ role: 'Lead', bullets: ['Lead', 'a', 'b'] }), ['a', 'b'])
+  assert.deepEqual(cardBullets({ role: '', bullets: ['a', 'b', 'c'] }), ['a', 'b', 'c'])
+  assert.deepEqual(cardBullets({ role: 'Lead', line: 'Last time: x' }), ['Last time: x'], 'an older server: the label and the last-time line')
+})
+
+// ---------- round 7: cards never cover another face, your own tile, the dashboard ----------
+const { cardKind, staleLine } = require('./logic')
+const clear = (place, card, rect) => place.left + card.width <= rect[0] || place.left >= rect[0] + rect[2] || place.top + card.height <= rect[1] || place.top >= rect[1] + rect[3]
+
+test('a card never covers another face: beside its own, else below, else above, else where it covers least', () => {
+  const card = { width: 300, height: 170 }
+  const screen = { width: 1440, height: 900 }
+  const jordan = [180, 260, 200, 260]
+  const maya = [620, 270, 190, 250]
+  const alone = cardPlace({ face: jordan, card, screen })
+  assert.equal(alone.left, 392, 'alone: to the right')
+  const beside = cardPlace({ face: jordan, card, screen, avoid: [maya] })
+  assert.ok(clear(beside, card, maya), 'two faces side by side: off the neighbour')
+  assert.ok(clear(beside, card, jordan), 'and off its own face')
+  assert.equal(beside.top, 260 + 260 + 12, 'went below, the first free spot')
+  const you = [300, 560, 180, 220] // your own tile, right under Jordan: below is taken, so it slides past it
+  const slid = cardPlace({ face: jordan, card, screen, avoid: [maya, you] })
+  assert.ok([maya, you, jordan].every((f) => clear(slid, card, f)), 'slid along to a free spot')
+  const island = [440, 31, 560, 44]
+  const top = cardPlace({ face: [500, 40, 120, 120], card, screen, avoid: [island] })
+  assert.ok(clear(top, card, island), 'and off the island')
+  const grid = []
+  for (const row of [60, 360, 660]) for (const col of [100, 600, 1100]) grid.push([col, row, 180, 180]) // 320 px between faces: room beside
+  const centre = grid[4]
+  const others = grid.filter((f) => f !== centre)
+  const inGrid = cardPlace({ face: centre, card, screen, avoid: others })
+  assert.ok(others.every((f) => clear(inGrid, card, f)), '3x3 grid: a spot that covers no other face')
+  assert.ok(clear(inGrid, card, centre))
+  const tag = { width: 110, height: 28 }
+  const tagPlace = cardPlace({ face: jordan, card: tag, screen, avoid: [maya] })
+  assert.ok(clear(tagPlace, tag, maya), 'the closed tag follows the same rule')
+  const wall = [[0, 0, 1440, 250], [0, 540, 1440, 360]] // faces everywhere but a band: least coverage wins
+  const squeezed = cardPlace({ face: [600, 270, 200, 250], card, screen, avoid: wall })
+  assert.ok(squeezed.left >= 8 && squeezed.top >= 8 && squeezed.left + card.width <= 1432, 'still on screen')
+})
+
+test('your own tile gets no tag and no card, except a dim "You" in developer mode', () => {
+  assert.equal(cardKind(null, false), 'thinking')
+  assert.equal(cardKind({ id: 'p_1', name: 'Jordan Lee', self: false }, false), 'known')
+  assert.equal(cardKind({ id: 'p_me', name: 'Cesar', self: true }, false), 'none')
+  assert.equal(cardKind({ id: 'p_me', name: 'Cesar', self: true }, true), 'you')
+  assert.equal(cardKind({ id: 'p_1', name: 'Jordan Lee' }, true), 'known', 'an older server has no self flag')
+})
+
+test('"Haven\'t talked in a while" rows say how long ago, and the stale route is allowed', () => {
+  assert.equal(staleLine({ daysSince: 31 }), 'Last met 31 days ago')
+  assert.equal(staleLine({ daysSince: 1 }), 'Last met yesterday')
+  assert.equal(staleLine({ daysSince: 0 }), 'Last met today')
+  assert.equal(staleLine({ daysSince: 400 }), 'Last met 400 days ago')
+  assert.equal(staleLine({}), '')
+  assert.ok(validCall('/people/stale?days=30', undefined, 'GET'))
+  assert.ok(!validCall('/people/stale?days=30&x=1', undefined, 'GET'))
+  assert.ok(!validCall('/people/stale?days=30', undefined, 'DELETE'))
 })
 
 test('the transcript strip and Recap have fixed sizes the layout can count on', () => {

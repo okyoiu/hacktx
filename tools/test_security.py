@@ -285,7 +285,7 @@ def _face_events(monkeypatch, headers=None, params=None, extra=None):
     monkeypatch.setattr(store, "match", lambda p: {"id": "p_x", "name": "Sam", "role": "", "firstMet": date(2026, 10, 1), "score": 0.62})
     for name in ("last_time", "key_fact", "latest_note"):  # key_fact is gone since the facts round; patch what exists
         monkeypatch.setattr(store, name, lambda pid: None, raising=False)
-    monkeypatch.setattr(store, "card_extras", lambda pid: (None, []))
+    monkeypatch.setattr(store, "card_extras", lambda pid: ("", [], {}), raising=False)  # no database needed
     body = {"trackId": 1, "screenBox": [0, 0, 10, 10], "facePrint": [0.044] * 512} | (extra or {})
     r = TestClient(server.app, client=LAPTOP).post("/faces", json=body, headers=headers or {}, params=params or {})
     return pushed, r
@@ -306,13 +306,18 @@ def test_the_guest_pages_know_nothing_about_debug():
     assert "debug" not in (ROOT / "web/enroll.html").read_text(encoding="utf-8").lower()
 
 
-@pytest.mark.xfail(strict=True, reason="POST /window is not built yet; the rect must be null or 4 finite, bounded numbers")
 def test_window_rect_is_validated(monkeypatch):
     laptop = TestClient(server.app, client=LAPTOP)
+
+    def post(rect, app="zoom.us"):
+        # built by hand: the test client refuses to encode NaN, and a real client could send it
+        body = json.dumps({"app": app, "rect": rect}, allow_nan=True)
+        return laptop.post("/window", content=body, headers={"content-type": "application/json"})
+
     for bad in ("x", [0, 0, 1], [0, 0, 1, 2, 3], [0, 0, "a", 1], [0, 0, 1, None], [0, 0, 1e9, 1], [0, 0, -5, 10], [float("nan"), 0, 1, 1]):
-        assert laptop.post("/window", json={"rect": bad}).status_code == 422, bad
-    assert laptop.post("/window", json={"rect": [100, 80, 1200, 800]}).status_code == 200
-    assert laptop.post("/window", json={"rect": None}).status_code == 200
+        assert post(bad).status_code == 422, bad
+    assert post([100, 80, 1200, 800]).status_code == 200
+    assert post(None, None).status_code == 200
 
 
 def test_the_wifi_and_web_pages_cannot_post_the_window():
@@ -337,7 +342,6 @@ def test_the_app_build_never_packs_secrets_or_data():
     assert "codesign" not in code or "'--sign', '-'" in code
 
 
-@pytest.mark.xfail(strict=True, reason="R5-6: the recap kept for a late overlay still names someone who deleted themselves")
 def test_a_deleted_person_leaves_the_stored_recap(monkeypatch):
     recap = {"type": "recap", "topic": "", "points": [], "actions": [], "people": [{"id": "p_zed", "name": "Zed", "role": "", "lastTime": "x"}]}
     monkeypatch.setattr(server, "latest_recap", recap, raising=False)
@@ -347,7 +351,6 @@ def test_a_deleted_person_leaves_the_stored_recap(monkeypatch):
     assert "p_zed" not in json.dumps(server.latest_recap)
 
 
-@pytest.mark.xfail(strict=True, reason="R5-9: a NaN box is accepted, then breaks the push and drops every connected overlay")
 def test_a_nan_box_is_refused_and_does_not_drop_the_overlay(monkeypatch):
     class Overlay:
         async def send_json(self, event):
@@ -361,3 +364,340 @@ def test_a_nan_box_is_refused_and_does_not_drop_the_overlay(monkeypatch):
     r = TestClient(server.app, client=LAPTOP).post(
         "/faces", content='{"trackId":1,"screenBox":[NaN,0,1,1]}', headers={"content-type": "application/json"})
     assert r.status_code == 422 and ws in server.clients
+
+
+def test_a_muse_topic_is_one_line():
+    from memory import picks
+
+    out = picks.parse('{"notes": [], "topic": "Move to Austin\\n## Other <!-- p_y -->", "points": [], "actions": []}', set())
+    assert "\n" not in out["topic"]
+
+
+# --- Muse connector and the demo tunnel (tools/tunnel.sh) ---
+# The tunnel reaches the server over loopback, with forwarding headers; only /connector/* may answer to it.
+
+TUNNEL = {"cf-connecting-ip": "203.0.113.9", "x-forwarded-for": "203.0.113.9"}
+
+
+def test_a_laptop_request_without_forwarding_headers_still_works():
+    assert TestClient(server.app, client=LAPTOP).get("/enroll").status_code == 200
+
+
+def test_the_tunnel_reaches_nothing_but_the_connector(monkeypatch):
+    monkeypatch.setattr(store, "people", lambda: [])
+    deleted = []
+    monkeypatch.setattr(store, "delete_person", lambda *a: deleted.append(a) or True)
+    c = TestClient(server.app, client=LAPTOP)
+    for method, path in (("GET", "/people"), ("GET", "/people/stale"), ("GET", "/people/p_x"), ("GET", "/enroll"), ("POST", "/enroll"),
+                         ("POST", "/calls/end"), ("DELETE", "/people/p_x"), ("POST", "/ask"), ("GET", "/health")):
+        r = c.request(method, path, headers=TUNNEL)
+        assert r.status_code == 403, (method, path, r.status_code)
+    assert deleted == []
+
+
+@pytest.mark.xfail(condition=not (ROOT / "memory/connector.py").exists(), strict=True, reason="fixed in memory 5fea960 (forwarded requests are remote); xfail until that merges")
+def test_the_tunnel_cannot_open_the_overlay_socket():
+    with pytest.raises(WebSocketDisconnect):
+        with TestClient(server.app, client=LAPTOP).websocket_connect("/ws", headers=dict(TUNNEL)):
+            pass
+
+
+@pytest.mark.skipif(not (ROOT / "memory/connector.py").exists(), reason="the connector is not merged yet")
+def test_the_connector_needs_the_key_and_sends_no_prints_or_tokens(monkeypatch):
+    monkeypatch.setenv("MUSE_CONNECTOR_KEY", "k" * 32)
+    person = {"id": "p_x", "name": "Sam", "scope": ["facePrint", "connector"], "role": "", "lastSeen": None, "lastSpoke": None, "topic": None, "context": None,
+              "facts": [], "encounters": [], "notes": [], "howMet": "", "firstMet": date(2026, 10, 1)}
+    monkeypatch.setattr(store, "person", lambda pid: dict(person))
+    monkeypatch.setattr(store, "people", lambda: [dict(person)])
+    c = TestClient(server.app, client=LAPTOP)
+    for headers in ({**TUNNEL}, {**TUNNEL, "authorization": "Bearer wrong"}, {**TUNNEL, "authorization": "Basic " + "k" * 32}):
+        assert c.get("/connector/people", headers=headers).status_code == 401
+    ok = c.get("/connector/people/p_x", headers={**TUNNEL, "authorization": "Bearer " + "k" * 32})
+    assert ok.status_code == 200
+    assert not re.search(r"print|token|embedding|selfie", ok.text, re.I)
+    for method in ("POST", "PATCH", "DELETE"):  # read-only
+        assert c.request(method, "/connector/people/p_x", headers={**TUNNEL, "authorization": "Bearer " + "k" * 32}).status_code in (404, 405)
+
+
+@pytest.mark.skipif(not (ROOT / "memory/connector.py").exists(), reason="the connector is not merged yet")
+def test_the_connector_key_is_compared_in_constant_time():
+    src = (ROOT / "memory/connector.py").read_text()
+    assert "MUSE_CONNECTOR_KEY" in src and "compare_digest" in src and "==" not in re.sub(r"[!<>=]=", "", src.split("def require_key")[1].split("@router")[0])
+
+
+def test_without_a_connector_key_the_connector_does_not_exist(monkeypatch):
+    monkeypatch.delenv("MUSE_CONNECTOR_KEY", raising=False)
+    c = TestClient(server.app, client=LAPTOP)
+    assert c.get("/connector/people", headers={"authorization": "Bearer anything"}).status_code == 404
+    assert c.get("/connector/openapi.json").status_code == 404
+
+
+def test_stale_people_are_for_this_laptop_only(monkeypatch):
+    for client, headers in ((WIFI, {}), (LAPTOP, {"origin": "https://example.com"})):
+        assert TestClient(server.app, client=client).get("/people/stale", headers=dict(headers)).status_code == 403
+
+
+def test_the_mockup_pages_never_touch_the_network():
+    pages = list((ROOT / "overlay/mockups").glob("*.html"))
+    if not pages:
+        pytest.skip("no mockups yet")
+    for page in pages:
+        text = page.read_text()
+        assert not re.search(r"https?://|fetch\(|XMLHttpRequest|WebSocket|@import|<form|<script[^>]*\bsrc=|<link[^>]*href=\"(?!#)", text), page.name
+        assert re.findall(r"<iframe[^>]*src=\"([^\"]+)\"", text) == [u for u in re.findall(r"<iframe[^>]*src=\"([^\"]+)\"", text) if "/" not in u and u.endswith(".html")]
+
+
+def test_tunnel_script_says_what_to_do_when_no_tunnel_tool_is_installed():
+    import subprocess
+
+    script = ROOT / "tools/tunnel.sh"
+    assert subprocess.run(["bash", "-n", str(script)]).returncode == 0
+    r = subprocess.run(["/bin/bash", str(script)], env={"PATH": "/nonexistent"}, capture_output=True, text=True)
+    assert r.returncode != 0 and "install" in r.stderr.lower()
+    text = script.read_text()
+    assert "127.0.0.1:8000" in text and "MUSE_CONNECTOR_KEY" in text and "0.0.0.0" not in text
+    assert not re.search(r"\bcat\b.*\.env|source .*\.env|echo .*\$MUSE", text)  # never prints the key
+
+
+# --- the overlay's windows (the Island build and any window added later) ---
+
+def test_every_overlay_window_is_built_in_one_place_with_the_safe_settings():
+    """One function builds every window (pill, notice, sheet, cards, transcript, people), so content protection and the
+    sandbox cannot be forgotten for a new one."""
+    main = (ROOT / "overlay/main.js").read_text()
+    assert main.count("new BrowserWindow(") == 1
+    build = main.split("function overlayWindow")[1].split("\nfunction ")[0]
+    for needed in ("setContentProtection(true)", "contextIsolation: true", "nodeIntegration: false", "sandbox: true",
+                   "will-navigate", "will-attach-webview", "setWindowOpenHandler"):
+        assert needed in build, needed
+
+
+def test_the_overlay_pages_load_nothing_from_the_network():
+    html = (ROOT / "overlay/index.html").read_text()
+    assert not re.search(r"(src|href)=\"(https?:)?//", html) and "<iframe" not in html
+    css = (ROOT / "overlay/overlay.css").read_text()
+    assert not re.search(r"url\(\s*['\"]?(https?:)?//|@import", css)
+
+
+@pytest.mark.xfail(strict=True, reason="R10-1: the fit handler accepts Infinity, and setBounds throws on it in the main process")
+def test_the_fit_handler_only_accepts_finite_sizes():
+    main = (ROOT / "overlay/main.js").read_text()
+    handler = main.split("on('fit'")[1].split("\non(")[0]
+    assert "isFinite" in handler
+
+
+# --- deletion is complete ---
+
+def _db_or_skip():
+    if not os.getenv("DATABASE_URL"):
+        pytest.skip("DATABASE_URL not set")
+    try:
+        store.conn().execute("select 1")
+    except psycopg.OperationalError as e:
+        pytest.skip(f"database unreachable: {e}")
+
+
+def _rows_about(pid):
+    """Rows left about a person in every table that points at people (found in the catalog, so a table added later counts)."""
+    refs = store.conn().execute(
+        """select c.conrelid::regclass::text, a.attname from pg_constraint c
+           join pg_attribute a on a.attrelid = c.conrelid and a.attnum = any(c.conkey)
+           where c.contype = 'f' and c.confrelid = 'people'::regclass""").fetchall()
+    left = {"people": store.conn().execute("select count(*) from people where id = %s", (pid,)).fetchone()[0]}
+    for table, column in refs:
+        left[table] = store.conn().execute(f"select count(*) from {table} where {column} = %s", (pid,)).fetchone()[0]
+    return {t: n for t, n in left.items() if n}
+
+
+@pytest.fixture
+def someone(monkeypatch, tmp_path):
+    """A real enrolled person with a note, a fact, an encounter and how-we-met, plus a call note, a person file, a stored
+    recap and live call state that all name them. Created and removed by this test only (never wipes tables)."""
+    import secrets as _secrets
+    from datetime import datetime
+
+    import numpy as np
+
+    from memory import notes
+
+    _db_or_skip()
+    name = "Zed Delete" + _secrets.token_hex(3)
+    pid, token = store.enroll(name, np.random.default_rng().normal(size=512).astype(np.float32), None, "Test role")
+    store.add_note(pid, f"{name} likes tests")
+    store.add_facts(pid, ["Loves deleting"])
+    store.add_encounter(pid, datetime(2026, 10, 24, 20, 0).astimezone(), "about", "last time", "a topic", True, "work")
+    store.set_how_met(pid, "Oct 24 on Zoom")
+    monkeypatch.setattr(notes, "NOTES", tmp_path / "notes")
+    started = datetime(2026, 10, 24, 20, 0)
+    notes.write(started, {pid: ["learned"]}, [f"{name} moved"], [{"query": f"Who is {name}?", "text": f"{name} is a test", "sources": []}])
+    notes.write_person(pid)
+    monkeypatch.setattr(server, "tracks", {7: {"id": pid, "name": name}})
+    monkeypatch.setattr(server, "boxes", {7: [0, 0, 1, 1]})
+    monkeypatch.setattr(server, "snippets", {pid: ["This call: x"]})
+    monkeypatch.setattr(server, "live", {pid: {"since": 0, "lines": ["hello"]}})
+    monkeypatch.setattr(server, "call", server.Call(people={pid: ["learned"]}))
+    monkeypatch.setattr(server, "latest_recap", {"type": "recap", "topic": "", "points": [], "actions": [], "people": [
+        {"id": pid, "name": name, "role": "", "lastTime": "x"}]}, raising=False)
+    yield pid, name, tmp_path / "notes"
+    store.conn().execute("delete from people where id = %s", (pid,))
+
+
+def test_deleting_a_person_leaves_nothing_of_them(someone):
+    pid, name, notes_dir = someone
+    assert _rows_about(pid)["people"] == 1 and len(_rows_about(pid)) >= 5  # the fixture really made rows in several tables
+    assert TestClient(server.app, client=LAPTOP).delete(f"/people/{pid}").status_code == 200
+    assert _rows_about(pid) == {}
+    files = sorted(notes_dir.rglob("*.md"))
+    assert files and not any(pid in f.read_text() or name in f.read_text() or pid in f.name for f in files)
+    assert 7 not in server.tracks and 7 not in server.boxes and pid not in server.snippets and pid not in server.live
+    assert pid not in server.call.people and pid not in json.dumps(server.latest_recap) and name not in json.dumps(server.latest_recap)
+
+
+def test_deleting_a_person_also_clears_them_from_the_ask_ai_thread(someone, monkeypatch):
+    pid, name, _ = someone
+    monkeypatch.setattr(server, "thread", [(f"Who is {name}?", f"{name} is a test person.")])
+    assert TestClient(server.app, client=LAPTOP).delete(f"/people/{pid}").status_code == 200
+    assert name not in json.dumps(server.thread)
+
+
+# --- consent text: what the enroll page tells a guest (docs/security-review.md "Consent, round 11") ---
+
+def _enroll_page_text():
+    import html
+
+    page = (ROOT / "web/enroll.html").read_text()
+    page = re.sub(r"<script.*?</script>|<style.*?</style>", " ", page, flags=re.S)
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", page))).lower()
+
+
+def test_the_enroll_page_names_every_use_of_what_it_keeps():
+    text = _enroll_page_text()
+    for word in ("connector", "facts", "voice"):
+        assert word in text, word
+    assert re.search(r"(each|every|per) call", text) or "summar" in text
+
+
+def test_the_consent_scope_never_claims_more_than_the_person_saw():
+    """R12-1: connector is an optional second tick, never a default, and the one-time migration of old rows must not add
+    uses they never saw (facts, voice, connector)."""
+    sql = (ROOT / "memory/schema.sql").read_text()
+    for line in sql.splitlines():
+        if re.search(r"scope", line) and re.search(r"set default|^update consents", line.strip()):
+            assert "connector" not in line, line
+    for line in sql.splitlines():
+        if line.strip().startswith("update consents"):
+            assert not re.search(r"facts|voice", line.split("where")[0]), line
+
+
+def test_facts_are_written_only_for_people_whose_scope_includes_them():
+    import secrets as _secrets
+
+    import numpy as np
+
+    _db_or_skip()
+    pid, _ = store.enroll("Zed Scope" + _secrets.token_hex(3), np.random.default_rng().normal(size=512).astype(np.float32), None)
+    try:
+        store.conn().execute("update consents set scope = '{facePrint,notes}' where person_id = %s", (pid,))  # an old row
+        store.add_facts(pid, ["Loves F1"])
+        assert store.conn().execute("select count(*) from facts where person_id = %s", (pid,)).fetchone()[0] == 0
+    finally:
+        store.conn().execute("delete from people where id = %s", (pid,))
+
+
+# --- the connector over MCP (POST /connector/mcp, JSON-RPC): same rules as the REST connector ---
+
+def _mcp(c, body, key="k" * 32, raw=None, **headers):
+    h = {"content-type": "application/json", **headers}
+    if key:
+        h["authorization"] = "Bearer " + key
+    return c.post("/connector/mcp", content=raw if raw is not None else json.dumps(body), headers=h)
+
+
+@pytest.fixture
+def mcp(monkeypatch):
+    monkeypatch.setenv("MUSE_CONNECTOR_KEY", "k" * 32)
+    person = {"id": "p_x", "name": "Sam", "role": "", "lastSeen": None, "lastSpoke": None, "topic": None, "context": None,
+              "facts": [], "encounters": [], "notes": [], "howMet": "", "firstMet": date(2026, 10, 1), "scope": ["connector"]}
+    monkeypatch.setattr(store, "person", lambda pid: dict(person))
+    monkeypatch.setattr(store, "people", lambda: [dict(person)])
+    monkeypatch.setattr(store, "calls", lambda *a, **k: [], raising=False)
+    return TestClient(server.app, client=LAPTOP)
+
+
+@pytest.mark.skipif("/mcp" not in (ROOT / "memory/connector.py").read_text(), reason="POST /connector/mcp is not merged yet")
+def test_mcp_needs_the_key(mcp):
+    ping = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    assert _mcp(mcp, ping, key=None).status_code == 401
+    assert _mcp(mcp, ping, key="wrong").status_code == 401
+    assert _mcp(mcp, ping, **TUNNEL).status_code == 200  # through the tunnel, with the key: allowed (and nothing else is)
+
+
+@pytest.mark.skipif("/mcp" not in (ROOT / "memory/connector.py").read_text(), reason="POST /connector/mcp is not merged yet")
+def test_mcp_errors_leak_nothing_and_bodies_are_bounded(mcp):
+    for raw in ("{not json", "[]", '{"jsonrpc":"2.0","id":1,"method":"nope"}',
+                '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"getPerson","arguments":{"id":["x"]}}}'):
+        r = _mcp(mcp, None, raw=raw)
+        assert r.status_code in (200, 400), raw
+        assert not re.search(r"Traceback|File \"|\.py|psycopg|KeyError|TypeError", r.text), r.text
+
+
+@pytest.mark.skipif("/mcp" not in (ROOT / "memory/connector.py").read_text(), reason="POST /connector/mcp is not merged yet")
+@pytest.mark.xfail(strict=True, reason="R15-3: /connector/mcp reads a body of any size, and a batch of any length")
+def test_mcp_bodies_and_batches_are_bounded(mcp):
+    assert _mcp(mcp, None, raw=json.dumps({"jsonrpc": "2.0", "id": 3, "method": "ping", "pad": "x" * 200_000})).status_code in (400, 413)
+    batch = [{"jsonrpc": "2.0", "id": i, "method": "ping"} for i in range(500)]
+    assert _mcp(mcp, batch).status_code in (400, 413)
+
+
+@pytest.mark.skipif("/mcp" not in (ROOT / "memory/connector.py").read_text(), reason="POST /connector/mcp is not merged yet")
+def test_mcp_tool_results_carry_no_prints_or_tokens_and_only_opted_in_people(mcp, monkeypatch):
+    listing = _mcp(mcp, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    assert listing.status_code == 200 and "Sam" not in listing.text  # the tool list is documentation, not data
+    names = [t["name"] for t in listing.json()["result"]["tools"]]
+    texts = []
+    for i, name in enumerate(names):
+        args = {"id": "p_x"} if "erson" in name and "ist" not in name else {}
+        texts.append(_mcp(mcp, {"jsonrpc": "2.0", "id": 10 + i, "method": "tools/call", "params": {"name": name, "arguments": args}}).text)
+    assert any("Sam" in t for t in texts)
+    assert not re.search(r"print|token|embedding|selfie|scope", "\n".join(texts), re.I)
+    monkeypatch.setattr(store, "people", lambda: [{"id": "p_y", "name": "Hidden", "scope": ["facePrint"], "role": "", "lastSeen": None, "lastSpoke": None, "topic": None, "context": None}])
+    hidden = "".join(_mcp(mcp, {"jsonrpc": "2.0", "id": 99, "method": "tools/call", "params": {"name": n, "arguments": {}}}).text for n in names)
+    assert "Hidden" not in hidden  # people who did not tick the box stay out, as in the REST connector
+
+
+# --- the `calls` table (topic, key points and actions of every finished call) ---
+
+@pytest.fixture
+def call_row():
+    """Two enrolled people (one opted in to the connector, one not) and a stored call that names both. Own rows only."""
+    import secrets as _secrets
+
+    import numpy as np
+
+    _db_or_skip()
+    if not hasattr(store, "add_call"):
+        pytest.skip("the calls table is not merged yet")
+    tag = _secrets.token_hex(3)
+    rng = np.random.default_rng()
+    yes, _ = store.enroll(f"Opted{tag}", rng.normal(size=512).astype(np.float32), None, "", True)
+    no, _ = store.enroll(f"Private{tag}", rng.normal(size=512).astype(np.float32), None)
+    store.add_call("Zoom", f"topic{tag}", [f"Private{tag} is quitting"], ["Find gyms"],
+                   [{"id": yes, "name": f"Opted{tag}"}, {"id": no, "name": f"Private{tag}"}])
+    yield tag, yes, no
+    for pid in (yes, no):
+        store.conn().execute("delete from people where id = %s", (pid,))
+    store.conn().execute("delete from calls where topic = %s", (f"topic{tag}",))
+
+
+@pytest.mark.xfail(strict=True, reason="R15-1: the connector filters the people of a call but returns its key points, which name people who did not opt in")
+def test_the_connector_does_not_return_what_was_said_about_people_who_did_not_opt_in(call_row):
+    tag, yes, no = call_row
+    shown = json.dumps(store.calls(20, "connector"), default=str)
+    assert f"Private{tag}" not in shown
+
+
+@pytest.mark.xfail(strict=True, reason="R15-2: deleting a person removes their id from stored calls but keeps the key points that name them")
+def test_deleting_a_person_leaves_no_stored_call_text_naming_them(call_row):
+    tag, yes, no = call_row
+    assert store.delete_person(no, None)
+    assert store.conn().execute("select count(*) from calls where points::text like %s or topic like %s", (f"%Private{tag}%", f"%Private{tag}%")).fetchone()[0] == 0

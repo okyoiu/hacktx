@@ -12,97 +12,91 @@
       <path d="M13.5 4.5C14 9.5 17.5 13 22.5 13.5 17.5 14 14 17.5 13.5 22.5 13 17.5 9.5 14 4.5 13.5 9.5 13 13 9.5 13.5 4.5Z"/>
       <path d="M5 1.5C5.2 3.6 6.4 4.8 8.5 5 6.4 5.2 5.2 6.4 5 8.5 4.8 6.4 3.6 5.2 1.5 5 3.6 4.8 4.8 3.6 5 1.5Z"/>
     </symbol>
-    <symbol id="copy" viewBox="0 0 20 20"><rect x="7" y="7" width="10" height="10" rx="2.5"/><path d="M13 7V5.5A2.5 2.5 0 0 0 10.5 3h-5A2.5 2.5 0 0 0 3 5.5v5A2.5 2.5 0 0 0 5.5 13H7"/></symbol>
-    <symbol id="check" viewBox="0 0 20 20"><path d="m4.5 10.5 3.5 3.5 7.5-8"/></symbol>
     <symbol id="external" viewBox="0 0 20 20"><path d="M7 13 13 7M8 7h5v5"/></symbol>
     <symbol id="close" viewBox="0 0 20 20"><path d="m6.5 6.5 7 7m0-7-7 7"/></symbol>
-    <symbol id="close-ring" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.5"/><path d="m7.6 7.6 4.8 4.8m0-4.8-4.8 4.8"/></symbol>
     <symbol id="eye" viewBox="0 0 20 20"><path d="M2 10c2-3.6 4.7-5.5 8-5.5s6 1.9 8 5.5c-2 3.6-4.7 5.5-8 5.5S4 13.6 2 10Z"/><circle cx="10" cy="10" r="2.6"/></symbol>
     <symbol id="lines" viewBox="0 0 20 20"><path d="M2 15 5.5 5 9 15M3.3 11.5h4.4M12 7h6M12 11h6M12 15h6"/></symbol>
+    <symbol id="people-icon" viewBox="0 0 20 20"><circle cx="7.5" cy="6.5" r="3"/><path d="M2 17c.6-3.4 2.7-5.2 5.5-5.2S12.4 13.6 13 17M13.5 8a2.5 2.5 0 1 0 0-5M14.5 12c2 .5 3 2 3.3 4.5"/></symbol>
+    <symbol id="end" viewBox="0 0 20 20"><path d="M2.5 12c4.2-4.2 10.8-4.2 15 0l-2 2.2-3.2-1.5v-2c-1.4-.5-3.2-.5-4.6 0v2l-3.2 1.5z"/></symbol>
+    <symbol id="pause" viewBox="0 0 20 20"><path d="M7 4.5v11M13 4.5v11"/></symbol>
+    <symbol id="play" viewBox="0 0 20 20"><path d="M6.5 4.5v11l9-5.5z"/></symbol>
+    <symbol id="mic" viewBox="0 0 20 20"><rect x="7" y="2.5" width="6" height="10" rx="3"/><path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5M7 17.5h6"/></symbol>
+    <symbol id="mic-off" viewBox="0 0 20 20"><rect x="7" y="2.5" width="6" height="10" rx="3"/><path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5M7 17.5h6M3 3l14 14"/></symbol>
+    <symbol id="more" viewBox="0 0 20 20"><circle cx="4.5" cy="10" r="1.6"/><circle cx="10" cy="10" r="1.6"/><circle cx="15.5" cy="10" r="1.6"/></symbol>
   </svg>
 
   <div id="cards" aria-live="polite"></div>
   <p class="hint glass" id="hint" hidden>Join a call. Hello Again appears when it sees someone you know.</p>
 
-  <header id="bar" class="bar glass" hidden>
-    <img class="logo" src="icon.png" alt="" width="22" height="22">
-    <button class="pause" id="pause" type="button" aria-label="Pause listening">
-      <svg class="i-pause" viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="2.5" width="3" height="11" rx="1"/><rect x="9.5" y="2.5" width="3" height="11" rx="1"/></svg>
-      <svg class="i-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.2v9.6a.8.8 0 0 0 1.2.7l7.4-4.8a.8.8 0 0 0 0-1.4L6.2 2.5A.8.8 0 0 0 5 3.2Z"/></svg>
-    </button>
-    <span class="wave" id="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
-    <span class="health" id="health" data-state="ok" role="img" aria-label="Everything is running"></span>
-    <span class="timer" id="timer" role="timer" aria-label="Call time">00:00</span>
-    <span class="warn" id="warn" role="status" hidden></span>
-    <button class="key-btn" id="askBtn" type="button" aria-keyshortcuts="Meta+Enter">Ask AI <kbd class="mod">⌘</kbd><kbd>↵</kbd></button>
-    <button class="key-btn" id="endBtn" type="button">End call</button>
-    <button class="key-btn" id="peopleBtn" type="button" aria-keyshortcuts="Meta+Shift+P">People</button>
-    <button class="key-btn" id="hideBtn" type="button" aria-keyshortcuts="Meta+Backslash">Show/Hide <kbd class="mod">⌘</kbd><kbd>\</kbd></button>
-  </header>
-
-  <section id="insights" class="panel glass insights" aria-label="Live insights" hidden>
-    <header class="panel-head">
-      <h1 class="panel-title"><svg class="mark" aria-hidden="true"><use href="#sparkle"/></svg>Live insights</h1>
-      <button class="text-btn" id="transcriptBtn" type="button" aria-pressed="false">
-        <svg aria-hidden="true"><use href="#lines"/></svg>
-        <span>Show transcript</span>
+  <!-- The island: one object at the top of the call. data-stage: pill · notice · sheet · recap -->
+  <section id="island" class="island glass" data-stage="pill" hidden>
+    <header id="bar" class="head">
+      <button class="tool mic" id="micBtn" type="button" aria-label="Mute" aria-pressed="false" aria-keyshortcuts="Meta+M"><svg class="i-mic" aria-hidden="true"><use href="#mic"/></svg><svg class="i-mic-off" aria-hidden="true"><use href="#mic-off"/></svg></button>
+      <button class="pill-main" id="pillBtn" type="button" aria-label="Open Hello Again">
+        <span class="wave" id="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+        <span class="health" id="health" data-state="ok" role="img" aria-label="Everything is running"></span>
+        <span class="timer" id="timer" role="timer" aria-label="Call time">00:00</span>
+        <span class="ended" id="ended"></span>
       </button>
-      <button class="icon-btn copy-btn" id="copyInsights" type="button" aria-label="Copy insights">
-        <svg class="i-copy" aria-hidden="true"><use href="#copy"/></svg><svg class="i-done" aria-hidden="true"><use href="#check"/></svg>
-      </button>
+      <span class="warn" id="warn" role="status" hidden></span>
+      <div class="notice" id="notice">
+        <p class="t"><b id="noticeTopic"></b><span id="noticePoint"></span><small id="noticeMeta"></small></p>
+        <button class="chip-act" id="noticeAction" type="button" hidden><span class="emoji" aria-hidden="true"></span><span class="label"></span></button>
+      </div>
+      <div class="tools">
+        <button class="tool" id="pause" type="button" aria-label="Pause listening"><svg class="i-pause" aria-hidden="true"><use href="#pause"/></svg><svg class="i-play" aria-hidden="true"><use href="#play"/></svg></button>
+        <button class="tool end" id="endBtn" type="button"><svg aria-hidden="true"><use href="#end"/></svg><span>End call</span></button>
+        <button class="tool" id="hideBtn" type="button" aria-label="Hide ⌘\" aria-keyshortcuts="Meta+Backslash"><svg aria-hidden="true"><use href="#eye"/></svg></button>
+        <button class="tool" id="moreBtn" type="button" aria-label="More: People, transcript, Quit" aria-haspopup="menu"><svg aria-hidden="true"><use href="#more"/></svg></button>
+      </div>
+      <button class="spark-btn" id="askBtn" type="button" aria-label="Ask AI ⌘↵" aria-keyshortcuts="Meta+Enter"><svg class="mark" aria-hidden="true"><use href="#sparkle"/></svg></button>
+      <span class="badge" id="badge" aria-label="New notes" hidden></span>
+      <button class="tool" id="closeRecap" type="button" aria-label="Close"><svg aria-hidden="true"><use href="#close"/></svg></button>
     </header>
-    <p class="empty" id="insightsEmpty">Listening…</p>
-    <h2 class="topic" id="topic" hidden></h2>
-    <ul class="points" id="points"></ul>
-    <h3 class="actions-title" id="actionsTitle" hidden>Actions</h3>
-    <ul class="actions" id="actions"></ul>
-    <p class="note" id="actionsNote" role="status"></p>
+
+    <div id="insights" class="body" aria-label="Live insights">
+      <p class="empty" id="insightsEmpty">Listening…</p>
+      <h2 class="topic" id="topic" hidden></h2>
+      <ul class="points" id="points"></ul>
+      <ul class="actions" id="actions"></ul>
+      <p class="note" id="actionsNote" role="status"></p>
+    </div>
+
+    <div id="response" class="body" aria-label="Ask AI">
+      <ol class="thread" id="thread" aria-live="polite"></ol>
+      <form class="ask" id="askForm">
+        <input id="question" maxlength="500" autocomplete="off" spellcheck="false" placeholder="Ask about this call…" aria-label="Question">
+        <kbd>↵</kbd>
+      </form>
+      <p class="note" id="askNote" role="status"></p>
+    </div>
+
+    <div id="recap" class="body" aria-label="Recap">
+      <h2 class="topic" id="recapTopic"></h2>
+      <ul class="points" id="recapPoints"></ul>
+      <ul class="actions" id="recapActions"></ul>
+      <p class="note" id="recapNote" role="status"></p>
+      <h3 class="sub-title" id="recapPeopleTitle" hidden>Who was there</h3>
+      <ul class="recap-people" id="recapPeople"></ul>
+      <button class="quit" id="quitBtn" type="button" hidden>Quit Hello Again</button>
+    </div>
   </section>
 
   <section id="transcript" class="panel glass strip" aria-label="Transcript" hidden>
     <ol class="transcript" id="captions"></ol>
   </section>
 
-  <section id="response" class="panel glass response" aria-label="Ask AI" hidden>
-    <header class="panel-head">
-      <h1 class="panel-title"><svg class="mark" aria-hidden="true"><use href="#sparkle"/></svg>Ask AI</h1>
-      <button class="icon-btn copy-btn" id="copyAnswer" type="button" aria-label="Copy answers">
-        <svg class="i-copy" aria-hidden="true"><use href="#copy"/></svg><svg class="i-done" aria-hidden="true"><use href="#check"/></svg>
-      </button>
-      <button class="icon-btn" id="closeResponse" type="button" aria-label="Close"><svg aria-hidden="true"><use href="#close-ring"/></svg></button>
-    </header>
-    <ol class="thread" id="thread" aria-live="polite"></ol>
-    <form class="ask" id="askForm">
-      <input id="question" maxlength="500" autocomplete="off" spellcheck="false" placeholder="Ask about this call…" aria-label="Question">
-      <kbd>↵</kbd>
-    </form>
-    <p class="note" id="askNote" role="status"></p>
-  </section>
-
-  <section id="recap" class="panel glass recap" aria-label="Recap" hidden>
-    <header class="panel-head">
-      <h1 class="panel-title"><svg class="mark" aria-hidden="true"><use href="#sparkle"/></svg>Recap</h1>
-      <button class="icon-btn copy-btn" id="copyRecap" type="button" aria-label="Copy recap">
-        <svg class="i-copy" aria-hidden="true"><use href="#copy"/></svg><svg class="i-done" aria-hidden="true"><use href="#check"/></svg>
-      </button>
-      <button class="icon-btn" id="closeRecap" type="button" aria-label="Close"><svg aria-hidden="true"><use href="#close-ring"/></svg></button>
-    </header>
-    <h2 class="topic" id="recapTopic"></h2>
-    <ul class="points" id="recapPoints"></ul>
-    <h3 class="actions-title" id="recapActionsTitle" hidden>Actions</h3>
-    <ul class="actions" id="recapActions"></ul>
-    <p class="note" id="recapNote" role="status"></p>
-    <h3 class="actions-title" id="recapPeopleTitle" hidden>Who was there</h3>
-    <ul class="recap-people" id="recapPeople"></ul>
-  </section>
-
   <section id="people" class="panel glass people" aria-label="People" hidden>
     <header class="panel-head">
       <h1 class="panel-title"><svg class="mark" aria-hidden="true"><use href="#sparkle"/></svg>People</h1>
-      <button class="icon-btn" id="closePeople" type="button" aria-label="Close"><svg aria-hidden="true"><use href="#close-ring"/></svg></button>
+      <button class="tool" id="closePeople" type="button" aria-label="Close"><svg aria-hidden="true"><use href="#close"/></svg></button>
     </header>
     <div class="people-body">
       <div class="people-side">
+        <section class="stale" id="stale" aria-label="Haven't talked in a while" hidden>
+          <h2 class="sub-title">Haven't talked in a while</h2>
+          <ul class="people-list stale-list" id="staleList"></ul>
+        </section>
         <input id="peopleSearch" type="search" maxlength="80" autocomplete="off" spellcheck="false" placeholder="Search people…" aria-label="Search people">
         <ul class="people-list" id="peopleList" aria-label="Everyone you've met"></ul>
         <p class="empty" id="peopleEmpty"></p>

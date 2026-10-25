@@ -1,19 +1,18 @@
 // Always-on-top windows that only this screen shows:
-//  - cards:      full-screen, transparent and click-through; glass name cards sit beside faces (and the debug view)
-//  - bar:        control strip (pause, waveform, timer, Ask AI ⌘↵, End call, People, Show/Hide ⌘\)
-//  - insights:   Live insights (topic, points, actions), in the preset's rail
-//  - response:   Ask AI: a thread of questions and answers, under Live insights, nudged clear of faces
+//  - cards:      full-screen, transparent and click-through; glass name tags and cards sit beside faces (and the debug view)
+//  - island:     one black-glass object at the top of the call: a pill (waveform, timer) that widens into a one-line
+//                notice when an insight arrives, opens into a sheet (Live insights, actions, Ask AI thread) and is the
+//                Recap at the end. It resizes around its anchor as its content changes (`fit`).
 //  - transcript: a slim strip of captions along the bottom, off until "Show transcript"
-//  - recap:      the Recap at the end of the call, centred over the call window
 //  - people:     the People dashboard
-// Each panel is its own window so macOS/Windows can blur what is behind it (real glass). Where each one sits
-// comes from logic.js `layoutFor` (a preset per call app) and follows the `window` event.
+// Each is its own window so macOS/Windows can blur what is behind it (real glass). Where each one sits comes
+// from logic.js `layoutFor` (a preset per call app) and follows the `window` event.
 // Main owns the event source (the memory service's WebSocket, or the demo replay with `npm run mock`) and
 // forwards every event to every window; panels call the memory API through main.
-const { app, BrowserWindow, clipboard, globalShortcut, ipcMain, screen, shell, systemPreferences } = require('electron')
+const { app, BrowserWindow, clipboard, globalShortcut, ipcMain, Menu, screen, shell, systemPreferences } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
-const { inviteLink, validCall, webUrl, layoutFor, askPlace, cardRect, recapFrom, devMode } = require('./logic')
+const { inviteLink, validCall, webUrl, layoutFor, islandBounds, recapFrom, devMode, menuModel, insideBounds, hoverStep, HOVER_MARGIN, HOVER_GRACE, ISLAND, BAR } = require('./logic')
 const { createLauncher } = require('./launcher')
 
 // The repo's .env supplies ENROLL_CODE, ENROLL_URL and MEMORY_URL; variables already set win.
@@ -27,7 +26,7 @@ const DEV = devMode(process.argv, process.env)
 if (DEV) process.env.HELLO_DEBUG = '1'
 const MEMORY_URL = process.env.MEMORY_URL || 'http://localhost:8000'
 const ENROLL_URL = process.env.ENROLL_URL || 'http://localhost:8000/enroll'
-const PEOPLE_SIZE = { width: 760, height: 540 }
+const PEOPLE_SIZE = { width: 840, height: 620 }
 const IDLE_OPACITY = 0.3
 const RECAP_WAIT_MS = 15_000 // after End call, how long to wait for the server's recap before building one here
 const ICON = path.join(__dirname, 'icon.png')
@@ -36,8 +35,9 @@ const windows = {}
 const shownBeforeHide = new Set()
 const closing = new Set() // windows fading out to hidden; idle fades and Show/Hide must not stop that
 let allHidden = false
-let closedResponse = null // the answer the user closed; its late events must not reopen the panel
 let lastInsights = null
+
+const reducedMotion = () => systemPreferences.getAnimationSettings().prefersReducedMotion
 
 function overlayWindow(query, opts) {
   const win = new BrowserWindow({
@@ -92,7 +92,7 @@ const fades = new Map()
 // Fades a whole window, OS blur included; CSS opacity can't reach the blur layer. Linux ignores window opacity.
 function fade(win, to, ms, done) {
   clearInterval(fades.get(win))
-  if (systemPreferences.getAnimationSettings().prefersReducedMotion) ms = 0
+  if (reducedMotion()) ms = 0
   const from = win.getOpacity()
   const start = Date.now()
   const step = () => {
@@ -138,7 +138,7 @@ function toggleAll() {
   }
 }
 
-// The People dashboard: its own window, centred, opened by the control bar or ⌘⇧P, works without a call.
+// The People dashboard: its own window, centred, opened by the island or ⌘⇧P, works without a call.
 function togglePeople() {
   const win = windows.people
   if (showing(win)) return conceal(win)
@@ -149,16 +149,14 @@ function togglePeople() {
   win.webContents.send('people-open')
 }
 
-// Ask AI (⌘↵ or the button): a fresh thread in the preset's spot, nudged clear of faces and controls.
+// Ask AI (⌘↵ or the sparkle): the island opens as a sheet with a fresh thread and takes the keyboard.
 function openAsk() {
   if (allHidden) toggleAll()
-  closedResponse = null
-  placeAsk(true)
-  reveal(windows.response)
+  reveal(windows.island)
   // typing needs keyboard focus; this is the one moment the overlay takes it from the call
   if (process.platform === 'darwin') app.focus({ steal: true })
-  windows.response.focus()
-  windows.response.webContents.send('ask')
+  windows.island.focus()
+  windows.island.webContents.send('ask')
 }
 
 function toggleTranscript() {
@@ -166,71 +164,44 @@ function toggleTranscript() {
   const shown = !showing(win)
   if (shown) reveal(win)
   else conceal(win)
-  windows.insights.webContents.send('transcript-shown', shown)
-  if (shown) placeAsk() // Ask AI keeps off the strip
+  windows.island.webContents.send('transcript-shown', shown)
 }
 
 // ---------- where everything sits ----------
 
 let callWindow = { app: null, rect: null } // the followed call window, from the `window` event
 let layout = null
-let insightsHeight = 220
-let askBusy = false // the Ask AI input is focused or holds text: the panel must not move
-const faces = new Map() // trackId -> the latest face event, to keep Ask AI off people
+let islandSize = { width: ISLAND.pill, height: BAR.height } // the island's content size, from `fit`
 
 const workAreaFor = (rect) => (rect ? screen.getDisplayMatching({ x: rect[0], y: rect[1], width: rect[2], height: rect[3] }) : screen.getPrimaryDisplay()).workArea
 
-function move(win, spot) {
+function move(win, spot, animate = false) {
   const bounds = win.getBounds()
   const next = { ...bounds, ...spot }
   for (const k of ['x', 'y', 'width', 'height']) next[k] = Math.round(next[k]) // setBounds wants integers; capture's rects may not be
-  if (next.x !== bounds.x || next.y !== bounds.y || next.width !== bounds.width || next.height !== bounds.height) win.setBounds(next)
+  if (next.x !== bounds.x || next.y !== bounds.y || next.width !== bounds.width || next.height !== bounds.height) win.setBounds(next, animate)
 }
 
-// Puts the strip, the transcript and the Recap in the preset's spots, then Live insights and Ask AI.
+// Puts the island and the transcript strip in the preset's spots.
 function place() {
-  layout = layoutFor(callWindow.app, callWindow.rect, workAreaFor(callWindow.rect), insightsHeight)
-  move(windows.bar, layout.bar)
+  layout = layoutFor(callWindow.app, callWindow.rect, workAreaFor(callWindow.rect))
   move(windows.transcript, layout.transcript)
-  move(windows.recap, { x: layout.recap.x, y: layout.recap.y, width: layout.recap.width })
-  placeInsights()
-  placeAsk()
+  fitIsland()
 }
 
-const faceRects = () => [...faces.values()].map(({ screenBox: [x, y, width, height] }) => ({ x, y, width, height }))
-const cardRects = () => [...faces.values()].map(({ screenBox, person }) => cardRect(screenBox, windows.cards.getBounds(), !!person))
-
-// A window only moves for a real change, not for a face wobbling a few points.
-function nudge(win, spot, force) {
-  const { x, y } = win.getBounds()
-  if (force || !showing(win) || Math.abs(spot.x - x) > 32 || Math.abs(spot.y - y) > 32) move(win, spot)
-}
-
-// Live insights stays in its rail and slides along it when a face is under it.
-function placeInsights() {
+// The island grows and shrinks around its anchor as the pill becomes a notice, a sheet or the Recap.
+function fitIsland(animate = false) {
   if (!layout) return
-  const panel = windows.insights.getBounds()
-  const blocks = [windows.bar.getBounds(), ...layout.bands]
-  const spot = askPlace({ work: workAreaFor(callWindow.rect), spot: layout.insights, faces: faceRects(), blocks, cards: cardRects(), panel, fixedX: true })
-  nudge(windows.insights, spot)
-}
-
-// Ask AI goes to its spot under Live insights unless that covers a face, a card or a control, then to the
-// nearest free area. `opening` forces the move; a focused or filled question field pins it.
-function placeAsk(opening = false) {
-  if (!layout || (askBusy && !opening)) return
-  const panel = windows.response.getBounds()
-  const blocks = [windows.bar.getBounds(), ...layout.bands]
-  for (const win of [windows.insights, windows.transcript]) if (showing(win)) blocks.push(win.getBounds())
-  const insights = windows.insights.getBounds()
-  const spot = { x: insights.x, y: insights.y + insights.height + 12 }
-  nudge(windows.response, askPlace({ work: workAreaFor(callWindow.rect), spot, faces: faceRects(), blocks, cards: cardRects(), panel }), opening)
+  const bounds = islandBounds(layout.bar, islandSize, workAreaFor(callWindow.rect))
+  move(windows.island, bounds, animate && !reducedMotion())
+  windows.cards.webContents.send('island-bounds', bounds) // cards keep clear of it
 }
 
 // ---------- events in ----------
 
 const insightsAll = [] // this call's insights, for a Recap built here
 const peopleSeen = new Map() // person id -> person, for the same
+const faces = new Map() // trackId -> the latest face event (the demo's "Remember them" needs it)
 let recapTimer
 
 function broadcast(event) {
@@ -238,36 +209,24 @@ function broadcast(event) {
   if (event.type === 'insights') {
     lastInsights = event
     insightsAll.push(event)
-    if (!showing(windows.insights)) reveal(windows.insights) // a new call after a Recap
   }
   if (event.type === 'face') {
     faces.set(event.trackId, event)
     if (event.person) peopleSeen.set(event.person.id, event.person)
-    placeInsights()
-    if (showing(windows.response)) placeAsk()
   }
   if (event.type === 'face_gone') faces.delete(event.trackId)
   if (event.type === 'window') {
     callWindow = { app: event.app, rect: Array.isArray(event.rect) && event.rect.length === 4 ? event.rect : null }
     place()
   }
-  if (event.type === 'response' && event.id !== closedResponse) {
-    if (!showing(windows.response)) placeAsk(true)
-    reveal(windows.response)
+  if (event.type === 'recap') {
+    clearTimeout(recapTimer)
+    insightsAll.length = 0
+    peopleSeen.clear()
+    if (allHidden) toggleAll()
+    reveal(windows.island)
   }
-  if (event.type === 'recap') showRecap()
   for (const win of Object.values(windows)) win.webContents.send('event', event)
-}
-
-// The Recap takes over from Live insights and Ask AI; they come back with the next call's events.
-function showRecap() {
-  clearTimeout(recapTimer)
-  insightsAll.length = 0
-  peopleSeen.clear()
-  if (allHidden) toggleAll()
-  conceal(windows.insights)
-  conceal(windows.response)
-  reveal(windows.recap)
 }
 
 // End call: the server's recap should follow; if it doesn't in time, build one from what this call showed.
@@ -348,6 +307,10 @@ function demoApi(route, body, method) {
     broadcast({ type: 'listening', on: body.on, startedAt: demoStart })
     return {}
   }
+  if (route === '/mute') {
+    broadcast({ type: 'mute', on: Boolean(body.on) })
+    return {}
+  }
   const id = `demo${++demoAnswers}`
   const action = lastInsights?.actions.find((a) => route === `/actions/${encodeURIComponent(a.id)}`)
   const query = body?.question || action?.label || 'Sample question'
@@ -387,18 +350,20 @@ async function callMemory(route, body, method) {
 const ours = (e) => e.senderFrame?.url.startsWith('file://')
 const on = (channel, handler) => ipcMain.on(channel, (e, ...args) => ours(e) && handler(e, ...args))
 
-// Panels grow and shrink with their content, so the blur never shows past the glass, and stop at the screen's edge.
-on('fit', (e, height) => {
+// The island sends its content size as it changes stage; other panels grow downwards from their spot.
+on('fit', (e, size) => {
   const win = BrowserWindow.fromWebContents(e.sender)
-  const bounds = win?.getBounds()
-  if (!bounds || !(height > 0)) return
-  const { workArea } = screen.getDisplayMatching(bounds)
-  const fitted = Math.min(Math.ceil(height), workArea.y + workArea.height - bounds.y)
-  if (bounds.height !== fitted) win.setBounds({ ...bounds, height: fitted })
-  if (win === windows.insights && insightsHeight !== fitted) {
-    insightsHeight = fitted
-    placeAsk() // Ask AI sits under Live insights
+  const width = Number(size?.width)
+  const height = Number(typeof size === 'number' ? size : size?.height)
+  if (!win || !(height > 0)) return
+  if (win === windows.island) {
+    if (!(width > 0)) return
+    islandSize = { width, height }
+    return fitIsland(true)
   }
+  const bounds = win.getBounds()
+  const { workArea } = screen.getDisplayMatching(bounds)
+  move(win, { height: Math.min(Math.ceil(height), workArea.y + workArea.height - bounds.y) })
 })
 
 on('panel-idle', (e, idle) => {
@@ -421,28 +386,54 @@ on('cards-focus', (_e, on) => {
 })
 on('copy-invite', () => clipboard.writeText(inviteLink(ENROLL_URL, process.env.ENROLL_CODE)))
 on('ask', openAsk)
-on('ask-busy', (_e, busy) => (askBusy = Boolean(busy)))
 on('people-toggle', togglePeople)
 on('transcript-toggle', toggleTranscript)
 on('toggle-all', toggleAll)
-on('close-response', (_e, id) => {
-  if (typeof id !== 'string') return
-  closedResponse = id
-  conceal(windows.response)
+on('quit', () => app.quit()) // will-quit stops what the launcher started
+
+// The island's hover is decided here from where the pointer is, not from the page's mouseleave: that fired at
+// the old pill's edges while the window grew and over its transparent corners, collapsing the island under a
+// pointer that never left. While hovered, poll every 100 ms; back off once the pointer has been outside the
+// island (plus a margin) for HOVER_GRACE.island ms.
+let hoverPoll = null
+function islandHover(hovered) {
+  clearInterval(hoverPoll)
+  hoverPoll = null
+  if (!hovered) return
+  let state = { outsideSince: null }
+  hoverPoll = setInterval(() => {
+    const inside = insideBounds(screen.getCursorScreenPoint(), windows.island.getBounds(), HOVER_MARGIN)
+    state = hoverStep(state, { inside, now: Date.now(), grace: HOVER_GRACE.island })
+    if (!state.collapse) return
+    clearInterval(hoverPoll)
+    hoverPoll = null
+    windows.island.webContents.send('island-hover', false)
+  }, 100)
+}
+on('island-hover', (_e, hovered) => islandHover(hovered === true))
+
+// The ⋯ menu and the pill's right-click: a native menu built from logic.js's model.
+const menuActions = { people: togglePeople, transcript: toggleTranscript, debug: () => toggleDebug(), quit: () => app.quit() }
+on('menu', (e) => {
+  const items = menuModel({ dev: DEV, transcriptShown: showing(windows.transcript), debugOn }).map((item) => (item.id ? { ...item, click: menuActions[item.id] } : item))
+  Menu.buildFromTemplate(items).popup({ window: BrowserWindow.fromWebContents(e.sender) })
 })
-on('close-recap', () => conceal(windows.recap))
 
 // Developer mode only: the toggle, the shortcut and the handler don't exist in the normal app.
 let debugOn = false
 function toggleDebug() {
   debugOn = !debugOn
-  for (const win of [windows.cards, windows.bar]) win.webContents.send('debug-show', debugOn)
+  for (const win of [windows.cards, windows.island]) win.webContents.send('debug-show', debugOn)
 }
 if (DEV) on('debug-toggle', toggleDebug)
 
 // ---------- start ----------
 
 app.whenReady().then(async () => {
+  // The standard app menu, so ⌘Q and the Dock's Quit work whichever window has focus (Hide ⌘\ stays ours).
+  app.name = 'Hello Again'
+  Menu.setApplicationMenu(Menu.buildFromTemplate(process.platform === 'darwin' ? [{ role: 'appMenu' }, { role: 'editMenu' }] : [{ label: 'File', submenu: [{ role: 'quit' }] }, { role: 'editMenu' }]))
+
   const { bounds, workArea } = screen.getPrimaryDisplay()
   const first = layoutFor(null, null, workArea)
 
@@ -451,11 +442,8 @@ app.whenReady().then(async () => {
   const panel = process.platform === 'darwin' ? { type: 'panel' } : {}
   windows.cards = overlayWindow({ view: 'cards', ox: bounds.x, oy: bounds.y }, { ...bounds, ...panel, focusable: false, acceptFirstMouse: true })
   windows.cards.setIgnoreMouseEvents(true, { forward: true }) // click-through, but hover still reaches thinking pills
-  windows.bar = panelWindow('bar', first.bar)
-  windows.insights = panelWindow('insights', { ...first.insights, height: 200 })
-  windows.response = panelWindow('response', { ...first.ask, height: 160 })
+  windows.island = panelWindow('island', islandBounds(first.bar, islandSize, workArea))
   windows.transcript = panelWindow('transcript', first.transcript)
-  windows.recap = panelWindow('recap', { ...first.recap, height: 300 })
   windows.people = panelWindow('people', {
     ...PEOPLE_SIZE,
     x: Math.round(workArea.x + (workArea.width - PEOPLE_SIZE.width) / 2),
@@ -465,13 +453,17 @@ app.whenReady().then(async () => {
   await Promise.all(Object.values(windows).map((win) => new Promise((r) => win.webContents.once('did-finish-load', r))))
   place()
   windows.cards.showInactive()
-  reveal(windows.bar)
-  reveal(windows.insights)
+  reveal(windows.island)
 
-  const shortcuts = { 'CommandOrControl+Return': openAsk, 'CommandOrControl+Shift+P': togglePeople, 'CommandOrControl+\\': toggleAll }
+  const shortcuts = {
+    'CommandOrControl+Return': openAsk,
+    'CommandOrControl+Shift+P': togglePeople,
+    'CommandOrControl+\\': toggleAll,
+    'CommandOrControl+M': () => windows.island.webContents.send('mute'), // the island posts /mute and the event answers
+  }
   if (DEV) shortcuts['CommandOrControl+Alt+D'] = toggleDebug
   for (const [keys, run] of Object.entries(shortcuts)) {
-    if (!globalShortcut.register(keys, run)) console.warn(`${keys} is taken by another app; use the control bar instead`)
+    if (!globalShortcut.register(keys, run)) console.warn(`${keys} is taken by another app; use the island instead`)
   }
   screen.on('display-metrics-changed', place)
 
@@ -481,6 +473,13 @@ app.whenReady().then(async () => {
   } else {
     connect()
     startEverything()
+  }
+
+  // Developer mode only: HELLO_SHOT=<png> opens the sheet at 8 s and saves the island window as it really is
+  // at 10 s (screen capture can't see it: content protection). For design checks on the real window.
+  if (DEV && process.env.HELLO_SHOT) {
+    setTimeout(openAsk, 8000)
+    setTimeout(async () => fs.writeFileSync(process.env.HELLO_SHOT, (await windows.island.capturePage()).toPNG()), 10_000)
   }
 })
 

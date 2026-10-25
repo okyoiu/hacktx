@@ -232,16 +232,55 @@ def test_debug_face_box_is_dropped_once_the_person_has_moved_off_it():
 
 
 @pytest.mark.models
-def test_a_box_that_never_changes_is_a_picture_until_it_starts_moving():
+def test_a_box_is_a_person_only_while_its_pixels_keep_changing():
     t1, box = get_image("t1"), {1: [337, 219, 735, 648]}  # one person on the sample photo
     rng = np.random.default_rng(0)
     camera = lambda: np.clip(t1 + rng.normal(0, 1, t1.shape), 0, 255).astype(np.uint8)  # live video: a little sensor noise
     pictures = faces.Pictures()
-    assert pictures.update(t1, box, 0.0) == set()  # first look: nothing to compare with yet
-    assert pictures.update(t1, box, 1.0) == set()  # too soon to tell
-    assert pictures.update(t1, box, 3.0) == {1}  # the same picture 3 s later
-    assert pictures.update(t1, {1: [340, 222, 738, 651]}, 6.0) == {1}  # YOLO's box jitters a little: still the same patch
-    assert pictures.update(camera(), box, 9.0) == set()  # the camera came on
-    assert pictures.update(camera(), {}, 12.0) == set() and not pictures.last  # the track ended: forgotten
+    assert pictures.update(t1, box, 0.0) == {1}  # new: not proven live yet, so no print
+    assert pictures.update(camera(), box, 0.2) == set()  # changed: a person
+    assert pictures.update(t1, box, 1.0) == set()  # changed again (noise gone), still a person...
+    assert pictures.update(t1, box, 3.0) == set()  # ...identical now, but only for 2 s
+    assert pictures.update(t1, {1: [340, 222, 738, 651]}, 4.5) == {1}  # frozen 3.5 s: a picture (box jitter doesn't count)
+    assert pictures.update(camera(), box, 5.0) == set()  # the camera came on: a person at once
+    assert pictures.update(camera(), {}, 6.0) == set() and not pictures.last and not pictures.moved  # track ended: forgotten
     live = faces.Pictures()
-    assert all(live.update(camera(), box, t) == set() for t in (0.0, 3.0, 6.0, 9.0))
+    assert [live.update(camera(), box, t) for t in (0.0, 0.2, 3.0, 6.0, 9.0)] == [{1}, set(), set(), set(), set()]
+
+
+def test_windows_windows_take_the_shape_the_mac_list_has_so_picking_works_unchanged():
+    zoom = win.win32_window("Zoom Meeting", r"C:\Users\me\AppData\Roaming\Zoom\bin\Zoom.exe", (10, 20, 1110, 720))
+    meet = win.win32_window("Meet - abc-defg-hij - Google Chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe", (0, 0, 1400, 900))
+    github = win.win32_window("GitHub - Google Chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe", (0, 0, 1400, 900))
+    notepad = win.win32_window("Untitled - Notepad", r"C:\Windows\notepad.exe", (0, 0, 800, 600))
+    # a call app wins over the window in front; no window id, so faces.py grabs it by rect with mss
+    assert pick([notepad, zoom], CALL_APPS) == Window("Zoom", (10, 20, 1100, 700), None, "notepad", True)
+    assert pick([meet], CALL_APPS).calls and not pick([github], CALL_APPS).calls
+    assert pick([notepad], CALL_APPS) == Window("notepad", (0, 0, 800, 600), None, None, False)  # follow any app, no faces
+    assert can_record([notepad])  # titles are always there on Windows: no permission check to trip
+
+
+def test_a_window_without_an_id_is_grabbed_from_the_screen_by_its_rect(monkeypatch):
+    monkeypatch.setattr(faces.mss, "MSS", FakeScreen)
+    monkeypatch.setattr(faces, "FOLLOW_EVERY", -1)
+    monkeypatch.setattr(faces, "call_window", lambda apps: Window("Zoom", (10, 20, 30, 20), None, None, True))
+    monkeypatch.setattr(faces, "grab", lambda window_id: pytest.fail("screencapture is macOS only"))
+    frame, origin = next(faces.screen_frames(None, follow=["Zoom"]))
+    assert frame.shape == (20, 30, 3) and origin == (10, 20, 30, "Zoom", True)
+
+
+def test_is_me_reads_the_roles_people_give_their_own_face():
+    assert all(faces.is_me({"role": r}) for r in ("Me", "me!", " MYSELF ", "myself"))
+    assert faces.is_me({"role": "", "self": True}) and not faces.is_me({"role": None}) and not faces.is_me({})
+    assert not faces.is_me({"role": "Your team lead"}) and not faces.is_me({"role": "Met me at HackTX"})
+
+
+def test_a_dark_frame_is_lifted_so_the_same_people_are_found_with_nearly_the_same_prints():
+    t1 = get_image("t1")
+    bright = sorted(faces_in(t1), key=lambda f: f.bbox[0])
+    dark = (t1 * 0.25).astype(np.uint8)  # a dark room
+    assert not faces.is_dark(t1) and faces.is_dark(dark) and faces.is_dark(dark[219:648, 337:735])
+    lifted = sorted(faces_in(faces.brighten(dark)), key=lambda f: f.bbox[0])
+    assert len(lifted) == 6
+    distances = [1 - float(a.normed_embedding @ b.normed_embedding) for a, b in zip(bright, lifted)]
+    assert max(distances) < 0.1, distances  # the task's bar at 25 % brightness (measured 0.017-0.054)

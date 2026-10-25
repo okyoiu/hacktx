@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hello Again · Direction B · Island</title>
+<meta name="description" content="Static mockup, sample people drawn in CSS and SVG. Four states at 1440×900: idle, card open, Ask AI, Recap.">
+<style>
+/* ---------- mockup chrome ---------- */
+:root { color-scheme: dark; font: 14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+body { margin: 0; background: #0b0c10; color: #fff; }
+.frame { width: 1440px; margin: 0 auto; }
+.frame h2 { margin: 0; padding: 28px 0 10px; font-size: 13px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: rgba(255,255,255,.55); }
+.screen { position: relative; width: 1440px; height: 900px; overflow: hidden; background: linear-gradient(160deg, #5b6b8a, #2b3140 60%, #1a1d24); }
+
+/* ---------- the stand-in call (Zoom-like, 4 sample tiles, drawn people) ---------- */
+.call { position: absolute; left: 40px; top: 40px; width: 1240px; height: 780px; background: #1b1d22; border-radius: 10px; overflow: hidden; }
+.tile { position: absolute; width: 604px; height: 336px; border-radius: 6px; background: radial-gradient(120% 90% at 50% 20%, var(--room, #30343c), #1f2228 70%); overflow: hidden; }
+.t1 { left: 12px; top: 20px; --room: #3a3f49; } .t2 { left: 624px; top: 20px; --room: #39343a; } .t3 { left: 12px; top: 364px; --room: #2f3a3c; } .t4 { left: 624px; top: 364px; --room: #3b3a33; }
+.person { position: absolute; width: 180px; height: 180px; }
+.person circle { fill: var(--skin); } .person path { fill: var(--shirt); }
+.tile .who { position: absolute; left: 10px; bottom: 10px; padding: 3px 8px; border-radius: 5px; background: rgba(0,0,0,.55); font-size: 12px; color: #e8e8ea; }
+.tile .mic { position: absolute; right: 10px; top: 10px; width: 18px; height: 18px; border-radius: 50%; background: rgba(0,0,0,.5); }
+.zoombar { position: absolute; left: 0; right: 0; bottom: 0; height: 64px; background: #111216; display: flex; align-items: center; justify-content: center; gap: 26px; }
+.zoombar i { display: block; width: 26px; height: 20px; border-radius: 5px; background: rgba(255,255,255,.18); }
+.zoombar b { position: absolute; right: 18px; top: 17px; width: 70px; height: 30px; border-radius: 6px; background: #d9342b; }
+
+/* ---------- Hello Again · Island: one black glass pill at the top that grows in steps ---------- */
+:root { --black: rgba(12, 12, 14, .84); --rim: rgba(255, 255, 255, .14); --ink: #FFFFFF; --ink-2: rgba(255, 255, 255, .72); --ink-3: rgba(255, 255, 255, .45); --mint: #7EE2B0; --fill: rgba(255, 255, 255, .09); }
+.glass { background: var(--black); border: 1px solid var(--rim); box-shadow: inset 0 1px 0 rgba(255,255,255,.14), 0 20px 50px -24px rgba(0,0,0,.8); -webkit-backdrop-filter: blur(30px) saturate(140%); backdrop-filter: blur(30px) saturate(140%); color: var(--ink); }
+
+.tag { position: absolute; display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 11px 0 9px; border-radius: 999px; font-size: 13px; font-weight: 600; letter-spacing: -.005em; }
+.tag .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--mint); }
+.tag.think { font-weight: 500; color: var(--ink-2); } .tag.think .spark { width: 13px; height: 13px; fill: var(--ink); }
+
+/* the island, three sizes: pill, notice, sheet; all centred over the call window (x = 660) */
+.island { position: absolute; left: 50%; translate: -50% 0; top: 46px; border-radius: 999px; }
+.pill { display: flex; align-items: center; gap: 12px; height: 44px; padding: 0 18px 0 16px; width: 236px; box-sizing: border-box; }
+.wave { display: inline-flex; align-items: center; gap: 2px; height: 14px; }
+.wave i { width: 2px; border-radius: 1px; background: var(--mint); }
+.wave i:nth-child(1) { height: 5px; } .wave i:nth-child(2) { height: 10px; } .wave i:nth-child(3) { height: 14px; } .wave i:nth-child(4) { height: 8px; } .wave i:nth-child(5) { height: 12px; } .wave i:nth-child(6) { height: 6px; }
+.time { font-variant-numeric: tabular-nums; font-size: 14px; font-weight: 600; letter-spacing: .01em; }
+.pill .spark { margin-left: auto; width: 16px; height: 16px; fill: var(--ink); }
+.pill .n { display: grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--ink); color: #111; font-size: 11px; font-weight: 700; }
+
+.notice { width: 560px; border-radius: 22px; padding: 11px 14px 11px 18px; display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; }
+.notice .wave { align-self: center; }
+.notice .t { font-size: 14px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.notice .t b { font-weight: 650; margin-right: 8px; }
+.notice .t small { display: block; font-size: 12.5px; color: var(--ink-2); margin-top: 1px; }
+.notice .chip { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: 999px; background: var(--fill); font-size: 13px; white-space: nowrap; }
+
+.sheet { width: 560px; border-radius: 26px; padding: 12px 18px 16px; }
+.sheet .head { display: flex; align-items: center; gap: 12px; height: 32px; }
+.tools { margin-left: auto; display: flex; gap: 2px; }
+.tools span { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; color: var(--ink-2); }
+.tools span.end { color: #FFB1A8; }
+.tools svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.sheet h3 { margin: 14px 0 6px; font-size: 17px; font-weight: 650; letter-spacing: -.012em; }
+.sheet ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; color: var(--ink-2); font-size: 14px; }
+.sheet .acts { margin-top: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.sheet .act { display: flex; align-items: center; gap: 9px; height: 38px; padding: 0 12px; border-radius: 12px; background: var(--fill); font-size: 13.5px; white-space: nowrap; overflow: hidden; }
+.sheet .act .e { flex: none; } .sheet .act span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.sheet .act.hover { background: rgba(255,255,255,.16); }
+.sheet .q { margin-top: 14px; display: inline-flex; height: 28px; align-items: center; padding: 0 12px; border-radius: 999px; background: var(--fill); font-size: 13.5px; color: var(--ink-2); }
+.sheet .a { margin-top: 8px; font-size: 14px; color: var(--ink); }
+.sheet .src { display: inline-flex; margin-top: 8px; height: 24px; padding: 0 8px; align-items: center; border-radius: 7px; background: var(--fill); font-size: 12px; color: var(--ink-2); }
+.sheet .ask { margin-top: 14px; display: flex; align-items: center; gap: 8px; height: 42px; padding: 0 8px 0 14px; border-radius: 14px; border: 1px solid rgba(255,255,255,.4); background: var(--fill); color: var(--ink); }
+.sheet .ask .ph { color: var(--ink-3); }
+kbd { display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 5px; border: 1px solid rgba(255,255,255,.28); border-radius: 6px; font: 500 11.5px/1 inherit; color: var(--ink-2); }
+.sheet .people { margin-top: 4px; display: grid; gap: 10px; }
+.sheet .people b { font-weight: 650; } .sheet .people small { color: var(--ink-3); font-size: 12px; margin-left: 6px; }
+.sheet .people p { margin: 1px 0 0; color: var(--ink-2); font-size: 13.5px; }
+.sheet .close { margin-left: auto; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 8px; color: var(--ink-2); }
+.sheet .close svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+
+/* the memory-jogger card */
+.card { position: absolute; width: 300px; padding: 12px 14px 13px; border-radius: 18px; }
+.card .name { display: flex; align-items: baseline; gap: 8px; }
+.card .name b { font-size: 15px; font-weight: 650; letter-spacing: -.01em; }
+.card .name span { font-size: 12.5px; color: var(--ink-3); }
+.card .facts { display: grid; grid-template-columns: repeat(4, auto); gap: 0 14px; margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,.12); }
+.card .facts dt { font-size: 11px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase; color: var(--ink-3); white-space: nowrap; }
+.card .facts dd { margin: 2px 0 0; font-size: 13px; color: var(--ink); white-space: nowrap; }
+.card .facts dd.ctx { display: inline-block; padding: 0 6px; border-radius: 5px; background: var(--fill); font-size: 11.5px; font-weight: 600; letter-spacing: .04em; }
+.card ul { margin: 10px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; font-size: 13.5px; color: var(--ink-2); }
+.card ul li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card ul li::before { content: "·"; margin-right: 7px; color: var(--ink-3); }
+.card .x { position: absolute; right: 8px; top: 8px; width: 22px; height: 22px; display: grid; place-items: center; border-radius: 6px; color: var(--ink-3); }
+.card .x svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+</style>
+</head>
+<body>
+
+<template id="call">
+  <div class="call">
+    <div class="tile t1"><svg class="person" style="left:212px;top:50px;--skin:#8d7566;--shirt:#4b5a73" viewBox="0 0 200 200"><circle cx="100" cy="78" r="44"/><path d="M26 200c6-52 38-78 74-78s68 26 74 78z"/></svg><span class="who">Jordan Lee</span><span class="mic"></span></div>
+    <div class="tile t2"><svg class="person" style="left:92px;top:58px;--skin:#a78672;--shirt:#6b4f5c" viewBox="0 0 200 200"><circle cx="100" cy="78" r="44"/><path d="M26 200c6-52 38-78 74-78s68 26 74 78z"/></svg><span class="who">Maya Chen</span><span class="mic"></span></div>
+    <div class="tile t3"><svg class="person" style="left:212px;top:60px;--skin:#7a6a60;--shirt:#3f5b55" viewBox="0 0 200 200"><circle cx="100" cy="78" r="44"/><path d="M26 200c6-52 38-78 74-78s68 26 74 78z"/></svg><span class="who">You</span><span class="mic"></span></div>
+    <div class="tile t4"><svg class="person" style="left:72px;top:54px;--skin:#5d4a40;--shirt:#6a6042" viewBox="0 0 200 200"><circle cx="100" cy="78" r="44"/><path d="M26 200c6-52 38-78 74-78s68 26 74 78z"/></svg><span class="who">Sam Okafor</span><span class="mic"></span></div>
+    <div class="zoombar"><i></i><i></i><i></i><i></i><i></i><i></i><b></b></div>
+  </div>
+</template>
+<svg hidden><symbol id="spark" viewBox="0 0 24 24"><path d="M13.5 4.5C14 9.5 17.5 13 22.5 13.5 17.5 14 14 17.5 13.5 22.5 13 17.5 9.5 14 4.5 13.5 9.5 13 13 9.5 13.5 4.5Z"/><path d="M5 1.5C5.2 3.6 6.4 4.8 8.5 5 6.4 5.2 5.2 6.4 5 8.5 4.8 6.4 3.6 5.2 1.5 5 3.6 4.8 4.8 3.6 5 1.5Z"/></symbol></svg>
+
+<section class="frame">
+  <h2>B · Island — 1 · Idle during the call: a pill and the name tags, nothing else</h2>
+  <div class="screen">
+    <span class="tag glass" style="left:424px;top:184px"><i class="dot"></i>Jordan Lee</span>
+    <span class="tag glass" style="left:846px;top:192px"><i class="dot"></i>Maya Chen</span>
+    <span class="tag glass think" style="left:826px;top:526px"><svg class="spark"><use href="#spark"/></svg>Recalling…</span>
+    <div class="island glass pill"><span class="wave"><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="time">00:21</span><svg class="spark"><use href="#spark"/></svg><span class="n">3</span></div>
+  </div>
+</section>
+
+<section class="frame">
+  <h2>B · Island — 2 · A new insight widens the pill for a moment; a card open beside a face</h2>
+  <div class="screen">
+    <div class="card glass" style="left:424px;top:174px">
+      <div class="name"><b>Jordan Lee</b><span>Friend from climbing</span></div>
+      <span class="x"><svg viewBox="0 0 12 12"><path d="m2.5 2.5 7 7m0-7-7 7"/></svg></span>
+      <dl class="facts"><div><dt>Last seen</dt><dd>Oct 18</dd></div><div><dt>Last spoke</dt><dd>Oct 18</dd></div><div><dt>About</dt><dd>his move to Austin</dd></div><div><dt>Context</dt><dd class="ctx">Personal</dd></div></dl>
+      <ul><li>Starts a new fintech job Monday</li><li>Last time: was planning the move</li><li>This call: wants a gym near South Congress</li></ul>
+    </div>
+    <span class="tag glass" style="left:846px;top:192px"><i class="dot"></i>Maya Chen</span>
+    <span class="tag glass think" style="left:826px;top:526px"><svg class="spark"><use href="#spark"/></svg>Recalling…</span>
+    <div class="island glass notice"><span class="wave"><i></i><i></i><i></i><i></i><i></i><i></i></span><div class="t"><b>Jordan's move to Austin</b>Maya asked whether Jordan found a climbing gym<small>3 notes · 4 actions · press ⌘↵ to open</small></div><span class="chip">📍 Gyms near South Congress</span></div>
+  </div>
+</section>
+
+<section class="frame">
+  <h2>B · Island — 3 · Ask AI: the pill grows into the sheet; controls live in its header</h2>
+  <div class="screen">
+    <span class="tag glass" style="left:424px;top:184px"><i class="dot"></i>Jordan Lee</span>
+    <span class="tag glass" style="left:846px;top:192px"><i class="dot"></i>Maya Chen</span>
+    <span class="tag glass think" style="left:826px;top:526px"><svg class="spark"><use href="#spark"/></svg>Recalling…</span>
+    <div class="island glass sheet">
+      <div class="head"><span class="wave"><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="time">01:02</span>
+        <div class="tools"><span><svg viewBox="0 0 16 16"><path d="M5.5 3v10M10.5 3v10"/></svg></span><span><svg viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.5"/><path d="M1.5 13.5c.5-2.6 2.2-4 4.5-4s4 1.4 4.5 4M11 6.5a2 2 0 1 0 0-4M12 9.6c1.6.4 2.4 1.6 2.6 3.4"/></svg></span><span class="end"><svg viewBox="0 0 16 16"><path d="M2 9.5c3.3-3.3 8.7-3.3 12 0l-1.6 1.8-2.6-1.2V8.5c-1.1-.4-2.5-.4-3.6 0v1.6l-2.6 1.2z"/></svg></span><span><svg viewBox="0 0 16 16"><path d="M2 8s2.2-4 6-4 6 4 6 4-2.2 4-6 4-6-4-6-4z"/><circle cx="8" cy="8" r="1.8"/></svg></span></div>
+      </div>
+      <h3>Jordan's move to Austin</h3>
+      <ul><li>Jordan moved to Austin last week</li><li>Maya asked whether Jordan found a climbing gym</li><li>You all climb: a chance to plan something together</li></ul>
+      <div class="acts">
+        <div class="act hover"><span class="e">📍</span><span>Find climbing gyms near South Congress</span></div>
+        <div class="act"><span class="e">👋</span><span>Remind me who Maya is</span></div>
+        <div class="act"><span class="e">💬</span><span>Suggest follow-up questions</span></div>
+        <div class="act"><span class="e">📅</span><span>Find a climbing meetup this weekend</span></div>
+      </div>
+      <div class="q">Which of those gyms has a beginner wall?</div>
+      <div class="a">Ledge Climbing Co. (sample) has a dedicated beginner wall and intro sessions on Saturdays. Riverside Boulders (sample) lists top-rope lanes graded 5.6 and up.</div>
+      <span class="src">Google Maps (sample) ↗</span>
+      <div class="ask"><span class="ph">Ask a follow-up…</span><span style="margin-left:auto;display:flex;gap:4px"><kbd>↵</kbd></span></div>
+    </div>
+  </div>
+</section>
+
+<section class="frame">
+  <h2>B · Island — 4 · Recap: the sheet, one last time, then it shrinks back to nothing</h2>
+  <div class="screen">
+    <div class="island glass sheet">
+      <div class="head"><span class="time" style="color:var(--ink-3)">Call ended · 24 min</span><span class="close"><svg viewBox="0 0 14 14"><path d="m3 3 8 8m0-8-8 8"/></svg></span></div>
+      <h3>Jordan's move to Austin</h3>
+      <ul><li>Jordan moved to Austin last week and starts a fintech job Monday</li><li>Jordan wants a climbing gym near South Congress</li><li>You all agreed to go bouldering this weekend</li></ul>
+      <div class="acts">
+        <div class="act"><span class="e">📍</span><span>Find climbing gyms near South Congress</span></div>
+        <div class="act"><span class="e">📅</span><span>Find a climbing meetup this weekend</span></div>
+      </div>
+      <h3 style="font-size:14px;color:var(--ink-2);margin-top:18px">Who was there</h3>
+      <div class="people">
+        <div><b>Jordan Lee</b><small>Friend from climbing</small><p>Finished the move to Austin; looking for a gym near South Congress</p></div>
+        <div><b>Maya Chen</b><small>Recruiter at Meta</small><p>Asked about Jordan's gym; up for bouldering this weekend</p></div>
+        <div><b>Sam Okafor</b><small>Not remembered yet</small><p>Joined late; ask them next time if they'd like to be remembered</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+  for (const screen of document.querySelectorAll('.screen')) screen.prepend(document.getElementById('call').content.cloneNode(true))
+</script>
+</body>
+</html>

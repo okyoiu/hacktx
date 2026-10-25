@@ -1,23 +1,33 @@
 // Small rules shared by main.js and the renderer (loaded as a plain script), tested in logic.test.js.
 
 // The only memory API calls the overlay makes; main refuses anything else. Action ids are short words.
-const ROUTES = /^\/(listening|ask|actions\/[\w-]+|faces\/\d+\/remember|calls\/end)$/
+const ROUTES = /^\/(listening|mute|ask|actions\/[\w-]+|faces\/\d+\/remember|calls\/end)$/
 
 // What each method may call. The People dashboard reads, renames and deletes people; ids are short words.
 const PERSON = /^\/people\/[\w-]+$/
-const CALLS = { POST: ROUTES, GET: /^\/(people(\/[\w-]+)?|health)$/, PATCH: PERSON, DELETE: PERSON }
+const CALLS = { POST: ROUTES, GET: /^\/(people(\/[\w-]+)?|people\/stale\?days=\d{1,4}|health)$/, PATCH: PERSON, DELETE: PERSON }
 
 // A name typed into "Remember them": trimmed, single-spaced, at most 80 characters like the enroll page.
 function cleanName(raw) {
   return String(raw).trim().replace(/\s+/g, ' ').slice(0, 80)
 }
 
-// The "Remember them" body: `role` ("Your team lead", at most 60 characters) is sent only when typed.
+// The "Remember them" body: `role` ("Your team lead", at most 60 characters) is sent only when typed, and
+// `connector: true` only when they also agreed to the host's Muse app reading their notes.
 const cleanRole = (raw) => String(raw).trim().replace(/\s+/g, ' ').slice(0, 60)
-function rememberBody(name, role) {
+function rememberBody(name, role, connector = false) {
   const label = cleanRole(role)
-  return { name: cleanName(name), consent: true, ...(label && { role: label }) }
+  return { name: cleanName(name), consent: true, ...(label && { role: label }), ...(connector && { connector: true }) }
 }
+
+// What the host reads aloud before "They said yes": the enroll page's points, one line each.
+const REMEMBER_POINTS = [
+  'Face: numbers made from your face, never your photo',
+  'Name, and who you are to me',
+  'Voice: call audio goes to Meta’s Muse to become text',
+  'What you say: Muse writes notes, facts, how we met, a topic',
+  'Delete it all any time with your link',
+]
 
 // Call time since startedAt: "mm:ss", or "h:mm:ss" past an hour; "00:00" while unknown.
 function elapsed(startedAt, now) {
@@ -67,6 +77,21 @@ function timerText({ connected, flash, startedAt, now }) {
   return flash || (connected ? elapsed(startedAt, now) : 'Offline')
 }
 
+// The mic toggle: muted flattens and dims the waveform (no audio goes to Muse); paused or offline is flat but
+// not dimmed, because that's the pause button's state, not the mic's.
+function micState({ connected, on, muted }) {
+  const live = connected && on && !muted
+  return { wave: live ? 'live' : 'flat', label: muted ? 'Unmute' : 'Mute', dim: Boolean(muted) }
+}
+
+// Places, events and search results as rows: the first three, then "+N more" until expanded.
+const ROWS_SHOWN = 3
+function itemRows(items, expanded) {
+  const rows = (Array.isArray(items) ? items : []).filter((i) => i && typeof i === 'object' && typeof i.title === 'string')
+  const shown = expanded ? rows : rows.slice(0, ROWS_SHOWN)
+  return { shown, more: rows.length - shown.length }
+}
+
 // Live insights: at most 3 points and 4 actions, whatever the service sends.
 const shownPoints = (points) => points.slice(0, 3)
 const shownActions = (actions) => actions.slice(0, 4)
@@ -109,6 +134,49 @@ const isOpen = (popUntil, hovering, now) => hovering || now < popUntil
 function bulletsOf(person) {
   const list = person.bullets?.length ? person.bullets : [person.role, person.line]
   return list.filter((b) => typeof b === 'string' && b.trim()).slice(0, 5)
+}
+
+// ---------- the memory-jogger card ----------
+
+// "3 weeks ago", from an ISO date; "" when there is none.
+function relativeDate(iso, now) {
+  const t = iso ? Date.parse(iso) : NaN
+  if (!Number.isFinite(t)) return ''
+  const days = Math.floor((now - t) / 86_400_000)
+  const ago = (n, unit) => (n === 1 ? `a ${unit} ago` : `${n} ${unit}s ago`)
+  if (days < 1) return 'today'
+  if (days === 1) return 'yesterday'
+  if (days < 7) return `${days} days ago`
+  if (days < 30) return ago(Math.floor(days / 7), 'week')
+  if (days < 365) return ago(Math.floor(days / 30), 'month')
+  return ago(Math.floor(days / 365), 'year')
+}
+
+// One line of text: single-spaced and cut at a word with an ellipsis past `max` characters.
+function oneLine(text, max = 60) {
+  const clean = String(text ?? '').trim().replace(/\s+/g, ' ')
+  if (clean.length <= max) return clean
+  const cut = clean.slice(0, max - 1)
+  const word = cut.lastIndexOf(' ')
+  return (word > max / 2 ? cut.slice(0, word) : cut) + '…'
+}
+
+// The small-label row: when you last saw and spoke to them, the topic and whether it was work or personal.
+// Before a first call together only the first two show, saying so.
+function cardFacts({ lastSeen, lastSpoke, topic, context }, now) {
+  const date = (iso, empty) => (iso && shortDate(iso) ? { value: shortDate(iso), title: relativeDate(iso, now) } : { value: empty, title: '' })
+  const facts = [{ label: 'Last seen', ...date(lastSeen, 'First call') }, { label: 'Last spoke', ...date(lastSpoke, '—') }]
+  if (topic) facts.push({ label: 'About', value: oneLine(topic, 40), title: String(topic) })
+  if (context === 'work' || context === 'personal') facts.push({ label: 'Context', value: context === 'work' ? 'Work' : 'Personal', title: '' })
+  return facts
+}
+
+// At most three bullets under the facts: the role is already the card's header, so it goes; when more than
+// three remain, keep the first (Muse's fact) and the two newest ("This call: …").
+function cardBullets(person) {
+  const list = person.bullets?.length ? person.bullets : [person.line]
+  const rest = list.filter((b) => typeof b === 'string' && b.trim() && b !== person.role)
+  return rest.length > 3 ? [rest[0], ...rest.slice(-2)] : rest
 }
 
 // ---------- People dashboard ----------
@@ -181,17 +249,39 @@ function healthProblems(health, launchWarningText = '') {
 const insightsEmptyText = (listeningOn) => (listeningOn === false ? 'Paused. Resume to keep listening.' : 'Listening…')
 
 // Where a card goes, in window coordinates: beside the face (right, else left), else below it, else above,
-// so it never covers the face. A side card slides up or down to stay on screen. With no room anywhere it
-// goes beside the face anyway, clamped (shortcut: one card can't avoid a face that fills the screen).
-function cardPlace({ face: [x, y, w, h], card, screen, gap = 12, margin = 8 }) {
+// the first spot on screen that covers none of `avoid` (the other faces, the island); with none free, the
+// spot that covers the least of them. A side card slides up or down to stay on screen.
+function cardPlace({ face: [x, y, w, h], card, screen, avoid = [], gap = 12, margin = 8 }) {
   const clamp = (v, size, max) => Math.max(margin, Math.min(v, max - size - margin))
   const side = (left) => ({ left, top: clamp(y, card.height, screen.height) })
-  if (x + w + gap + card.width <= screen.width - margin) return side(x + w + gap)
-  if (x - gap - card.width >= margin) return side(x - gap - card.width)
   const across = clamp(x, card.width, screen.width)
-  if (y + h + gap + card.height <= screen.height - margin) return { left: across, top: y + h + gap }
-  if (y - gap - card.height >= margin) return { left: across, top: y - gap - card.height }
-  return side(clamp(x + w + gap, card.width, screen.width))
+  const right = x + w + gap + card.width <= screen.width - margin && x + w + gap
+  const leftOf = x - gap - card.width >= margin && x - gap - card.width
+  const below = y + h + gap + card.height <= screen.height - margin && y + h + gap
+  const above = y - gap - card.height >= margin && y - gap - card.height
+  const base = [right && side(right), leftOf && side(leftOf), below && { left: across, top: below }, above && { left: across, top: above }].filter(Boolean)
+  const spots = [...base]
+  // the same spots slid along the face to the far side of each thing in the way
+  for (const [ax, ay, aw, ah] of avoid) {
+    const tops = [ay + ah + gap, ay - gap - card.height].map((t) => clamp(t, card.height, screen.height))
+    const lefts = [ax + aw + gap, ax - gap - card.width].map((l) => clamp(l, card.width, screen.width))
+    for (const top of tops) {
+      if (right) spots.push({ left: right, top })
+      if (leftOf) spots.push({ left: leftOf, top })
+    }
+    for (const left of lefts) {
+      if (below) spots.push({ left, top: below })
+      if (above) spots.push({ left, top: above })
+    }
+  }
+  spots.push(side(clamp(x + w + gap, card.width, screen.width))) // no room anywhere: beside, clamped
+  const own = [x, y, w, h]
+  const covers = (s) => [...avoid, own].reduce((sum, [ax, ay, aw, ah]) => sum + area({ x: s.left, y: s.top, ...card }, { x: ax, y: ay, width: aw, height: ah }), 0)
+  // the first free base spot in that order; else the nearest free slid spot; else the one that covers least
+  const away = (s) => Math.hypot(s.left + card.width / 2 - (x + w / 2), s.top + card.height / 2 - (y + h / 2))
+  const free = spots.filter((s) => !covers(s))
+  if (free.length) return base.find((s) => free.includes(s)) || free.reduce((best, s) => (away(s) < away(best) ? s : best))
+  return spots.reduce((best, s) => (covers(s) < covers(best) ? s : best))
 }
 
 // A card moves with its face only when the face's centre has moved more than JITTER points; the tracker's
@@ -208,9 +298,11 @@ function shouldMove(prev, next) {
 // ---------- fixed spots per call app ----------
 
 // Window sizes the layout counts on, in screen points. Panels grow downwards from their spot (main.js `fit`).
-const BAR = { width: 760, height: 56 }
+// The strip's spot is the island at its widest (the sheet); as a pill it sits centred in that spot.
+const BAR = { width: 600, height: 44 }
+const ISLAND = { pill: 272, sheet: 600 } // the pill: mic, waveform, timer, sparkle, badge
 const PANEL = { width: 448, gap: 12, margin: 24 }
-const STRIP = { width: 720, height: 64 } // the transcript strip along the bottom
+const STRIP = { width: 720, height: 72 } // the transcript strip along the bottom
 const RECAP = { width: 560, height: 440 } // height: a guess for centring; the window fits its content
 const INSIGHTS_GUESS = 220
 
@@ -258,6 +350,7 @@ function layoutFor(app, rect, work, insightsHeight = INSIGHTS_GUESS) {
     ...BAR,
     x: clampTo(p.strip === 'left' ? win.x + margin : win.x + (win.width - BAR.width) / 2, BAR.width, work.x + margin, right - margin),
     y: barAbove ? win.y - gap - BAR.height : win.y + gap / 2,
+    anchor: p.strip === 'left' ? 'left' : 'center', // what stays put as the island grows
   }
 
   const roomRight = right - winRight
@@ -296,12 +389,27 @@ const area = (a, b) => Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math
 
 // The open name card beside a face, in screen points, for keeping panels off it (the renderer places the
 // real card the same way, so this is where it is).
-const CARD_SIZE = { width: 208, height: 248 } // an open card with five bullets
+const CARD_SIZE = { width: 340, height: 300 } // an open card: name, role, the facts row, three bullets
 const PILL_SIZE = { width: 132, height: 36 } // a "Recalling…" pill
-function cardRect([x, y, w, h], screen, known = true) {
+function cardRect([x, y, w, h], screen, known = true, avoid = []) {
   const size = known ? CARD_SIZE : PILL_SIZE
-  const { left, top } = cardPlace({ face: [x - screen.x, y - screen.y, w, h], card: size, screen })
+  const local = avoid.map(([ax, ay, aw, ah]) => [ax - screen.x, ay - screen.y, aw, ah])
+  const { left, top } = cardPlace({ face: [x - screen.x, y - screen.y, w, h], card: size, screen, avoid: local })
   return { x: left + screen.x, y: top + screen.y, ...size }
+}
+
+// What to draw for a face: a thinking pill, a known card, nothing for your own tile (`person.self`), or a dim
+// "You" tag for developers.
+function cardKind(person, debug) {
+  if (!person) return 'thinking'
+  if (person.self) return debug ? 'you' : 'none'
+  return 'known'
+}
+
+// A "Haven't talked in a while" row: how long since you last met, from the server's daysSince.
+function staleLine({ daysSince }) {
+  if (!Number.isInteger(daysSince)) return ''
+  return daysSince === 0 ? 'Last met today' : daysSince === 1 ? 'Last met yesterday' : `Last met ${daysSince} days ago`
 }
 
 // Where a panel goes: its spot when that covers no face, no name card and no control (ours or the app's),
@@ -333,6 +441,69 @@ function askPlace({ work, spot, faces, blocks, cards = [], panel, fixedX = false
   return { x: best.x, y: best.y }
 }
 
+// ---------- the island ----------
+
+// The sheet header as overlay.css lays it out, in points, so a test can prove the tools fit: the left part
+// (mic, waveform, timer), the island's padding, the tools' inset, their gap and sizes.
+const HEAD = { left: 126, gap: 12, pad: 20, inset: 16, toolGap: 8, icon: 32, iconCompact: 26, endLabel: 70, icons: 3 }
+function toolsWidth(compact = false) {
+  const icon = compact ? HEAD.iconCompact : HEAD.icon
+  const end = compact ? icon + 10 : icon + HEAD.endLabel // End call: its icon plus the label, or the icon alone
+  return HEAD.icons * icon + end + HEAD.toolGap * HEAD.icons + HEAD.inset
+}
+const headerFits = (sheetWidth, compact = false) => HEAD.left + HEAD.gap + toolsWidth(compact) <= sheetWidth - 2 * HEAD.pad
+// The sheet is as wide as its content minimum, or wider when the measured tools need it.
+const sheetWidthFor = (contentMin, tools) => Math.max(contentMin, tools + HEAD.left + HEAD.gap + 2 * HEAD.pad)
+
+// One glass object at the top of the call: a pill while you talk, a one-line notice for NOTICE_MS when a new
+// insight arrives, a sheet when opened (⌘↵, a click, an answer), and the Recap when the call ends.
+const NOTICE_MS = 6000
+function islandStage({ recap, open, noticeUntil, now, hover = false }) {
+  return recap ? 'recap' : open ? 'sheet' : hover || now < noticeUntil ? 'notice' : 'pill'
+}
+
+// Hover opens, leaving backs off: open while the pointer is over, and for `grace` ms after it leaves (so a
+// pointer crossing a gap doesn't flap it shut); pinned (⌘↵, a click) stays open regardless.
+const HOVER_GRACE = { island: 600, card: 800 }
+
+// The island's hover comes from where the pointer is (main.js polls it), not from the page's leave events: a
+// point counts as inside within HOVER_MARGIN of the window's edges.
+const HOVER_MARGIN = 12
+const insideBounds = (p, b, margin = 0) => p.x >= b.x - margin && p.x < b.x + b.width + margin && p.y >= b.y - margin && p.y < b.y + b.height + margin
+// One poll: going outside starts a clock, coming back stops it, and `collapse` turns true once it has run `grace` ms.
+function hoverStep({ outsideSince }, { inside, now, grace }) {
+  if (inside) return { outsideSince: null, collapse: false }
+  const since = outsideSince ?? now
+  return { outsideSince: since, collapse: now - since >= grace }
+}
+function hoverOpen({ pinned, over, leftAt, now, grace }) {
+  return Boolean(pinned || over || (leftAt != null && now - leftAt < grace))
+}
+
+// The island window for a content size: it grows around its anchor (the spot's centre, or its left edge for
+// apps whose own controls sit top right) and never leaves the work area.
+function islandBounds(spot, size, work) {
+  const x = spot.anchor === 'left' ? spot.x : spot.x + (spot.width - size.width) / 2
+  const bottom = work.y + work.height - PANEL.gap
+  return {
+    x: clampTo(x, size.width, work.x + PANEL.gap, work.x + work.width - PANEL.gap),
+    y: spot.y,
+    width: size.width,
+    height: Math.min(Math.ceil(size.height), bottom - spot.y),
+  }
+}
+
+// The ⋯ menu (and the pill's right-click): what main.js pops up. Ids are what main acts on.
+function menuModel({ dev, transcriptShown, debugOn }) {
+  return [
+    { id: 'people', label: 'People' },
+    { id: 'transcript', label: transcriptShown ? 'Hide transcript' : 'Show transcript' },
+    ...(dev ? [{ id: 'debug', label: 'Debug view', type: 'checkbox', checked: Boolean(debugOn) }] : []),
+    { type: 'separator' },
+    { id: 'quit', label: 'Quit Hello Again' },
+  ]
+}
+
 // ---------- Recap ----------
 
 // A Recap built on this laptop when the server sends none within a few seconds of End call: the last topic,
@@ -355,4 +526,4 @@ function debugLabel({ trackId, score, decision }) {
   return `#${trackId} · ${scored} · ${decision}`
 }
 
-if (typeof module !== 'undefined') module.exports = { presetFor, layoutFor, askPlace, cardRect, recapFrom, debugLabel, devMode, shouldMove, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
+if (typeof module !== 'undefined') module.exports = { HOVER_MARGIN, insideBounds, hoverStep, HEAD, toolsWidth, headerFits, sheetWidthFor, micState, itemRows, menuModel, hoverOpen, HOVER_GRACE, REMEMBER_POINTS, cardKind, staleLine, relativeDate, oneLine, cardFacts, cardBullets, presetFor, layoutFor, askPlace, cardRect, recapFrom, debugLabel, devMode, shouldMove, islandStage, islandBounds, ISLAND, NOTICE_MS, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }

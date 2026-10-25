@@ -17,12 +17,13 @@ from typing import Annotated
 
 import numpy as np
 import psycopg
-from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, StringConstraints
 from starlette.requests import HTTPConnection
 
-from memory import notes, picks, pipeline, store
+from memory import connector, notes, picks, pipeline, store
 
 WEB = Path(__file__).resolve().parent.parent / "web"
 MAX_SELFIE_BYTES = 8_000_000
@@ -34,9 +35,11 @@ ENROLLS_PER_MINUTE = 5  # POST /enroll attempts per IP address; each one runs th
 # otherwise hold a response on "thinking" or stall Live insights for minutes. The abandoned thread finishes on its own.
 OUTBOUND_SECONDS = 45
 THREAD_TURNS = 6  # question/answer turns of an Ask AI chat that follow-ups can see
-LIVE_BULLET_SECONDS = 60  # check what a person has said at most this often
+LIVE_BULLET_SECONDS = 60  # check what people have said at most this often, all of them in one request
 LIVE_MIN_WORDS = 8  # fewer words than this since the last check is not worth a Muse call
-MAX_BULLETS = 5  # a card past this gets a shorter "Met …" line, then fewer facts
+MAX_BULLETS = 3  # the card shows role, last seen, last spoke, topic and context itself
+ANSWER_CHARS = 300  # how much of each AI answer the end-of-call summary reads
+TOPIC_CHARS = 60  # the topic shown on a card is kept short
 NOTE_POINTS = 10  # Muse rephrases points every refresh, so the call note keeps only the latest few
 
 
@@ -51,8 +54,10 @@ speakers: dict[str, str] = {}  # Muse speaker label -> display name
 history: list[str] = []  # lines Muse Spark has already seen, context for the next refresh
 fresh: list[str] = []  # final lines since the last insights refresh
 listening: dict = {"type": "listening", "on": True, "startedAt": utc_now()}  # latest listening event
+muted: dict = {"type": "mute", "on": False}  # latest mute event: the mic only, faces keep working
 latest_insights: dict | None = None  # latest insights event
-live: dict[str, dict] = {}  # person id -> {since, lines}: what they said since the last live-bullets check
+live: dict[str, dict] = {}  # person id -> {name, lines}: what they said since the last live-bullets check
+live_since: float | None = None  # when the current live-bullets window began (monotonic)
 snippets: dict[str, list[str]] = {}  # person id -> this call's "This call: …" bullets (at most 2)
 boxes: dict[int, list[float]] = {}  # trackId -> latest screen box, to re-send a face event
 thread: list[tuple[str, str]] = []  # the Ask AI chat so far: (question, answer), the last THREAD_TURNS turns
@@ -65,29 +70,69 @@ actions: dict[str, dict] = {}  # action id -> {kind, label, query, personId}
 wake: asyncio.Event | None = None  # set when fresh lines wait for Muse Spark; made per event loop in lifespan
 
 
+def notes_writable() -> bool:
+    try:
+        notes.tighten()
+        probe = notes.private_folders() / ".write-test"
+        probe.write_text("")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+async def startup_checks() -> list[str]:
+    """One line per dependency. Nothing here stops the server: a missing piece switches its feature off, and the
+    feature says so when it is used (Muse and SerpApi errors already reach the overlay as plain sentences)."""
+    try:
+        await asyncio.wait_for(asyncio.to_thread(lambda: store.conn().execute("select 1")), 8)
+        db = "database: reachable"
+    except Exception as e:
+        db = f"database: NOT reachable ({type(e).__name__}); recognition and memory are off until it is up"
+    ok = await asyncio.to_thread(notes_writable)
+    return [db,
+            "Muse key: set" if os.getenv("MODEL_API_KEY") else "Muse key: MISSING; insights, summaries and Ask AI are off (set MODEL_API_KEY)",
+            "SerpApi key: set" if os.getenv("SERPAPI_KEY") else "SerpApi key: MISSING; place, event and web searches are off (set SERPAPI_KEY)",
+            "notes folder: writable" if ok else "notes folder: NOT writable; call notes and person files will not be saved"]
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global wake
     wake = asyncio.Event()
-    notes.tighten()
+    for report in await startup_checks():
+        print(report)
     worker = asyncio.create_task(insights_worker())
     yield
     worker.cancel()
 
 
 app = FastAPI(title="Hello Again memory", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+app.include_router(connector.router)  # read-only, bearer key; the one set of routes a tunnel may reach
+
+
+FORWARDED = ("x-forwarded-for", "x-forwarded-host", "x-real-ip", "forwarded", "cf-connecting-ip", "cf-ray", "true-client-ip")
+
+
+@app.exception_handler(RequestValidationError)
+async def invalid(_: Request, exc: RequestValidationError):
+    """422 without echoing the input back: a NaN or a face print in the error would not even serialize."""
+    return JSONResponse({"detail": [{"loc": e["loc"], "msg": e["msg"], "type": e["type"]} for e in exc.errors()]}, 422)
 
 
 def from_this_laptop(conn: HTTPConnection) -> bool:
     """Capture, the overlay and curl connect over loopback with no Origin (the overlay page sends file://); browsers
     send their page's origin, so other Wi-Fi devices and web pages open on this laptop both fail."""
-    return conn.client is not None and conn.client.host in ("127.0.0.1", "::1") and conn.headers.get("origin") in (None, "file://")
+    return (conn.client is not None and conn.client.host in ("127.0.0.1", "::1") and conn.headers.get("origin") in (None, "file://")
+            and not any(h in conn.headers for h in FORWARDED))  # a tunnel also connects over loopback, but adds one of these
 
 
 @app.middleware("http")
 async def guests_only_enroll(request: Request, call_next):
     """Phones on the Wi-Fi may enroll and delete themselves; every other route is for this laptop only."""
-    guest = request.url.path == "/enroll" or (request.method == "DELETE" and request.url.path.startswith("/people/"))
+    if any(h in request.headers for h in FORWARDED) and not request.url.path.startswith("/connector/"):
+        return JSONResponse({"detail": "Not available through the tunnel."}, 403)  # the tunnel gets the connector, nothing else
+    guest = request.url.path.startswith("/connector/") or request.url.path == "/enroll" or (request.method == "DELETE" and request.url.path.startswith("/people/"))
     if not guest and not from_this_laptop(request):
         return JSONResponse({"detail": "Only the laptop running Hello Again can use that."}, 403)
     return await call_next(request)
@@ -123,12 +168,13 @@ def this_call() -> Call:
 
 def end_call() -> asyncio.Future:
     """Close the current call and write its note in a thread; the future resolves to the note's path or None."""
-    global call, latest_insights, last_refresh
+    global call, latest_insights, last_refresh, live_since
     if idle_timer:
         idle_timer.cancel()
     ended, call = call or Call(), None
     clear_thread()
     live.clear()
+    live_since = None
     snippets.clear()
     insights = latest_insights
     ended.topic = (insights or {}).get("topic", "")
@@ -152,8 +198,14 @@ async def send_recap(ended: Call, insights: dict | None) -> None:
               for p in map(store.person, ended.people) if p]
     recap = {"type": "recap", "topic": (insights or {}).get("topic", ""), "points": (insights or {}).get("points", []),
              "actions": (insights or {}).get("actions", []), "people": people}
-    if call is not None or not (recap["topic"] or recap["points"] or recap["actions"] or people):
-        return  # a new call already started, or there was no call to recap
+    if not (recap["topic"] or recap["points"] or recap["actions"] or people):
+        return  # there was no call to recap
+    try:  # kept for the Muse connector, even if the next call has already begun
+        await asyncio.to_thread(store.add_call, ended.app, recap["topic"], recap["points"], [a["label"] for a in recap["actions"]], people)
+    except Exception as e:
+        print(f"recap not stored: {type(e).__name__}")
+    if call is not None:
+        return  # a new call already started: this recap is not shown
     latest_recap = recap
     await push(recap)
 
@@ -179,12 +231,16 @@ def remember_encounters(ended: Call) -> dict[str, str]:
         first_call = {p["id"]: not p["encounters"] for p in map(store.person, ended.people) if p}
         if not people or not ended.lines:
             return  # the finally below still refreshes their files
-        for s in picks.summarise(people, ended.lines):
-            store.add_encounter(s["personId"], ended.started.astimezone(), s["about"], s["lastTime"])
+        answers = [f"{r['query']}: {r['text'][:ANSWER_CHARS]}" for r in ended.responses if r.get("kind") in ("places", "events", "search")]
+        for s in picks.summarise(people, ended.lines, answers):
+            spoke = any(l.startswith(f"{people[s['personId']]['name']}: ") for l in ended.lines)  # a caption under their name
+            store.add_encounter(s["personId"], ended.started.astimezone(), s["about"], s["lastTime"],
+                                ended.topic[:TOPIC_CHARS], spoke, s["context"])
             lasts[s["personId"]] = s["lastTime"]
             if s["role"]:
                 store.set_role(s["personId"], s["role"], "muse")  # never replaces a role the user typed
             store.add_facts(s["personId"], s["facts"])
+            store.add_mentions(s["personId"], s["places"] if answers else [])
             if first_call.get(s["personId"]):
                 store.set_how_met(s["personId"], how_met(ended))
     except Exception as e:  # e.g. no MODEL_API_KEY: the call still ends and its note is still written
@@ -225,7 +281,7 @@ async def overlay_socket(ws: WebSocket):
     if not from_this_laptop(ws):  # the http middleware doesn't see WebSockets
         return await ws.close(code=1008)
     await ws.accept()
-    for event in (listening, latest_insights, latest_window, latest_recap):  # catch up an overlay that starts mid-call
+    for event in (listening, muted if muted["on"] else None, latest_insights, latest_window, latest_recap):  # mute only while on  # catch up an overlay that starts mid-call
         if event:
             await ws.send_json(event)
     clients.add(ws)
@@ -238,16 +294,19 @@ async def overlay_socket(ws: WebSocket):
 
 # --- faces (from capture/faces.py) ---
 
+Number = Annotated[float, Field(allow_inf_nan=False)]  # NaN would make the next push fail and drop every overlay
+
+
 class Debug(BaseModel):
-    personBox: list[float] = Field(min_length=4, max_length=4)
-    faceBox: list[float] | None = Field(default=None, min_length=4, max_length=4)
-    fps: float
+    personBox: list[Number] = Field(min_length=4, max_length=4)
+    faceBox: list[Number] | None = Field(default=None, min_length=4, max_length=4)
+    fps: Number
 
 
 class FaceTrack(BaseModel):
     trackId: int
-    screenBox: list[float] = Field(min_length=4, max_length=4)  # x, y, width, height in screen points
-    facePrint: list[float] | None = Field(default=None, min_length=512, max_length=512)
+    screenBox: list[Number] = Field(min_length=4, max_length=4)  # x, y, width, height in screen points
+    facePrint: list[Number] | None = Field(default=None, min_length=512, max_length=512)
     debug: Debug | None = None  # only sent by capture in developer mode
 
 
@@ -264,20 +323,19 @@ def card(person: dict) -> dict:
     """The face-event card for a store.match or store.person result."""
     met = person["firstMet"]
     last = store.last_time(person["id"])
-    how, facts = store.card_extras(person["id"])
-    last_bullet = f"Last time: {last}" if last else ""
+    how, facts, seen = store.card_extras(person["id"])
     live = snippets.get(person["id"], [])
-    met_bullet = f"Met {how}" if how else ""
-    if sum(map(bool, (person["role"], last_bullet, met_bullet))) + len(facts) + len(live) > MAX_BULLETS:
-        met_bullet = f"Met {how.split(':')[0]}" if how else ""  # just the date and app
-        facts = facts[:max(0, MAX_BULLETS - len(live) - sum(map(bool, (person["role"], last_bullet, met_bullet))))]
+    base = [*facts, *([f"Last time: {last}"] if last else []), *([f"Met {how}"] if how else [])]
+    bullets = base[:MAX_BULLETS - len(live)] + live  # what they say now pushes out the oldest history, last in the list
     return {
         "id": person["id"],
         "name": person["name"],
         "role": person["role"],
+        "self": store.is_self(person["role"]),
         "line": f"Last time: {last}" if last else store.latest_note(person["id"]) or "",
         "met": f"Met {met:%b} {met.day}",
-        "bullets": [b for b in (person["role"], *facts, last_bullet, met_bullet) if b] + live,
+        **seen,
+        "bullets": bullets,
     }
 
 
@@ -326,14 +384,14 @@ class Window(BaseModel):
 
 def good_rect(rect: list | None) -> bool:
     nums = isinstance(rect, list) and len(rect) == 4 and all(type(n) in (int, float) and math.isfinite(n) for n in rect)
-    return rect is None or (nums and rect[2] > 0 and rect[3] > 0)
+    return rect is None or (nums and rect[2] > 0 and rect[3] > 0 and all(abs(n) <= 20000 for n in rect))  # screen points, with room to spare
 
 
 @app.post("/window")
 async def set_window(w: Window):
     global latest_window
     if not good_rect(w.rect):
-        raise HTTPException(422, "rect must be null or [x, y, w, h] as finite numbers with w and h above 0")
+        raise HTTPException(422, "rect must be null or [x, y, w, h] as finite numbers up to 20000 in size, with w and h above 0")
     if (w.app is None) != (w.rect is None) or (w.app is not None and not 0 < len(w.app.strip()) <= 100):
         raise HTTPException(422, "app and rect must both be null, or an app name (up to 100 characters) with its rect")
     latest_window = {"type": "window", "app": w.app and w.app.strip(), "rect": w.rect}
@@ -355,6 +413,7 @@ class Remember(BaseModel):
     name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
     consent: bool
     role: Annotated[str, StringConstraints(strip_whitespace=True, max_length=picks.ROLE_CHARS)] = ""
+    connector: bool = False  # ticked: the Muse app may read this person
 
 
 @app.post("/faces/{track_id}/remember")
@@ -365,7 +424,7 @@ async def remember(track_id: int, body: Remember):
     face = unknown.pop(track_id, None)  # popped first, so a double click can't enroll them twice
     if face is None:
         raise HTTPException(409, "That face has left the call")
-    pid, token = await asyncio.to_thread(store.enroll, body.name, np.asarray(face["print"], dtype=np.float32), None, body.role)
+    pid, token = await asyncio.to_thread(store.enroll, body.name, np.asarray(face["print"], dtype=np.float32), None, body.role, body.connector)
     tracks[track_id] = await asyncio.to_thread(card_for, face["print"])
     saw_face(tracks[track_id])
     await push({"type": "face", "trackId": track_id, "screenBox": face["box"], "person": tracks[track_id]})
@@ -396,6 +455,12 @@ async def name_speaker(s: SpeakerName):
     return {"ok": True}
 
 
+def serp_status() -> str | None:
+    from memory import serp  # last failure of a SerpApi call
+
+    return serp.last_error
+
+
 @app.get("/health")
 async def health():
     """What the control bar's status dot shows: is the database up, are the keys set, is the mic feeding us."""
@@ -404,8 +469,20 @@ async def health():
         db = "ok"
     except Exception:  # down, unreachable or slow: all the same to the dot
         db = "error"
-    return {"db": db, "muse": bool(os.getenv("MODEL_API_KEY")), "serpapi": bool(os.getenv("SERPAPI_KEY")),
-            "listening": listening["on"], "lastTranscriptAt": last_transcript_at}
+    return {"db": db, "muse": bool(os.getenv("MODEL_API_KEY")) and picks.status.error is None, "museError": picks.status.error,
+            "serpapi": bool(os.getenv("SERPAPI_KEY")) and serp_status() is None, "serpapiError": serp_status(),
+            "listening": listening["on"], "muted": muted["on"], "lastTranscriptAt": last_transcript_at}
+
+
+class Mute(BaseModel):
+    on: bool
+
+
+@app.post("/mute")
+async def set_mute(body: Mute):
+    muted["on"] = body.on
+    await push(muted)
+    return muted
 
 
 @app.post("/listening")
@@ -420,6 +497,8 @@ async def set_listening(body: Listening):
 @app.post("/transcript")
 async def transcript(line: Line):
     global last_transcript_at
+    if muted["on"]:
+        return {"ok": True, "ignored": True}  # muted: a client that still sends gets nothing shown, kept or sent to Muse
     if not listening["on"]:
         return {"ok": True, "ignored": True}  # paused: nothing is shown, kept or sent to Muse
     last_transcript_at = utc_now()
@@ -436,40 +515,47 @@ async def transcript(line: Line):
 
 
 def note_said(pid: str, name: str, text: str) -> None:
-    """Collect what a recognized person says; once LIVE_BULLET_SECONDS have passed, check it for new facts."""
+    """Collect what recognized people say. Once LIVE_BULLET_SECONDS have passed, everyone with something new is
+    checked in ONE Muse request, so a 10-person call costs one request a minute, not ten."""
+    global live_since
     now = time.monotonic()
-    entry = live.setdefault(pid, {"since": now, "lines": []})
-    entry["lines"].append(text)
-    if now - entry["since"] >= LIVE_BULLET_SECONDS:
-        lines, entry["lines"], entry["since"] = entry["lines"], [], now
-        if sum(len(l.split()) for l in lines) >= LIVE_MIN_WORDS:
-            task = asyncio.get_running_loop().create_task(live_bullets(pid, name, lines, call))
+    live_since = live_since if live_since is not None else now
+    live.setdefault(pid, {"name": name, "lines": []})["lines"].append(text)
+    if now - live_since >= LIVE_BULLET_SECONDS:
+        batch = {p: e for p, e in live.items() if sum(len(l.split()) for l in e["lines"]) >= LIVE_MIN_WORDS}
+        live.clear()
+        live_since = now
+        if batch:
+            task = asyncio.get_running_loop().create_task(live_bullets(batch, call))
             background.add(task)
             task.add_done_callback(background.discard)
 
 
-async def live_bullets(pid: str, name: str, lines: list[str], owner: Call | None) -> None:
-    """Ask Muse for new "This call: …" facts and re-send that person's card with them as extra bullets."""
+async def live_bullets(batch: dict[str, dict], owner: Call | None) -> None:
+    """Ask Muse once for new "This call: …" facts about everyone in the batch and re-send each changed card."""
     try:
-        new = await asyncio.wait_for(asyncio.to_thread(picks.live_snippets, name, lines, snippets.get(pid, [])), OUTBOUND_SECONDS)
-        if not new or call is not owner:  # nothing new, or the call ended meanwhile
+        asked = {pid: {**e, "earlier": snippets.get(pid, [])} for pid, e in batch.items()}
+        found = await asyncio.wait_for(asyncio.to_thread(picks.live_snippets, asked), OUTBOUND_SECONDS)
+        if call is not owner:  # the call ended meanwhile
             return
-        snippets[pid] = (snippets.get(pid, []) + [n for n in new if n not in snippets.get(pid, [])])[-2:]
-        person = await asyncio.to_thread(store.person, pid)
-        if person is None:  # deleted themselves while Muse thought
-            snippets.pop(pid, None)
-            return
-        for t, shown in list(tracks.items()):
-            if shown and shown["id"] == pid:
-                tracks[t] = await asyncio.to_thread(card, person)
-                if t in boxes:
-                    await push({"type": "face", "trackId": t, "screenBox": boxes[t], "person": tracks[t]})
+        for pid, new in found.items():
+            snippets[pid] = (snippets.get(pid, []) + [n for n in new if n not in snippets.get(pid, [])])[-2:]
+            person = await asyncio.to_thread(store.person, pid)
+            if person is None:  # deleted themselves while Muse thought
+                snippets.pop(pid, None)
+                continue
+            for t, shown in list(tracks.items()):
+                if shown and shown["id"] == pid:
+                    tracks[t] = await asyncio.to_thread(card, person)
+                    if t in boxes:
+                        await push({"type": "face", "trackId": t, "screenBox": boxes[t], "person": tracks[t]})
     except Exception as e:  # a failed check just means no new bullets
         print(f"live bullets skipped: {e!r}")
 
 
 async def insights_worker() -> None:
     global last_refresh
+    muse_down = False
     while True:
         await wake.wait()
         wake.clear()
@@ -478,7 +564,15 @@ async def insights_worker() -> None:
         last_refresh = time.monotonic()  # paced from the start, so Muse's own delay doesn't add to the wait
         try:
             await refresh_insights()
-        except Exception as e:  # a failed model call or note insert must not stop the stream
+            if picks.status.error is None:
+                muse_down = False
+        except (picks.MuseError, TimeoutError) as e:  # an outage or a missing key: say so once, keep listening
+            print(f"insights failed: {type(e).__name__}")
+            if not muse_down:
+                muse_down = True
+                line = "Muse is unreachable; still listening" if os.getenv("MODEL_API_KEY") else "Add MODEL_API_KEY to .env; still listening"
+                await push({"type": "insights", "topic": line, "points": [], "actions": []})
+        except Exception as e:  # a failed note insert must not stop the stream
             print(f"insights failed: {e!r}")
 
 
@@ -570,13 +664,15 @@ def clear_thread() -> None:
 async def finish(event: dict, kind: str, arg: str | None, present: dict[str, str], lines: list[str],
                  earlier: list[tuple[str, str]], epoch: int) -> None:
     try:
-        text, sources = await asyncio.wait_for(asyncio.to_thread(answer, kind, arg, present, lines, earlier), OUTBOUND_SECONDS)
+        text, sources, items = await asyncio.wait_for(asyncio.to_thread(answer, kind, arg, present, lines, earlier), OUTBOUND_SECONDS)
         event = event | {"status": "done", "text": text, "sources": sources}
+        if kind in ("places", "events", "search"):
+            event["items"] = items  # rows for the overlay beside the prose
         if kind == "ask" and epoch == thread_epoch:
             thread.append((event["query"], text))
             del thread[:-THREAD_TURNS]
-        if call and kind != "recall":  # recall only repeats the database, about someone who may delete themselves
-            call.responses.append(event)
+        if call:  # a recall is tagged with its person, so deleting them removes it from the note
+            call.responses.append(event | {"kind": kind, "personId": arg if kind == "recall" else None})  # for the call note only
     except (NoAnswer, picks.MuseError, pipeline.SerpApiError) as e:
         event = event | {"status": "error", "text": str(e)}
     except TimeoutError:
@@ -588,17 +684,17 @@ async def finish(event: dict, kind: str, arg: str | None, present: dict[str, str
 
 
 def answer(kind: str, arg: str | None, present: dict[str, str], lines: list[str],
-           earlier: list[tuple[str, str]] | None = None) -> tuple[str, list[dict]]:
-    """Runs in a thread: the text and sources for one question or action."""
+           earlier: list[tuple[str, str]] | None = None) -> tuple[str, list[dict], list[dict]]:
+    """Runs in a thread: the text, sources and result rows (places, events, search only) for one question or action."""
     if kind == "recall":
-        return recall(arg), []
+        return recall(arg), [], []
     if kind in ("places", "events"):
         return pipeline.lookup(kind, arg)  # SerpApi only through pipeline, for a query Muse wrote
     known = store.notes_for(list(present))
     people = {pid: {"name": name, "notes": known.get(pid, [])} for pid, name in present.items()}
     if kind == "search":
         return pipeline.search(arg, people, lines)
-    return picks.answer(kind, arg or "", people, lines, thread=earlier if kind == "ask" else None), []
+    return picks.answer(kind, arg or "", people, lines, thread=earlier if kind == "ask" else None), [], []
 
 
 def recall(pid: str) -> str:
@@ -645,6 +741,7 @@ async def enroll(
     name: str = Form(min_length=1, max_length=80),
     consent: bool = Form(),
     role: str = Form("", max_length=picks.ROLE_CHARS),
+    connector: bool = Form(False),  # ticked on the enroll page: the Muse app may read them
     code: str = Form("", max_length=200),
     selfie: UploadFile = File(),
 ):
@@ -665,13 +762,19 @@ async def enroll(
     face_print = await asyncio.to_thread(embed_image, data)
     if face_print is None:
         raise HTTPException(422, "No face found in that photo. Try again facing the camera in good light.")
-    pid, token = await asyncio.to_thread(store.enroll, name.strip(), face_print, None, role.strip())  # the selfie is never kept
+    pid, token = await asyncio.to_thread(store.enroll, name.strip(), face_print, None, role.strip(), connector)  # the selfie is never kept
     return {"id": pid, "deleteToken": token}
 
 
 @app.get("/people")
 def list_people():
     return store.people()
+
+
+@app.get("/people/stale")
+def stale_people(days: int = Query(30, ge=1, le=3650)):
+    """"Haven't talked in a while": people you last met at least `days` days ago, most overdue first."""
+    return store.stale(days)
 
 
 @app.get("/people/{pid}")
@@ -704,13 +807,22 @@ async def edit_person(pid: str, body: PersonEdit):
 
 
 @app.delete("/people/{pid}")
-def forget(pid: str, request: Request, x_delete_token: str | None = Header(default=None)):
+async def forget(pid: str, request: Request, x_delete_token: str | None = Header(default=None)):
     mine = from_this_laptop(request)  # the dashboard needs no token; a phone on the Wi-Fi does
     if not mine and x_delete_token is None:
         raise HTTPException(403, "That delete link doesn't match. Nothing was deleted.")
-    if not store.delete_person(pid, None if mine else x_delete_token):  # also clears them from notes/
+    if not await asyncio.to_thread(store.delete_person, pid, None if mine else x_delete_token):  # also clears them from notes/
         raise HTTPException(404 if mine else 403, "Nobody with that id." if mine else "That delete link doesn't match. Nothing was deleted.")
-    for t, card in tracks.items():  # not named on screen, and not sent to Muse, from now on
+    if call:
+        call.people.pop(pid, None)  # not in this call's note, summary or recap from now on
+    if latest_recap:
+        latest_recap["people"] = [p for p in latest_recap["people"] if p["id"] != pid]
+    snippets.pop(pid, None)
+    live.pop(pid, None)
+    clear_thread()  # an Ask AI answer may name them, and follow-ups would send that to Muse again
+    for t, card in list(tracks.items()):  # their card comes off the screen, and nothing about them goes to Muse again
         if card and card["id"] == pid:
-            tracks[t] = None
+            for state in (tracks, unknown, boxes, debug_scores):
+                state.pop(t, None)
+            await push({"type": "face_gone", "trackId": t})
     return {"deleted": pid}

@@ -5,58 +5,73 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Hello Again · Remember each other?</title>
   <style>
+    /* The Island look (overlay/overlay.css): black glass, white ink, the card's type scale. Inputs stay 16px so
+       phones don't zoom into them. */
     :root {
-      --bg: #EEF1F6; --card: #FFFFFF; --ink: #141821; --ink-2: #4B5364; --line: #D9DFE8;
-      --accent: #1D5FD1; --on-accent: #FFFFFF; --good: #157F57; --bad: #B4332A;
-      font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      --black: rgba(12, 12, 14, 0.84); --rim: rgba(255, 255, 255, 0.14); --rule: rgba(255, 255, 255, 0.1);
+      --fill: rgba(255, 255, 255, 0.09); --hover: rgba(255, 255, 255, 0.16);
+      --ink: #FFFFFF; --ink-2: rgba(255, 255, 255, 0.72); --ink-3: rgba(255, 255, 255, 0.46); --mint: #7EE2B0; --coral: #FFB1A8;
+      color-scheme: dark;
+      font: 16px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
     }
-    @media (prefers-color-scheme: dark) {
-      :root { --bg: #0D1016; --card: #161B23; --ink: #E7EAF0; --ink-2: #A3ACBB; --line: #2A313D; --accent: #6E9EF2; --on-accent: #0D1016; --good: #3FBF8B; --bad: #F07A6E; color-scheme: dark; }
-    }
-    body { margin: 0; background: var(--bg); color: var(--ink); }
+    body { margin: 0; min-height: 100vh; background: linear-gradient(160deg, #5B6B8A, #2B3140 60%, #1A1D24) fixed; color: var(--ink); }
     [hidden] { display: none !important; } /* .box sets display, which would otherwise beat the hidden attribute */
-    main { max-width: 440px; margin: 0 auto; padding: 32px 18px 48px; display: grid; gap: 18px; }
-    h1 { margin: 0; font-size: 28px; line-height: 1.15; letter-spacing: -0.02em; }
+    main { max-width: 440px; margin: 0 auto; padding: 28px 16px 48px; display: grid; gap: 18px; }
+    h1 { margin: 0; font-size: 28px; font-weight: 650; line-height: 1.15; letter-spacing: -0.02em; }
     p { margin: 0; color: var(--ink-2); }
-    .box { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px; display: grid; gap: 14px; }
-    ul { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
-    label { display: grid; gap: 6px; font-weight: 600; font-size: 15px; }
-    input[type="text"] { font: inherit; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--ink); }
+    .box {
+      background: var(--black); border: 1px solid var(--rim); border-radius: 24px; padding: 20px; display: grid; gap: 16px;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 24px 60px -24px rgba(0, 0, 0, 0.8);
+      -webkit-backdrop-filter: blur(30px) saturate(140%); backdrop-filter: blur(30px) saturate(140%);
+    }
+    #keeps { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; font-size: 15px; line-height: 1.5; color: var(--ink-2); }
+    #keeps li { position: relative; padding-left: 14px; }
+    #keeps li::before { content: "·"; position: absolute; left: 0; color: var(--ink-3); }
+    #keeps strong { color: var(--ink); font-weight: 650; }
+    label { display: grid; gap: 8px; font-weight: 600; font-size: 15px; }
+    input[type="text"] { font: inherit; font-size: 16px; height: 48px; padding: 0 14px; box-sizing: border-box; border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 14px; background: var(--fill); color: var(--ink); caret-color: var(--ink); }
+    input[type="text"]:focus { border-color: rgba(255, 255, 255, 0.5); outline: none; }
     input[type="file"] { font: inherit; font-size: 14px; color: var(--ink-2); }
-    input[type="file"]::file-selector-button { font: inherit; font-weight: 600; color: var(--ink); padding: 11px 16px; margin-right: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); cursor: pointer; }
-    .check { display: flex; gap: 10px; align-items: flex-start; font-weight: 500; }
-    .check input { flex: none; width: 22px; height: 22px; margin: 1px 0 0; accent-color: var(--accent); }
-    img { width: 96px; height: 96px; object-fit: cover; border-radius: 50%; border: 1px solid var(--line); }
-    .field { display: grid; gap: 10px; }
+    input[type="file"]::file-selector-button { font: inherit; font-weight: 600; color: var(--ink); padding: 11px 16px; margin-right: 12px; border: 0; border-radius: 999px; background: var(--hover); cursor: pointer; }
+    /* each agreement is its own row, so the optional one can't be mistaken for part of the first */
+    .check { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--rim); border-radius: 14px; background: var(--fill); font-weight: 500; font-size: 15px; line-height: 1.45; }
+    .check input { flex: none; width: 22px; height: 22px; margin: 1px 0 0; accent-color: var(--mint); }
+    .check em { font-style: normal; color: var(--ink-3); }
+    img { width: 96px; height: 96px; object-fit: cover; border-radius: 50%; border: 1px solid var(--rim); }
+    .field { display: grid; gap: 10px; padding: 14px; border-radius: 16px; background: var(--fill); } /* the selfie step is its own block */
+    .field .field { padding: 0; background: none; }
     .field-label { font-weight: 600; font-size: 15px; }
-    video { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 12px; border: 1px solid var(--line); background: var(--bg); }
+    video { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 14px; border: 1px solid var(--rim); background: rgba(0, 0, 0, 0.3); }
     video, img.mirrored { transform: scaleX(-1); } /* a selfie view reads like a mirror; the photo sent is not flipped */
-    button { font: inherit; font-weight: 650; padding: 13px 16px; border-radius: 12px; border: 0; background: var(--accent); color: var(--on-accent); cursor: pointer; }
-    button.quiet { background: transparent; color: var(--bad); border: 1px solid var(--line); }
-    button.secondary { font-weight: 600; padding: 11px 16px; border-radius: 10px; background: var(--bg); color: var(--ink); border: 1px solid var(--line); }
-    button.secondary:hover:not(:disabled) { border-color: var(--ink-2); }
-    button.link { justify-self: start; padding: 0; background: none; color: var(--accent); font-weight: 600; font-size: 14px; text-decoration: underline; text-underline-offset: 3px; }
+    button { font: inherit; font-weight: 650; font-size: 16px; height: 50px; padding: 0 18px; border-radius: 999px; border: 0; background: var(--ink); color: #15171C; cursor: pointer; }
+    button.quiet { background: transparent; color: var(--coral); border: 1px solid var(--rim); }
+    button.secondary { font-weight: 600; background: var(--hover); color: var(--ink); }
+    button.secondary:hover:not(:disabled) { background: rgba(255, 255, 255, 0.22); }
+    button.link { justify-self: start; height: auto; padding: 0; background: none; color: var(--ink-2); font-weight: 600; font-size: 14px; text-decoration: underline; text-underline-offset: 3px; }
     button:disabled { opacity: 0.5; }
-    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    :focus-visible { outline: 2px solid rgba(255, 255, 255, 0.85); outline-offset: 2px; }
     .msg { font-weight: 600; }
-    .msg.error { color: var(--bad); }
-    .msg.ok { color: var(--good); }
+    .msg.error { color: var(--coral); }
+    .msg.ok { color: var(--mint); }
+    .link-row { display: flex; gap: 8px; }
+    .link-row input { flex: 1; min-width: 0; font-size: 14px; color: var(--ink-2); }
+    .link-row button { flex: none; height: 48px; }
   </style>
 </head>
 <body>
 <main>
   <h1>Remember each other?</h1>
-  <p>People who use Hello Again on calls with you will see your name and a few notes next to your face. Nobody else in the call sees anything, and you can delete it all at any time.</p>
+  <p>Hello Again runs on the host's laptop. It will remember you for one year, or until you delete it. Only the host sees this on their screen; a screen share can show it.</p>
 
   <form class="box" id="form" novalidate>
-    <div>
-      <strong>What gets saved</strong>
-      <ul>
-        <li>A face print made from the selfie you take here (the photo itself isn't kept)</li>
-        <li>Notes from calls you're both in, written by Meta's Muse from what's said on those calls</li>
-      </ul>
-    </div>
-    <p>Everything is deleted after one year, or right away when you ask.</p>
+    <ul id="keeps">
+      <li><strong>Your face:</strong> it saves numbers made from your face so it can recognise you on calls. It does not keep your photo.</li>
+      <li><strong>Your name</strong> and, if the host adds one, who you are to them.</li>
+      <li><strong>Your voice:</strong> on a call, the audio is sent to Meta's Muse to turn it into text. This happens for everyone on the call.</li>
+      <li><strong>What you say:</strong> Meta's Muse reads it and writes notes, short facts (like "Loves F1"), how you met, and a summary and topic for each call. The host sees these next to your face and in their People list.</li>
+      <li><strong>Delete:</strong> you can delete all of it at any time with the link you get after you agree.</li>
+    </ul>
 
     <label for="name">Your name
       <input id="name" name="name" type="text" autocomplete="name" required maxlength="80">
@@ -73,7 +88,11 @@
     </div>
     <label class="check" for="consent">
       <input id="consent" type="checkbox" required>
-      <span>I agree to let Hello Again recognize my face and keep notes about our calls.</span>
+      <span>I agree to all of the above.</span>
+    </label>
+    <label class="check" for="connector">
+      <input id="connector" type="checkbox">
+      <span><em>(optional)</em> Also let the host's Muse app read my notes (the connector): my name, notes and facts, from their laptop.</span>
     </label>
     <button type="submit" id="submit">Agree and enroll</button>
     <p class="msg" id="msg" role="status"></p>
@@ -81,7 +100,11 @@
 
   <section class="box" id="done" hidden>
     <p class="msg ok" id="doneText"></p>
-    <p>Bookmark this page to delete your data later. The link holds your private delete key.</p>
+    <p>This is your delete link. Bookmark or copy it: it is the only way to remove your data later.</p>
+    <div class="link-row">
+      <input id="deleteLink" type="text" readonly aria-label="Your delete link">
+      <button type="button" class="secondary" id="copyLink">Copy</button>
+    </div>
     <button type="button" class="quiet" id="delete">Delete my data</button>
     <p class="msg" id="deleteMsg" role="status"></p>
   </section>
@@ -183,6 +206,7 @@
     const body = new FormData()
     body.append('name', name)
     body.append('consent', 'true')
+    if ($('connector').checked) body.append('connector', '1') // the optional Muse-app tick, stored as a scope (security R12-1)
     const code = new URLSearchParams(location.search).get('code') // from the invite link
     if (code) body.append('code', code)
     body.append('selfie', file, file.name || 'selfie.jpg')
@@ -207,7 +231,17 @@
     $('leave').hidden = true
     $('done').hidden = false
     $('doneText').textContent = text
+    $('deleteLink').value = location.href // carries the private delete key
   }
+
+  $('copyLink').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText($('deleteLink').value)
+      $('copyLink').textContent = 'Copied'
+    } catch {
+      $('deleteLink').select() // no clipboard access: leave the link selected to copy by hand
+    }
+  })
 
   $('delete').addEventListener('click', async () => {
     const [id, token] = location.hash.replace('#delete=', '').split('.')
