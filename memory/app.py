@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, StringConstraints
 from starlette.requests import HTTPConnection
 
-from memory import notes, picks, pipeline, store
+from memory import connector, notes, picks, pipeline, store
 
 WEB = Path(__file__).resolve().parent.parent / "web"
 MAX_SELFIE_BYTES = 8_000_000
@@ -77,18 +77,23 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Hello Again memory", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+app.include_router(connector.router)  # read-only, bearer key; the one set of routes a tunnel may reach
+
+
+FORWARDED = ("x-forwarded-for", "x-forwarded-host", "x-real-ip", "forwarded", "cf-connecting-ip", "cf-ray", "true-client-ip")
 
 
 def from_this_laptop(conn: HTTPConnection) -> bool:
     """Capture, the overlay and curl connect over loopback with no Origin (the overlay page sends file://); browsers
     send their page's origin, so other Wi-Fi devices and web pages open on this laptop both fail."""
-    return conn.client is not None and conn.client.host in ("127.0.0.1", "::1") and conn.headers.get("origin") in (None, "file://")
+    return (conn.client is not None and conn.client.host in ("127.0.0.1", "::1") and conn.headers.get("origin") in (None, "file://")
+            and not any(h in conn.headers for h in FORWARDED))  # a tunnel also connects over loopback, but adds one of these
 
 
 @app.middleware("http")
 async def guests_only_enroll(request: Request, call_next):
     """Phones on the Wi-Fi may enroll and delete themselves; every other route is for this laptop only."""
-    guest = request.url.path == "/enroll" or (request.method == "DELETE" and request.url.path.startswith("/people/"))
+    guest = request.url.path.startswith("/connector/") or request.url.path == "/enroll" or (request.method == "DELETE" and request.url.path.startswith("/people/"))
     if not guest and not from_this_laptop(request):
         return JSONResponse({"detail": "Only the laptop running Hello Again can use that."}, 403)
     return await call_next(request)
