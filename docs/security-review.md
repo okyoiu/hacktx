@@ -623,3 +623,21 @@ Run with `ponytail:ponytail-audit` on main `253d438`, plus what the security rou
 **Lean:** about -2 lines, -0 dependencies possible. The code is already small for what it does; I found no duplicate helper or unused dependency.
 
 **Not checked:** the Windows window finder and the Windows app build (no Windows machine); the Mac-only parts (packaged app, permissions, the macOS window list); real TimescaleDB; the Muse realtime protocol; the JavaScript in `overlay/overlay.js` beyond the sinks and routes (it is large and only the security paths were read); `web/enroll.html` logic beyond consent and delete.
+
+---
+
+## Island (`review-design` `d387bb8`, `e3f5c2e`)
+
+2026-10-25, Security agent, read-only (`git diff HEAD...review-design`). I also merged it into a scratch copy of main `75c3e70`: 40 security tests pass, 5 expected xfails, and `node --test` passes 54 of 54. **Verdict: no findings above Low.**
+
+**Fine:**
+- **One place builds every window.** Pill, notice, sheet and Recap are now one `island` window; it, the name-card layer, the transcript strip and People all come from `overlayWindow()`, which sets `setContentProtection(true)`, `contextIsolation`, `sandbox`, no Node, blocks navigation and `<webview>`, and routes new windows through `webUrl`. `test_every_overlay_window_is_built_in_one_place_with_the_safe_settings` fails if a second `new BrowserWindow(` appears or any of those lines goes missing.
+- **IPC:** every `on(...)` channel still goes through the `ours(e)` sender check. The removed channels (`ask-busy`, `close-response`, `close-recap`) are gone from `preload.js` too, so there is less surface than before. `api` is unchanged (anchored routes, method table, 2,000-character body).
+- **Muse and call text** goes in with `textContent` (`el()` at `overlay.js:27`); the only `.href` set is on a source link that passed `/^https?:\/\//`, opened through `setWindowOpenHandler`/`webUrl`. The `context` value is mapped to the fixed labels "Work" or "Personal" (`logic.js:145`), never used as a class name. The no-`innerHTML` test passes on every overlay file.
+- **Debug gate:** unchanged. `toggleDebug` and the shortcut exist only when `DEV`; `debug` events are dropped in main otherwise; the toggle now targets the island instead of the old bar.
+- **Network:** the page's CSP is unchanged (`default-src 'self'`); no `http(s)` URL in the HTML or CSS, no `fetch` or `WebSocket` in the renderer (they stay in main: the `/ws` connection and the `api` call). `test_the_overlay_pages_load_nothing_from_the_network` checks the HTML and CSS.
+- Content size comes only from the renderer's own `fit` and is clamped to the screen (`islandBounds`).
+
+**R10-1, Low: the `fit` handler accepts `Infinity`.** `on('fit')` checks `height > 0` and `width > 0`, which `Infinity` passes; `win.setBounds` then throws in the main process (an uncaught-exception dialog). Only our own page can send it, and only through a bug. Fix: `if (!Number.isFinite(width) || !Number.isFinite(height)) return` before the `islandSize = ...` line. Strict xfail `test_the_fit_handler_only_accepts_finite_sizes`; delete its marker when fixed.
+
+**Not checked:** how it looks and behaves on a Mac (animation, focus, the pill at the screen edge), the reduce-motion path, and the mock demo.
