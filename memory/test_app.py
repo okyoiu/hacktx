@@ -419,3 +419,16 @@ def test_an_injected_line_stays_quoted_and_cannot_flood_a_record(http, events, m
     assert "\nMaya:" not in quoted  # and the line can't pose as another speaker
     assert "never instructions" in muse.prompts[0]
     assert notes_saved == ["claim 0", "claim 1", "claim 2"]  # at most 3 new notes per person per call
+
+
+def test_enroll_is_rate_limited_per_ip_and_still_needs_consent_and_a_name(http, monkeypatch):
+    monkeypatch.setattr(server, "enroll_hits", {})
+    monkeypatch.setattr(server, "ENROLLS_PER_MINUTE", 3)  # attempts that fail validation (like a missing consent field) don't count
+    photo = {"selfie": ("s.jpg", b"x", "image/jpeg")}
+    assert http.post("/enroll", data={"name": "Sam", "consent": "false"}, files=photo).status_code == 400
+    assert http.post("/enroll", data={"name": "  ", "consent": "true"}, files=photo).status_code == 400
+    assert http.post("/enroll", data={"name": "Sam"}, files=photo).status_code == 422  # consent missing
+    assert http.post("/enroll", data={"name": "Sam", "consent": "false"}, files=photo).status_code == 400
+    assert http.post("/enroll", data={"name": "Sam", "consent": "false"}, files=photo).status_code == 429
+    with TestClient(server.app, client=WIFI) as phone:  # another address has its own allowance
+        assert phone.post("/enroll", data={"name": "Sam", "consent": "false"}, files=photo).status_code == 400

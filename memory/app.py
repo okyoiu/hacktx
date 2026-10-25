@@ -4,6 +4,7 @@ Run: uv run --env-file .env uvicorn memory.app:app --reload
 Keep it on localhost or your LAN; nothing here is authenticated except deleting a person.
 """
 import asyncio
+import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -25,6 +26,7 @@ MAX_SELFIE_BYTES = 8_000_000
 CALL_IDLE_SECONDS = 60  # a call ends this long after the last face was seen
 INSIGHTS_SECONDS = 8  # Muse Spark refreshes the insights at most this often
 MAX_ACTIONS_KEPT = 100  # actions from older insights stay clickable until this many newer ones exist
+ENROLLS_PER_MINUTE = 5  # POST /enroll attempts per IP address; each one runs the face model
 NOTE_POINTS = 10  # Muse rephrases points every refresh, so the call note keeps only the latest few
 
 
@@ -415,14 +417,32 @@ def enroll_page():
     return FileResponse(WEB / "enroll.html")
 
 
+enroll_hits: dict[str, list[float]] = {}  # IP address -> times of its recent POST /enroll attempts
+
+
+def rate_limited(ip: str) -> bool:
+    """Count this attempt; True once the IP has used up its enrollments for the last minute."""
+    now = time.monotonic()
+    for other in [k for k, v in enroll_hits.items() if v[-1] < now - 60]:
+        del enroll_hits[other]  # keeps the table from growing with every phone that ever visited
+    hits = [t for t in enroll_hits.get(ip, []) if t > now - 60]
+    enroll_hits[ip] = hits + [now]
+    return len(hits) >= ENROLLS_PER_MINUTE
+
+
 @app.post("/enroll")
 async def enroll(
+    request: Request,
     name: str = Form(min_length=1, max_length=80),
     consent: bool = Form(),
     selfie: UploadFile = File(),
 ):
+    if rate_limited(request.client.host if request.client else ""):
+        raise HTTPException(429, "Too many tries from this device. Wait a minute and try again.")
     if not consent:
         raise HTTPException(400, "Consent is required to enroll. Nothing was saved.")
+    if not name.strip():
+        raise HTTPException(400, "A name is required to enroll. Nothing was saved.")
     data = await selfie.read(MAX_SELFIE_BYTES + 1)
     if len(data) > MAX_SELFIE_BYTES:
         raise HTTPException(413, "That photo is over 8 MB. Take a new selfie and try again.")
