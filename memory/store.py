@@ -34,10 +34,10 @@ def purge_expired() -> None:
     from memory import notes  # lazy: notes imports store
 
     rows = conn().execute(
-        "delete from people where id in (select person_id from consents where expires_at < current_date) returning id"
+        "delete from people where id in (select person_id from consents where expires_at < current_date) returning id, name"
     ).fetchall()
-    for (pid,) in rows:
-        notes.forget(pid)
+    for pid, name in rows:
+        notes.forget(pid, name)
 
 
 def match(face_print: np.ndarray) -> dict | None:
@@ -84,10 +84,7 @@ def delete_person(pid: str, token: str | None) -> bool:
     if row is None or (token is not None and not secrets.compare_digest(row[0], digest(token))):
         return False
     conn().execute("delete from people where id = %s", (pid,))
-    from memory import notes  # lazy: notes imports store
-
-    notes.forget(pid)
-    return True
+    return True  # the caller cleans notes/ (it knows the name before it is gone)
 
 
 def set_role(pid: str, role: str, source: str) -> None:
