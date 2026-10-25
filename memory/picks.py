@@ -32,15 +32,18 @@ Return one JSON object only, with this shape:
   "notes": [
     {{"personId": "an ID from the people list", "text": "short useful fact from the new lines"}}
   ],
-  "topic": "What the conversation is about now, under 8 words",
-  "points": ["The most useful thing to keep in mind, under 120 characters"],
+  "topic": "The specific subject right now, under 8 words",
+  "points": ["A concrete fact, decision or open question, under 120 characters"],
   "actions": [
     {{"kind": "places", "label": "Find climbing gyms near South Congress", "query": "climbing gyms near South Congress Austin"}},
     {{"kind": "recall", "label": "Remind me who Maya is", "personId": "an ID from the people list"}}
   ]
 }}
 
-At most 3 points and 4 actions. Action kinds:
+Topic: name the actual subject, like "Jordan's move to Austin". Never a vague label like "Conversation", "Catching up" or "Chat".
+Points: at most 3, each a different concrete thing someone said that is worth remembering during the call (a fact, a plan, a decision, a question still open). Don't restate the topic, don't repeat earlier transcript, and give fewer than 3, or none, when little was said.
+Actions: at most 4, only for something the conversation actually needs (a place or event they mentioned, a term nobody explained, a person to recall). Use the names, places and cities they said. Small talk and greetings get no actions.
+Action kinds:
 - define: explain a term that came up; query is the term
 - search: look something up on the web; query is the search
 - places: find a real place; query is a concise Google Maps search grounded in the conversation, with the city when known
