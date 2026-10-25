@@ -443,6 +443,18 @@ function askPlace({ work, spot, faces, blocks, cards = [], panel, fixedX = false
 
 // ---------- the island ----------
 
+// The sheet header as overlay.css lays it out, in points, so a test can prove the tools fit: the left part
+// (mic, waveform, timer), the island's padding, the tools' inset, their gap and sizes.
+const HEAD = { left: 126, gap: 12, pad: 20, inset: 16, toolGap: 8, icon: 32, iconCompact: 26, endLabel: 70, icons: 3 }
+function toolsWidth(compact = false) {
+  const icon = compact ? HEAD.iconCompact : HEAD.icon
+  const end = compact ? icon + 10 : icon + HEAD.endLabel // End call: its icon plus the label, or the icon alone
+  return HEAD.icons * icon + end + HEAD.toolGap * HEAD.icons + HEAD.inset
+}
+const headerFits = (sheetWidth, compact = false) => HEAD.left + HEAD.gap + toolsWidth(compact) <= sheetWidth - 2 * HEAD.pad
+// The sheet is as wide as its content minimum, or wider when the measured tools need it.
+const sheetWidthFor = (contentMin, tools) => Math.max(contentMin, tools + HEAD.left + HEAD.gap + 2 * HEAD.pad)
+
 // One glass object at the top of the call: a pill while you talk, a one-line notice for NOTICE_MS when a new
 // insight arrives, a sheet when opened (⌘↵, a click, an answer), and the Recap when the call ends.
 const NOTICE_MS = 6000
@@ -503,4 +515,4 @@ function debugLabel({ trackId, score, decision }) {
   return `#${trackId} · ${scored} · ${decision}`
 }
 
-if (typeof module !== 'undefined') module.exports = { micState, itemRows, menuModel, hoverOpen, HOVER_GRACE, REMEMBER_POINTS, cardKind, staleLine, relativeDate, oneLine, cardFacts, cardBullets, presetFor, layoutFor, askPlace, cardRect, recapFrom, debugLabel, devMode, shouldMove, islandStage, islandBounds, ISLAND, NOTICE_MS, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
+if (typeof module !== 'undefined') module.exports = { HEAD, toolsWidth, headerFits, sheetWidthFor, micState, itemRows, menuModel, hoverOpen, HOVER_GRACE, REMEMBER_POINTS, cardKind, staleLine, relativeDate, oneLine, cardFacts, cardBullets, presetFor, layoutFor, askPlace, cardRect, recapFrom, debugLabel, devMode, shouldMove, islandStage, islandBounds, ISLAND, NOTICE_MS, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }

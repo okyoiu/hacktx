@@ -453,6 +453,13 @@ app.whenReady().then(async () => {
     connect()
     startEverything()
   }
+
+  // Developer mode only: HELLO_SHOT=<png> opens the sheet at 8 s and saves the island window as it really is
+  // at 10 s (screen capture can't see it: content protection). For design checks on the real window.
+  if (DEV && process.env.HELLO_SHOT) {
+    setTimeout(openAsk, 8000)
+    setTimeout(async () => fs.writeFileSync(process.env.HELLO_SHOT, (await windows.island.capturePage()).toPNG()), 10_000)
+  }
 })
 
 // One launch: start what isn't running (database, memory server, capture), stop what we started on quit.
