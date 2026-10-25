@@ -255,10 +255,20 @@ body[data-view="all"] .people { display: none; }
 /* two sizes on the card: 15px name and 13.5px text, plus the 11px labels; the role is the dim line under the name */
 .card .role { margin-top: -2px; font-size: 13.5px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card .role:empty { display: none; }
-.card .facts { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 10px 0 0; padding-top: 10px; border-top: 1px solid var(--rule); }
-.card .facts div { min-width: 0; }
-.card .facts dt { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); white-space: nowrap; }
-.card .facts dd { margin: 1px 0 0; font-size: 13.5px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* the label row and the bullets are shared by the card and the person page */
+.facts { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 10px 0 0; padding-top: 10px; border-top: 1px solid var(--rule); }
+.facts div { min-width: 0; }
+.facts dt { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); white-space: nowrap; }
+.facts dd { margin: 1px 0 0; font-size: 13.5px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.person .facts { margin-top: 14px; }
+.person .bullets { margin: 10px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; color: var(--ink-2); font-size: 13.5px; }
+.person .bullets li { margin: 0; }
+.person .bullets li::before { content: "·"; margin-right: 7px; color: var(--ink-3); }
+.stale { margin-bottom: 4px; }
+.stale .sub-title { margin: 0 0 4px; }
+.stale-list { flex: none; max-height: 150px; }
+/* developer mode only: your own tile */
+.card.you { width: auto; height: 28px; padding: 0 11px; border-radius: 999px; display: grid; place-items: center; color: var(--ink-3); font-size: 13px; opacity: 0.7; }
 .card .more { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 0.4s var(--ease), opacity 0.3s ease; }
 .card .more > div { min-height: 0; overflow: hidden; }
 .card.open .more { grid-template-rows: 1fr; opacity: 1; }

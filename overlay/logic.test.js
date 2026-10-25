@@ -321,7 +321,7 @@ test('Ask AI stays in its spot when it covers nothing, else moves to a free area
   const under = askPlace({ work: WORK, spot: { x: 400, y: 40 }, faces: [], blocks: [strip], panel })
   assert.equal(overlap({ ...under, ...panel }, strip), 0, 'never under the control strip')
   const card = cardRect([800, 150, 200, 250], { x: 0, y: 0, width: 1440, height: 900 })
-  assert.deepEqual(card, { x: 1012, y: 150, width: 300, height: 170 }, 'the card sits to the right of its face')
+  assert.deepEqual(card, { x: 1012, y: 150, width: 300, height: 244 }, 'the card sits to the right of its face')
   const offCard = askPlace({ work: WORK, spot: { x: 968, y: 100 }, faces: [], blocks: [], cards: [card], panel })
   assert.equal(overlap({ ...offCard, ...panel }, card), 0, 'name cards are kept clear too')
 })
@@ -476,6 +476,61 @@ test('the card shows three bullets: the role is already in the header, "This cal
   assert.deepEqual(cardBullets({ role: 'Lead', bullets: ['Lead', 'a', 'b'] }), ['a', 'b'])
   assert.deepEqual(cardBullets({ role: '', bullets: ['a', 'b', 'c'] }), ['a', 'b', 'c'])
   assert.deepEqual(cardBullets({ role: 'Lead', line: 'Last time: x' }), ['Last time: x'], 'an older server: the label and the last-time line')
+})
+
+// ---------- round 7: cards never cover another face, your own tile, the dashboard ----------
+const { cardKind, staleLine } = require('./logic')
+const clear = (place, card, rect) => place.left + card.width <= rect[0] || place.left >= rect[0] + rect[2] || place.top + card.height <= rect[1] || place.top >= rect[1] + rect[3]
+
+test('a card never covers another face: beside its own, else below, else above, else where it covers least', () => {
+  const card = { width: 300, height: 170 }
+  const screen = { width: 1440, height: 900 }
+  const jordan = [180, 260, 200, 260]
+  const maya = [620, 270, 190, 250]
+  const alone = cardPlace({ face: jordan, card, screen })
+  assert.equal(alone.left, 392, 'alone: to the right')
+  const beside = cardPlace({ face: jordan, card, screen, avoid: [maya] })
+  assert.ok(clear(beside, card, maya), 'two faces side by side: off the neighbour')
+  assert.ok(clear(beside, card, jordan), 'and off its own face')
+  assert.equal(beside.top, 260 + 260 + 12, 'went below, the first free spot')
+  const you = [300, 560, 180, 220] // your own tile, right under Jordan: below is taken, so it slides past it
+  const slid = cardPlace({ face: jordan, card, screen, avoid: [maya, you] })
+  assert.ok([maya, you, jordan].every((f) => clear(slid, card, f)), 'slid along to a free spot')
+  const island = [440, 31, 560, 44]
+  const top = cardPlace({ face: [500, 40, 120, 120], card, screen, avoid: [island] })
+  assert.ok(clear(top, card, island), 'and off the island')
+  const grid = []
+  for (const row of [60, 360, 660]) for (const col of [100, 600, 1100]) grid.push([col, row, 180, 180]) // 320 px between faces: room beside
+  const centre = grid[4]
+  const others = grid.filter((f) => f !== centre)
+  const inGrid = cardPlace({ face: centre, card, screen, avoid: others })
+  assert.ok(others.every((f) => clear(inGrid, card, f)), '3x3 grid: a spot that covers no other face')
+  assert.ok(clear(inGrid, card, centre))
+  const tag = { width: 110, height: 28 }
+  const tagPlace = cardPlace({ face: jordan, card: tag, screen, avoid: [maya] })
+  assert.ok(clear(tagPlace, tag, maya), 'the closed tag follows the same rule')
+  const wall = [[0, 0, 1440, 250], [0, 540, 1440, 360]] // faces everywhere but a band: least coverage wins
+  const squeezed = cardPlace({ face: [600, 270, 200, 250], card, screen, avoid: wall })
+  assert.ok(squeezed.left >= 8 && squeezed.top >= 8 && squeezed.left + card.width <= 1432, 'still on screen')
+})
+
+test('your own tile gets no tag and no card, except a dim "You" in developer mode', () => {
+  assert.equal(cardKind(null, false), 'thinking')
+  assert.equal(cardKind({ id: 'p_1', name: 'Jordan Lee', self: false }, false), 'known')
+  assert.equal(cardKind({ id: 'p_me', name: 'Cesar', self: true }, false), 'none')
+  assert.equal(cardKind({ id: 'p_me', name: 'Cesar', self: true }, true), 'you')
+  assert.equal(cardKind({ id: 'p_1', name: 'Jordan Lee' }, true), 'known', 'an older server has no self flag')
+})
+
+test('"Haven\'t talked in a while" rows say how long ago, and the stale route is allowed', () => {
+  assert.equal(staleLine({ daysSince: 31 }), 'Last met 31 days ago')
+  assert.equal(staleLine({ daysSince: 1 }), 'Last met yesterday')
+  assert.equal(staleLine({ daysSince: 0 }), 'Last met today')
+  assert.equal(staleLine({ daysSince: 400 }), 'Last met 400 days ago')
+  assert.equal(staleLine({}), '')
+  assert.ok(validCall('/people/stale?days=30', undefined, 'GET'))
+  assert.ok(!validCall('/people/stale?days=30&x=1', undefined, 'GET'))
+  assert.ok(!validCall('/people/stale?days=30', undefined, 'DELETE'))
 })
 
 test('the transcript strip and Recap have fixed sizes the layout can count on', () => {

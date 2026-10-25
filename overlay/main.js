@@ -192,7 +192,9 @@ function place() {
 // The island grows and shrinks around its anchor as the pill becomes a notice, a sheet or the Recap.
 function fitIsland(animate = false) {
   if (!layout) return
-  move(windows.island, islandBounds(layout.bar, islandSize, workAreaFor(callWindow.rect)), animate && !reducedMotion())
+  const bounds = islandBounds(layout.bar, islandSize, workAreaFor(callWindow.rect))
+  move(windows.island, bounds, animate && !reducedMotion())
+  windows.cards.webContents.send('island-bounds', bounds) // cards keep clear of it
 }
 
 // ---------- events in ----------
