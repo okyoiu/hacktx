@@ -786,3 +786,17 @@ One list, in the order to do it 10 minutes before the pitch. It replaces the ear
 10. **Say it out loud:** "this listens, and call audio goes to Meta's Muse"; people who are not remembered are still heard but nothing about them is saved.
 11. **Muse app (only if you show it):** run `tools/tunnel.sh` last, give out the address and key, stop the tunnel straight after.
 12. **After:** delete the demo people, `rm -rf logs/ notes/`, change `ENROLL_CODE` and `MUSE_CONNECTOR_KEY`, stop the tunnel and any hand-started server, `docker stop hello-again-db`.
+
+---
+
+## Round 14: requirements for `POST /connector/mcp` (not built yet)
+
+2026-10-25, Security agent, on main `a110b5e`. The README says the connector also speaks MCP (a JSON-RPC protocol some Muse custom connectors want). The route is not in any branch yet, so this is the checklist the code is reviewed against, with three strict-xfail tests in `tools/test_security.py` (`test_mcp_needs_the_key`, `test_mcp_errors_leak_nothing_and_bodies_are_bounded`, `test_mcp_tool_results_carry_no_prints_or_tokens_and_only_opted_in_people`).
+
+1. **Same key rule:** `/connector/mcp` uses the same `require_key` as the REST routes: constant-time compare, 404 when `MUSE_CONNECTOR_KEY` is unset, 401 for a missing or wrong key, the same wrong-key limit. Check the key **before** reading or parsing the body. No JSON-RPC method (not even `initialize` or `ping`) answers without it.
+2. **Tunnel rule:** the path starts with `/connector/`, so the middleware lets a tunnelled request reach it; nothing else may. It must not add any other path (for example a `/mcp` at the root, or a server-sent-events stream that stays open).
+3. **Same data rule as REST:** tools return only people whose scope has `connector`, and only the fields the REST connector returns. No face prints, delete tokens, selfie, scope or file paths in any tool result, resource or error. Tool arguments are ids and plain strings only; a wrong type is a JSON-RPC error, not an exception.
+4. **Errors without stack traces:** malformed JSON gives `-32700`, a wrong shape `-32600`, an unknown method `-32601`, bad arguments `-32602`, an unexpected failure `-32603` with a fixed message. Never `str(exception)`, never a traceback, never a file path or SQL text.
+5. **Body size bounded:** read at most about 64 KB (check `Content-Length` and the bytes actually read) and answer 413 above it; a JSON-RPC batch (an array) is limited to a few items or refused.
+6. **Read-only:** no tool writes, deletes, enrolls or calls Muse or SerpApi. The tool list is documentation and names no people.
+7. **No new open door:** the route is POST-only, takes `application/json` only (so a web page cannot post to it without a preflight), and logs no body (the access log already shows paths only).

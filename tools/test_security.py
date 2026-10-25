@@ -599,3 +599,56 @@ def test_facts_are_written_only_for_people_whose_scope_includes_them():
         assert store.conn().execute("select count(*) from facts where person_id = %s", (pid,)).fetchone()[0] == 0
     finally:
         store.conn().execute("delete from people where id = %s", (pid,))
+
+
+# --- the connector over MCP (POST /connector/mcp, JSON-RPC): same rules as the REST connector ---
+
+def _mcp(c, body, key="k" * 32, raw=None, **headers):
+    h = {"content-type": "application/json", **headers}
+    if key:
+        h["authorization"] = "Bearer " + key
+    return c.post("/connector/mcp", content=raw if raw is not None else json.dumps(body), headers=h)
+
+
+@pytest.fixture
+def mcp(monkeypatch):
+    monkeypatch.setenv("MUSE_CONNECTOR_KEY", "k" * 32)
+    person = {"id": "p_x", "name": "Sam", "role": "", "lastSeen": None, "lastSpoke": None, "topic": None, "context": None,
+              "facts": [], "encounters": [], "notes": [], "howMet": "", "firstMet": date(2026, 10, 1), "scope": ["connector"]}
+    monkeypatch.setattr(store, "person", lambda pid: dict(person))
+    monkeypatch.setattr(store, "people", lambda: [dict(person)])
+    return TestClient(server.app, client=LAPTOP)
+
+
+@pytest.mark.xfail(strict=True, reason="POST /connector/mcp is not built yet: it needs the same bearer key as the REST routes")
+def test_mcp_needs_the_key(mcp):
+    ping = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    assert _mcp(mcp, ping, key=None).status_code == 401
+    assert _mcp(mcp, ping, key="wrong").status_code == 401
+    assert _mcp(mcp, ping, **TUNNEL).status_code == 200  # through the tunnel, with the key: allowed (and nothing else is)
+
+
+@pytest.mark.xfail(strict=True, reason="POST /connector/mcp is not built yet: errors must be JSON-RPC errors without stack traces, bodies bounded")
+def test_mcp_errors_leak_nothing_and_bodies_are_bounded(mcp):
+    for raw in ("{not json", "[]", '{"jsonrpc":"2.0","id":1,"method":"nope"}',
+                '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"getPerson","arguments":{"id":["x"]}}}'):
+        r = _mcp(mcp, None, raw=raw)
+        assert r.status_code in (200, 400), raw
+        assert not re.search(r"Traceback|File \"|\.py|psycopg|KeyError|TypeError", r.text), r.text
+    assert _mcp(mcp, None, raw=json.dumps({"jsonrpc": "2.0", "id": 3, "method": "ping", "pad": "x" * 200_000})).status_code in (400, 413)
+
+
+@pytest.mark.xfail(strict=True, reason="POST /connector/mcp is not built yet: tool results carry no prints, tokens or people who did not opt in")
+def test_mcp_tool_results_carry_no_prints_or_tokens_and_only_opted_in_people(mcp, monkeypatch):
+    listing = _mcp(mcp, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    assert listing.status_code == 200 and "Sam" not in listing.text  # the tool list is documentation, not data
+    names = [t["name"] for t in listing.json()["result"]["tools"]]
+    texts = []
+    for i, name in enumerate(names):
+        args = {"id": "p_x"} if "erson" in name and "ist" not in name else {}
+        texts.append(_mcp(mcp, {"jsonrpc": "2.0", "id": 10 + i, "method": "tools/call", "params": {"name": name, "arguments": args}}).text)
+    assert any("Sam" in t for t in texts)
+    assert not re.search(r"print|token|embedding|selfie|scope", "\n".join(texts), re.I)
+    monkeypatch.setattr(store, "people", lambda: [{"id": "p_y", "name": "Hidden", "scope": ["facePrint"], "role": "", "lastSeen": None, "lastSpoke": None, "topic": None, "context": None}])
+    hidden = "".join(_mcp(mcp, {"jsonrpc": "2.0", "id": 99, "method": "tools/call", "params": {"name": n, "arguments": {}}}).text for n in names)
+    assert "Hidden" not in hidden  # people who did not tick the box stay out, as in the REST connector
