@@ -1,4 +1,5 @@
 """End-of-call note in notes/YYYY-MM-DD-HHMM.md: who you saw, what you learned about them, key points and AI answers."""
+import re
 from datetime import date, datetime
 from pathlib import Path
 
@@ -12,10 +13,11 @@ def day(d: date) -> str:
 
 
 def render(started: datetime, people: list[dict], points: list[str], responses: list[dict]) -> str:
-    """people: [{name, firstMet, learned}]; points: insight points; responses: finished response events."""
+    """people: [{id, name, firstMet, learned}]; points: insight points; responses: finished response events."""
     out = [f"# Call on {started:%A} {day(started)}, {started:%H:%M}", ""]
     for p in people:
-        out += [f"## {p['name']}", "", f"First met {day(p['firstMet'])}.", ""]
+        # the id marks the section so forget() can find it; a name can't add lines or headings of its own
+        out += [f"## {' '.join(p['name'].split())} <!-- {p['id']} -->", "", f"First met {day(p['firstMet'])}.", ""]
         out += [f"- {text}" for text in p["learned"]] or ["Nothing new this call."]
         out.append("")
     if points:
@@ -40,3 +42,12 @@ def write(started: datetime, learned: dict[str, list[str]], points: list[str], r
     with path.open("a") as f:  # a second call starting in the same minute appends instead of overwriting
         f.write(render(started, people, points, responses) + "\n")  # blank line before any call appended later
     return path
+
+
+def forget(pid: str) -> None:
+    """Remove a person's section from every call note, for someone who deleted themselves or whose consent ran out."""
+    section = re.compile(rf"^## [^\n]*<!-- {re.escape(pid)} -->\n.*?(?=^#{{1,2}} |\Z)", re.M | re.S)
+    for path in NOTES.glob("*.md"):
+        text = path.read_text()
+        if (cleaned := section.sub("", text)) != text:
+            path.write_text(cleaned)

@@ -98,6 +98,21 @@ def test_delete_needs_the_right_token(db, enroll):
     assert store.delete_person(pid, token) is False
 
 
+def test_deleting_yourself_or_expiring_removes_your_section_from_call_notes(db, enroll, tmp_path, monkeypatch):
+    monkeypatch.setattr(notes, "NOTES", tmp_path)
+    (a, ta), (b, _), (c, _) = enroll(random_print()), enroll(random_print()), enroll(random_print())
+    people = [{**store.person(p), "learned": [f"fact about {p}"]} for p in (a, b, c)]
+    path = tmp_path / "call.md"
+    path.write_text(notes.render(datetime(2026, 10, 24, 15, 30), people, [], []))
+    store.delete_person(a, "wrong-token")
+    assert f"fact about {a}" in path.read_text()  # a refused delete changes nothing
+    store.delete_person(a, ta)
+    db.execute("update consents set expires_at = current_date - 1 where person_id = %s", (b,))
+    store.purge_expired()
+    text = path.read_text()
+    assert f"fact about {a}" not in text and f"fact about {b}" not in text and f"fact about {c}" in text
+
+
 def test_person_returns_notes_newest_first(db, enroll):
     pid, _ = enroll(random_print())
     store.add_note(pid, "Moved to Austin")

@@ -76,21 +76,21 @@ def test_first_shapes_place_and_event_results():
 
 def test_render_lists_people_points_and_responses():
     people = [
-        {"name": "Jordan Lee", "firstMet": date(2025, 9, 24), "learned": ["Moved to Austin"]},
-        {"name": "Maya Chen", "firstMet": date(2026, 10, 24), "learned": []},
+        {"id": "p_j", "name": "Jordan Lee", "firstMet": date(2025, 9, 24), "learned": ["Moved to Austin"]},
+        {"id": "p_m", "name": "Maya Chen", "firstMet": date(2026, 10, 24), "learned": []},
     ]
     responses = [{"query": "Find climbing gyms", "text": "Ledge\nClimbing gym · 1 Main St",
                   "sources": [{"title": "Ledge", "url": "https://maps.example/ledge"}]},
                  {"query": "Suggest follow-ups", "text": "How is the new place?", "sources": []}]
     assert render(datetime(2026, 10, 24, 15, 30), people, ["Both of you climb"], responses) == """# Call on Saturday Oct 24, 2026, 15:30
 
-## Jordan Lee
+## Jordan Lee <!-- p_j -->
 
 First met Sep 24, 2025.
 
 - Moved to Austin
 
-## Maya Chen
+## Maya Chen <!-- p_m -->
 
 First met Oct 24, 2026.
 
@@ -122,3 +122,15 @@ def test_write_skips_empty_calls_and_appends_within_a_minute(tmp_path, monkeypat
     path = notes.write(started, {}, ["Both of you climb"], [])
     assert notes.write(started, {}, ["Both of you climb"], []) == path and path.name == "2026-10-24-1530.md"
     assert path.read_text().count("# Call on") == 2
+
+
+def test_forget_removes_only_that_persons_section(tmp_path, monkeypatch):
+    monkeypatch.setattr(notes, "NOTES", tmp_path)
+    people = [{"id": "p_j", "name": "Jordan\n## Evil", "firstMet": date(2025, 9, 24), "learned": ["Moved to Austin"]},
+              {"id": "p_m", "name": "Maya Chen", "firstMet": date(2026, 10, 24), "learned": ["Climbs"]}]
+    path = tmp_path / "call.md"
+    path.write_text(render(datetime(2026, 10, 24, 15, 30), people, ["Both of you climb"], []))
+    notes.forget("p_j")
+    text = path.read_text()
+    assert "Jordan" not in text and "Austin" not in text
+    assert "## Maya Chen <!-- p_m -->" in text and "Climbs" in text and "## Key points" in text

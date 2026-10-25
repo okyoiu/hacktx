@@ -30,9 +30,13 @@ def conn() -> psycopg.Connection:
 
 def purge_expired() -> None:
     """Delete everyone whose consent has run out (faces and notes go with them)."""
-    conn().execute(
-        "delete from people where id in (select person_id from consents where expires_at < current_date)"
-    )
+    from memory import notes  # lazy: notes imports store
+
+    rows = conn().execute(
+        "delete from people where id in (select person_id from consents where expires_at < current_date) returning id"
+    ).fetchall()
+    for (pid,) in rows:
+        notes.forget(pid)
 
 
 def match(face_print: np.ndarray) -> dict | None:
@@ -73,6 +77,9 @@ def delete_person(pid: str, token: str) -> bool:
     if row is None or not secrets.compare_digest(row[0], token):
         return False
     conn().execute("delete from people where id = %s", (pid,))
+    from memory import notes  # lazy: notes imports store
+
+    notes.forget(pid)
     return True
 
 
