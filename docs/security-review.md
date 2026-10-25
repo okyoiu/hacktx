@@ -446,3 +446,48 @@ The `/connector/*` routes must then do their own check: the bearer key (below), 
 ### What leaves the laptop through the connector
 
 Muse (and anyone holding the key) can read names, roles, dates, facts and conversation summaries of every consenting person. That is more than a guest agreed to at enrollment ("notes are kept on this laptop"). Before the demo: tell guests, or use the connector only with sample people.
+
+---
+
+## Round 9: the refreshed review branches (connector, stale, hypertable, Windows finder, mockups)
+
+2026-10-25, Security agent. Read `review-memory` (`5fea960`, `905da0e`, `c02336a`), `review-capture` (`a1cb1e9`) and `review-design` (`00969e2`, `ba21e4b`); I also merged all three into a scratch copy and ran every security test and the memory tests there: 132 passed, 1 skipped, 5 expected xfails. Verdict: **no critical or high findings. One medium, which only matters while the tunnel is running.**
+
+### Muse connector (`memory/connector.py`)
+
+**Fine:**
+- **Key check:** `Authorization: Bearer <MUSE_CONNECTOR_KEY>` is compared with `secrets.compare_digest` on encoded bytes. With no key set, every `/connector/*` data route answers 404 (the feature is off). A missing or wrong key gives 401 with `WWW-Authenticate`; an unknown id gives 404 only after the key passed, so ids cannot be probed.
+- **Read-only:** only `GET` routes exist; other methods give 405.
+- **What leaves:** id, name, role, `lastSeen`, `lastSpoke`, `topic`, `context`, and for one person `howMet`, facts, `about`, `lastTime` and the notes. No face prints, delete tokens, selfie, consent dates or file paths. People whose consent ran out are left out because it uses `store.person`/`store.people`.
+- **Forwarded requests are remote:** `from_this_laptop` is now false when any of `x-forwarded-for`, `x-forwarded-host`, `x-real-ip`, `forwarded`, `cf-connecting-ip`, `cf-ray`, `true-client-ip` is present, so `/ws`, `/people`, `/people/stale`, `/calls/end` and the rest are closed to the tunnel (my tunnel web-socket test now passes).
+- Wrong keys are counted (20 a minute) before a 429.
+
+**R9-1, Medium (only while the tunnel runs): the tunnel still reaches `/enroll` and `DELETE /people/*`.** The middleware lets `/connector/*`, `/enroll` and `DELETE /people/*` skip the laptop-only rule, and a tunnelled request is not told apart from a Wi-Fi guest for those two. With the tunnel up, anyone on the internet who has the address can try to enroll a face on the host's laptop (protected only by `ENROLL_CODE`, which `.env.example` leaves **empty**) or try delete tokens. Smallest fix in `guests_only_enroll`, before the guest check:
+
+```python
+if any(h in request.headers for h in FORWARDED) and not request.url.path.startswith("/connector/"):
+    return JSONResponse({"detail": "Not available through the tunnel."}, 403)
+```
+Strict xfail: `test_the_tunnel_reaches_nothing_but_the_connector` (it fails today on `/enroll`, and passes with the fix; delete the marker then). Until it merges: set `ENROLL_CODE` before starting the tunnel.
+
+**R9-2, Low: the wrong-key limit locks out the real caller.** The counter is checked before the key, and through a tunnel every caller looks the same, so 20 bad guesses a minute make Muse get 429 too. A 192-bit key cannot be guessed, so check the key first and apply the limit only to wrong keys.
+
+**R9-3, Info: `/connector/health` needs no key** and answers `{"ok": true}` even when the connector is switched off. It reveals nothing but that the server is up.
+
+**R9-4, Info (consent): the connector sends the user's notes, facts and conversation summaries to Muse's servers.** Guests agreed to notes kept on this laptop. Tell them, or demo the connector with sample people only. The tunnel is for the demo only; stop it and change `MUSE_CONNECTOR_KEY` afterwards.
+
+### `GET /people/stale`, hypertable, card fields
+
+- **`/people/stale`:** laptop-only (not a guest path, forwarded requests refused), `days` bounded 1 to 3650, parameterised SQL. Tested.
+- **Hypertable (`memory/schema.sql`):** guarded by `if exists timescaledb` and `if not exists hypertable`, so plain Postgres does nothing and a second start does nothing. Existing rows are kept (`migrate_data => true`) and the foreign key from `encounters` to `people` still cascades (a hypertable may reference a normal table). The script runs as one transaction, so a failure rolls it back whole.
+- **R9-5, Low (demo day): this is a one-way change to the shared Tiger database that runs at server start.** The `drop constraint encounters_pkey` assumes that constraint name; if it differs, `store.conn()` raises and the server will not start in front of the judges. I could not test it against real TimescaleDB here (the local database is plain Postgres). Take a `pg_dump`, start the server once against Tiger the day before, and check `select * from timescaledb_information.hypertables` and that deleting a test person still removes their encounters.
+- **R8-1a** (Muse topic keeps newlines) is still open.
+
+### Windows window finder (`capture/window.py`)
+
+- Titles of visible windows are read through `ctypes` into a local list, used only by `has_call` to match call sites, never logged (the log prints the app name and the app behind), never stored, and only the app name (at most 100 characters) goes in `POST /window`. No shell, no new dependency, and the code says itself that it is untested on Windows.
+- **R9-6, Low: on Windows the window is grabbed by rectangle with `mss`,** so another window or a notification that overlaps the call window ends up in the frame, and faces in it could be detected. It stays in memory and is never stored or sent. The Mac grabs by window id and does not have this.
+
+### Mockup pages (`overlay/mockups/*.html`)
+
+Static HTML with sample people drawn in CSS and SVG; the only script clones a template; no `http(s)` URL, `fetch`, form, import or external link; the index shows the three pages in same-folder iframes. Not served by the memory server. `test_the_mockup_pages_never_touch_the_network` checks all of this and passes on the merged copy.

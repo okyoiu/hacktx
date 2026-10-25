@@ -377,30 +377,30 @@ def test_a_laptop_request_without_forwarding_headers_still_works():
     assert TestClient(server.app, client=LAPTOP).get("/enroll").status_code == 200
 
 
-@pytest.mark.xfail(strict=True, reason="tunnelled requests (loopback + forwarding headers) must get only /connector/*")
+@pytest.mark.xfail(strict=True, reason="R9-1: the tunnel still reaches /enroll and DELETE /people/*, the guest paths; it must get only /connector/*")
 def test_the_tunnel_reaches_nothing_but_the_connector(monkeypatch):
     monkeypatch.setattr(store, "people", lambda: [])
     deleted = []
     monkeypatch.setattr(store, "delete_person", lambda *a: deleted.append(a) or True)
     c = TestClient(server.app, client=LAPTOP)
-    for method, path in (("GET", "/people"), ("GET", "/people/p_x"), ("GET", "/enroll"), ("POST", "/enroll"),
+    for method, path in (("GET", "/people"), ("GET", "/people/stale"), ("GET", "/people/p_x"), ("GET", "/enroll"), ("POST", "/enroll"),
                          ("POST", "/calls/end"), ("DELETE", "/people/p_x"), ("POST", "/ask"), ("GET", "/health")):
         r = c.request(method, path, headers=TUNNEL)
         assert r.status_code == 403, (method, path, r.status_code)
     assert deleted == []
 
 
-@pytest.mark.xfail(strict=True, reason="a tunnelled web socket must be refused like a Wi-Fi one")
+@pytest.mark.xfail(condition=not (ROOT / "memory/connector.py").exists(), strict=True, reason="fixed in memory 5fea960 (forwarded requests are remote); xfail until that merges")
 def test_the_tunnel_cannot_open_the_overlay_socket():
     with pytest.raises(WebSocketDisconnect):
         with TestClient(server.app, client=LAPTOP).websocket_connect("/ws", headers=dict(TUNNEL)):
             pass
 
 
-@pytest.mark.xfail(strict=True, reason="the connector routes are not built yet: no key, no data")
+@pytest.mark.skipif(not (ROOT / "memory/connector.py").exists(), reason="the connector is not merged yet")
 def test_the_connector_needs_the_key_and_sends_no_prints_or_tokens(monkeypatch):
     monkeypatch.setenv("MUSE_CONNECTOR_KEY", "k" * 32)
-    person = {"id": "p_x", "name": "Sam", "role": "", "lastSeen": None, "lastSpoke": None, "topic": None,
+    person = {"id": "p_x", "name": "Sam", "role": "", "lastSeen": None, "lastSpoke": None, "topic": None, "context": None,
               "facts": [], "encounters": [], "notes": [], "howMet": "", "firstMet": date(2026, 10, 1)}
     monkeypatch.setattr(store, "person", lambda pid: dict(person))
     monkeypatch.setattr(store, "people", lambda: [dict(person)])
@@ -414,10 +414,32 @@ def test_the_connector_needs_the_key_and_sends_no_prints_or_tokens(monkeypatch):
         assert c.request(method, "/connector/people/p_x", headers={**TUNNEL, "authorization": "Bearer " + "k" * 32}).status_code in (404, 405)
 
 
-@pytest.mark.xfail(strict=True, reason="the connector key must be compared in constant time")
+@pytest.mark.skipif(not (ROOT / "memory/connector.py").exists(), reason="the connector is not merged yet")
 def test_the_connector_key_is_compared_in_constant_time():
-    src = (ROOT / "memory/app.py").read_text()
-    assert "MUSE_CONNECTOR_KEY" in src and src.count("compare_digest") >= 2
+    src = (ROOT / "memory/connector.py").read_text()
+    assert "MUSE_CONNECTOR_KEY" in src and "compare_digest" in src and "==" not in re.sub(r"[!<>=]=", "", src.split("def require_key")[1].split("@router")[0])
+
+
+def test_without_a_connector_key_the_connector_does_not_exist(monkeypatch):
+    monkeypatch.delenv("MUSE_CONNECTOR_KEY", raising=False)
+    c = TestClient(server.app, client=LAPTOP)
+    assert c.get("/connector/people", headers={"authorization": "Bearer anything"}).status_code == 404
+    assert c.get("/connector/openapi.json").status_code == 404
+
+
+def test_stale_people_are_for_this_laptop_only(monkeypatch):
+    for client, headers in ((WIFI, {}), (LAPTOP, {"origin": "https://example.com"})):
+        assert TestClient(server.app, client=client).get("/people/stale", headers=dict(headers)).status_code == 403
+
+
+def test_the_mockup_pages_never_touch_the_network():
+    pages = list((ROOT / "overlay/mockups").glob("*.html"))
+    if not pages:
+        pytest.skip("no mockups yet")
+    for page in pages:
+        text = page.read_text()
+        assert not re.search(r"https?://|fetch\(|XMLHttpRequest|WebSocket|@import|<form|<script[^>]*\bsrc=|<link[^>]*href=\"(?!#)", text), page.name
+        assert re.findall(r"<iframe[^>]*src=\"([^\"]+)\"", text) == [u for u in re.findall(r"<iframe[^>]*src=\"([^\"]+)\"", text) if "/" not in u and u.endswith(".html")]
 
 
 def test_tunnel_script_says_what_to_do_when_no_tunnel_tool_is_installed():
