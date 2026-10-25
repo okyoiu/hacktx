@@ -246,7 +246,6 @@ def test_transcription_does_not_print_what_people_say():
     assert not any("transcript" in l for l in printed)
 
 
-@pytest.mark.xfail(strict=True, reason="R4-2: notes/ and notes/people/ are created with the default mode (0755)")
 def test_the_notes_folders_are_private(monkeypatch, tmp_path):
     from datetime import datetime
 
