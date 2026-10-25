@@ -45,7 +45,9 @@ kbd {
 }
 
 /* ---------- where each piece sits ---------- */
-body:not([data-view="all"]) :is(.island, .panel) { position: absolute; top: 0; left: 0; width: 100%; }
+body:not([data-view="all"]) :is(.island, .panel) { position: absolute; top: 0; left: 0; }
+body:not([data-view="all"]) .panel { width: 100%; }
+/* the island's width comes from its stage (below), never from its window: main.js sizes the window to it */
 body[data-view="all"] { background: #0E1014; }
 /* browser preview: placed by overlay.js from the same layout rules as the app, with CSS blur standing in for the OS */
 body[data-view="all"] :is(.island, .panel) {
@@ -57,12 +59,14 @@ body[data-view="all"] :is(.island, .panel) {
 body[data-view="all"].idle .island { opacity: 0.3; transition: opacity 0.8s ease; } /* each Electron window fades itself (main.js) */
 
 /* ---------- the island ---------- */
-.island { box-sizing: border-box; width: 600px; border-radius: 28px; padding: 16px 20px 20px; animation: panel-in 0.5s var(--ease) backwards; transition: border-radius 0.3s var(--ease); }
-.island[data-stage="pill"] { width: 272px; border-radius: 999px; padding: 0; }
+/* The sheet is 600 wide, or wider when its header's tools need it (max-content); the bodies are fixed at
+   560 so long text wraps instead of widening it. */
+.island { box-sizing: border-box; width: max-content; min-width: 600px; border-radius: 28px; padding: 16px 20px 20px; animation: panel-in 0.5s var(--ease) backwards; transition: border-radius 0.3s var(--ease); }
+.island[data-stage="pill"] { width: 272px; min-width: 0; border-radius: 999px; padding: 0; }
 .island[data-stage="notice"] { border-radius: 24px; padding: 16px 20px; }
-body:not([data-view="all"]) .island { width: 100%; } /* the window is sized to the stage by main.js */
+.body, .notice { width: 560px; max-width: 560px; }
 
-.head { display: flex; align-items: center; gap: 12px; min-height: 32px; -webkit-app-region: drag; user-select: none; }
+.head { display: flex; align-items: center; gap: 12px; min-width: 0; min-height: 32px; -webkit-app-region: drag; user-select: none; }
 .island[data-stage="pill"] .head { height: 44px; padding: 0 16px 0 16px; }
 .pill-main { display: flex; align-items: center; gap: 12px; height: 32px; padding: 0; border: 0; background: none; -webkit-app-region: no-drag; }
 .island:is([data-stage="sheet"], [data-stage="recap"]) .pill-main { cursor: default; }
@@ -101,7 +105,7 @@ body:not([data-view="all"]) .island { width: 100%; } /* the window is sized to t
 .mark { width: 18px; height: 18px; flex: none; fill: var(--ink); }
 .badge { display: grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 9px; background: var(--ink); color: #111; font-size: 11px; font-weight: 700; }
 
-.notice { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; }
+.notice { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 12px; }
 .notice .t { flex: 1; min-width: 0; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .notice .t b { font-weight: 650; margin-right: 8px; }
 .notice .t small { display: block; font-size: 13.5px; color: var(--ink-2); margin-top: 2px; }
@@ -109,8 +113,15 @@ body:not([data-view="all"]) .island { width: 100%; } /* the window is sized to t
 .chip-act:hover { background: var(--hover); }
 .chip-act .label { overflow: hidden; text-overflow: ellipsis; }
 
-/* the header's tools: 8px apart, the last one 12px from the sheet's edge (the island's 20px inset minus 8) */
-.tools { margin-left: auto; margin-right: -8px; display: flex; align-items: center; gap: 8px; }
+/* the header's tools never shrink or overflow: they keep their width, 8px apart, with a 16px inset inside
+   the island's own padding; the sheet grows to fit them (max-content above) */
+.tools { flex: 0 0 auto; margin-left: auto; display: flex; align-items: center; gap: 8px; padding-right: 16px; }
+/* a window narrower than the tools need (a tiny screen): smaller icons and End call keeps only its icon */
+@media (max-width: 520px) {
+  .tool { width: 26px; height: 26px; }
+  .tool.end { padding: 0 8px; }
+  .tool.end span { display: none; }
+}
 .tool { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 10px; background: none; color: var(--ink-2); -webkit-app-region: no-drag; transition: background-color 0.15s ease, color 0.15s ease; }
 .tool:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
 .tool:disabled { opacity: 0.35; }
@@ -121,7 +132,7 @@ body:not([data-view="all"]) .island { width: 100%; } /* the window is sized to t
 .tool svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .tool .i-play, .head[data-state="paused"] .i-pause { display: none; }
 .head[data-state="paused"] .i-play { display: block; }
-#closeRecap { margin-left: auto; margin-right: -8px; background: var(--fill); border-radius: 50%; }
+#closeRecap { flex: 0 0 auto; margin-left: auto; margin-right: 16px; background: var(--fill); border-radius: 50%; }
 
 /* the bodies: Live insights and the thread in the sheet, the Recap in its place */
 .body { display: none; }

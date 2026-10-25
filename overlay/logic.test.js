@@ -473,6 +473,15 @@ test('result rows: three, then "+N more" that expands; prose only when there are
   assert.deepEqual(itemRows([{ title: 'x' }, { nope: 1 }, 'bad'], false).shown, [{ title: 'x' }], 'only rows with a title')
 })
 
+test('the header tools fit inside the sheet at every width the layout can produce', () => {
+  const { headerFits, toolsWidth, sheetWidthFor, HEAD } = require('./logic')
+  for (const width of [448, BAR.width, ISLAND.sheet]) assert.ok(headerFits(width), `fits at ${width}`)
+  assert.ok(headerFits(448, true), 'and compact')
+  assert.ok(toolsWidth(true) < toolsWidth(false), 'compact is narrower')
+  assert.equal(sheetWidthFor(600, toolsWidth()), 600, 'the content minimum when the tools already fit')
+  assert.equal(sheetWidthFor(600, 500), 500 + HEAD.left + HEAD.gap + 2 * HEAD.pad, 'grows to fit wider tools, never the reverse')
+})
+
 test('the island keeps its centre as it grows (Teams: its left edge) and stays on screen', () => {
   const spot = { x: 440, y: 31, width: BAR.width, height: BAR.height, anchor: 'center' }
   assert.deepEqual(islandBounds(spot, { width: ISLAND.pill, height: 44 }, WORK), { x: 440 + (BAR.width - ISLAND.pill) / 2, y: 31, width: ISLAND.pill, height: 44 })
