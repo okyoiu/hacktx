@@ -131,6 +131,7 @@ To stop everything, press `Ctrl+C` in each terminal.
 - **Overlay only:** `cd overlay && npm run mock` replays `shared/mocks/overlay-demo.jsonl` over your desktop. No Python needed.
 - **Server without a camera or mic:** start the server and the overlay, then `uv run --env-file .env python -m memory.replay`. It adds two **sample** people (Jordan Lee and Maya Chen) and sends `shared/mocks/transcript.jsonl` through Muse Spark. Use it on the local database only, and delete those people afterwards.
 - **Capture without a call:** `python -m capture.faces --video <your own recording>`.
+- **Something's off? Run the doctor:** `uv run --env-file .env python -m capture.doctor` checks Screen Recording, the call window, one grab, YOLO, InsightFace, the memory server and the microphone in about 15 seconds, one line each with the fix.
 - **See what the computer vision sees (debugging only):** `uv run --env-file .env python -m tools.cv_check`. Users never see this.
 - **Tests:** `uv run pytest` (database tests use the local database)
 
