@@ -184,6 +184,7 @@ def person(pid: str) -> dict | None:
         "role": row[2],
         "howMet": row[3],
         "scope": row[4],
+        "connector": "connector" in row[4],
         "firstMet": row[1],
         **seen_fields([(at, spoke, topic, ctx) for at, _, _, spoke, topic, ctx in encounters]),
         "encounters": [{"metAt": at, "about": about, "lastTime": last} for at, about, last, *_ in encounters],

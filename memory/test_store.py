@@ -556,7 +556,8 @@ def test_consent_scope_defaults_to_what_the_person_saw_adds_connector_only_when_
         db.execute(schema)  # a second start changes nothing more
         assert [scope(p) for p in (old, custom, ticked)] == [["facePrint", "notes"], ["facePrint"], base + ["connector"]]  # nothing added
         with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
-            assert http.get(f"/people/{pid}").json()["scope"] == base
+            assert http.get(f"/people/{pid}").json()["scope"] == base and http.get(f"/people/{pid}").json()["connector"] is False
+            assert http.get(f"/people/{ticked}").json()["connector"] is True
             assert [p["scope"] for p in http.get("/people").json() if p["id"] == ticked] == [base + ["connector"]]
     finally:
         db.execute("delete from people where id = %s", (ticked,))
