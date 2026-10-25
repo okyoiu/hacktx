@@ -520,6 +520,19 @@ function setOpen(on) {
   syncStage()
 }
 
+// The Recap closes: the call is over but Hello Again is still listening, and the pill says so for a moment.
+function closeRecapReady() {
+  recapOn = false
+  $('noticeTopic').textContent = READY.topic
+  $('noticePoint').textContent = READY.meta
+  $('noticeMeta').textContent = ''
+  $('noticeAction').hidden = true
+  noticeUntil = Date.now() + READY.ms
+  clearTimeout(noticeTimer)
+  noticeTimer = setTimeout(syncStage, READY.ms + 20)
+  syncStage()
+}
+
 function notify() {
   noticeUntil = Date.now() + NOTICE_MS
   clearTimeout(noticeTimer)
@@ -532,17 +545,23 @@ function renderBadge() {
   $('badge').textContent = unseen
 }
 
+// A later insight while closed: the badge pulses once (300 ms, none under reduced motion) instead of the pill growing.
+let callNo = 0 // counts calls: a recap ends one
+let autoOpenedFor = null // the call the island already opened itself for
+function pulseBadge() {
+  $('badge').classList.remove('pulse')
+  void $('badge').offsetWidth // restart the animation
+  $('badge').classList.add('pulse')
+}
+
 if (shows('bar')) {
   $('pillBtn').addEventListener('click', () => !recapOn && setOpen(!open))
   $('askBtn').addEventListener('click', () => (window.overlay ? window.overlay.ask() : startAsk()))
-  $('closeRecap').addEventListener('click', () => {
-    recapOn = false
-    syncStage()
-  })
+  $('closeRecap').addEventListener('click', closeRecapReady)
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return
-    recapOn = false
-    setOpen(false)
+    if (recapOn) closeRecapReady()
+    else setOpen(false)
   })
   // hover grows the pill into the notice (with its tools); leaving lets it back off after a moment.
   // Nothing here takes keyboard focus: the call keeps it until ⌘↵ or a click.
@@ -575,7 +594,9 @@ if (shows('bar')) {
 
 // ---------- the head: waveform, timer, tools ----------
 
-let listening = { on: false, startedAt: null }
+// the server's pause state; null until /health or a `listening` event says (never assume paused: a fresh
+// overlay used to show ▶ while the server was listening)
+let listening = { on: null, startedAt: null }
 let muted = false // the mic toggle: no audio goes to Muse while muted; faces keep working
 let connected = !window.overlay || !!q.get('mock') // a browser preview has no connection to lose
 let energy = 0 // jumps to 1 on each caption, then settles: the waveform breathes with the conversation
@@ -588,7 +609,10 @@ function setListening({ on, startedAt }) {
 // The status dot: hidden while everything runs, amber with what's wrong, from GET /health every 10 s and the launcher.
 let launchDown = ''
 async function checkHealth() {
-  const problems = healthProblems(connected ? await api('/health', undefined, 'GET') : { error: 'offline' }, launchDown)
+  const health = connected ? await api('/health', undefined, 'GET') : { error: 'offline' }
+  // the pause state from the server itself: its `listening` event can be missed on a reconnect
+  if (typeof health.listening === 'boolean' && health.listening !== listening.on) setListening({ on: health.listening })
+  const problems = healthProblems(health, launchDown)
   $('health').dataset.state = problems.length ? 'warn' : 'ok'
   $('health').title = problems.length ? problems.join('. ') + '.' : 'Everything is running'
   $('health').setAttribute('aria-label', $('health').title)
@@ -617,7 +641,10 @@ function renderBar() {
   $('micBtn').disabled = !connected
   $('micBtn').setAttribute('aria-pressed', String(muted))
   $('micBtn').setAttribute('aria-label', mic.label + ' ⌘M')
-  $('pause').setAttribute('aria-label', listening.on ? 'Pause listening' : 'Resume listening')
+  const pause = pauseControl(listening.on)
+  $('pause').title = pause.tip
+  $('pause').setAttribute('aria-label', pause.tip)
+  $('pauseLabel').textContent = pause.label
   tick()
   if (mic.wave === 'live' && !calm.matches) requestAnimationFrame(wave)
   else drawWave(mic.wave === 'live' ? 'icon' : 'flat')
@@ -673,11 +700,13 @@ if (shows('bar')) {
   })
   $('pause').addEventListener('click', async () => {
     $('pause').disabled = true
-    const { error } = await api('/listening', { on: !listening.on }) // the bar updates when the `listening` event comes back
-    $('pause').disabled = !connected
-    $('timer').title = error || ''
-    if (error) flash = { text: 'Not sent', until: Date.now() + 3000 }
-    tick()
+    const reply = await api('/listening', pauseControl(listening.on).send)
+    if (typeof reply.on === 'boolean') setListening(reply) // the server's answer, in case its event doesn't come back
+    $('pause').disabled = false // never stuck after an error (renderBar disables it only while offline)
+    $('timer').title = reply.error || ''
+    if (reply.error) flash = { text: 'Not sent', until: Date.now() + 3000 }
+    renderBar()
+    checkHealth() // and read it back from the server
   })
   $('endBtn').addEventListener('click', async () => {
     $('endBtn').disabled = true
@@ -724,8 +753,9 @@ function showInsights(next) {
   $('points').replaceChildren(...points.map((p) => fresh(el('li', null, p), seen.has(p))))
   const had = new Set(prev?.actions.map((a) => a.id))
   $('actions').replaceChildren(...shownActions(next.actions).map((a) => fresh(actionRow(a, $('actionsNote')), had.has(a.id))))
-  if (open || recapOn) return
-  // closed: the pill widens for a moment with the newest point and the first action, and counts the rest
+  if (open || recapOn) return // an open sheet just updates in place
+  // closed: the notice text stays current for when the user hovers; the badge counts what's new; only the
+  // call's first insight widens the pill by itself
   const fresh_ = points.filter((p) => !seen.has(p))
   unseen += fresh_.length
   renderBadge()
@@ -739,7 +769,10 @@ function showInsights(next) {
     $('noticeAction').lastElementChild.textContent = first.label
     $('noticeAction').onclick = () => runAction(first.id, $('actionsNote'))
   }
-  notify()
+  if (insightAutoOpens(autoOpenedFor, callNo)) {
+    autoOpenedFor = callNo
+    notify()
+  } else pulseBadge()
 }
 
 function setInsightsEmpty(on) {
@@ -943,6 +976,7 @@ if (shows('response')) {
 function showRecap(r) {
   recapOn = true
   open = false
+  callNo++ // that call is over: the next one's first insight may open the island again
   turns = [] // the thread ends with the call
   renderThread()
   const minutes = listening.startedAt ? Math.max(1, Math.round((Date.now() - Date.parse(listening.startedAt)) / 60000)) : 0

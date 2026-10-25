@@ -281,7 +281,7 @@ async def overlay_socket(ws: WebSocket):
     if not from_this_laptop(ws):  # the http middleware doesn't see WebSockets
         return await ws.close(code=1008)
     await ws.accept()
-    for event in (listening, muted if muted["on"] else None, latest_insights, latest_window, latest_recap):  # mute only while on  # catch up an overlay that starts mid-call
+    for event in (listening, muted, latest_window, latest_insights, latest_recap):  # state first, then what was shown  # catch up an overlay that starts mid-call
         if event:
             await ws.send_json(event)
     clients.add(ws)

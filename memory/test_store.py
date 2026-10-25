@@ -56,6 +56,17 @@ def enroll(db):
     db.execute("delete from people where id = any(%s)", (pids,))
 
 
+@pytest.fixture(autouse=True)
+def forget_calls(monkeypatch):
+    """Every recap row a test stores (directly or through /calls/end) is deleted afterwards, and only those rows."""
+    made = []
+    real = store.add_call
+    monkeypatch.setattr(store, "add_call", lambda *args: made.append(real(*args)) or made[-1])
+    yield
+    if made:
+        store.conn().execute("delete from calls where id = any(%s)", (made,))
+
+
 def count(db, table: str, pid: str) -> int:
     col = "id" if table == "people" else "person_id"
     return db.execute(f"select count(*) from {table} where {col} = %s", (pid,)).fetchone()[0]
@@ -626,3 +637,12 @@ def test_calls_are_stored_newest_first_and_drop_deleted_expired_and_unagreed_peo
     assert all(a not in json.dumps(people) for (people,) in stored) and len(stored) == 2  # gone from the stored rows themselves
     assert len(ours(store.calls(1))) <= 1
     db.execute("delete from calls where topic like %s", (marker + "%",))
+
+
+def test_stored_calls_show_the_host_to_the_connector_without_the_tick(db, enroll):
+    marker = "Host " + secrets.token_hex(3)
+    (me, _), (other, _) = enroll(random_print()), enroll(random_print())
+    store.set_role(me, "Me", "user")
+    store.add_call(None, marker, [], [], [{"id": me, "name": "Me", "role": "Me", "lastTime": "x"}, {"id": other, "name": "O", "role": "", "lastTime": "y"}])
+    got = next(r for r in store.calls(50, "connector") if r["topic"] == marker)
+    assert [p["id"] for p in got["people"]] == [me]  # neither ticked the connector; the host is still shown

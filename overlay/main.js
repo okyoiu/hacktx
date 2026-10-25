@@ -304,8 +304,9 @@ function demoApi(route, body, method) {
     return { id: 'p_demo', deleteToken: 'demo' }
   }
   if (route === '/listening') {
-    broadcast({ type: 'listening', on: body.on, startedAt: demoStart })
-    return {}
+    const state = { type: 'listening', on: body.on, startedAt: demoStart }
+    broadcast(state)
+    return state // like the server: the reply is the new state
   }
   if (route === '/mute') {
     broadcast({ type: 'mute', on: Boolean(body.on) })

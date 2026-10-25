@@ -62,7 +62,7 @@ body[data-view="all"].idle .island { opacity: 0.3; transition: opacity 0.8s ease
 /* The sheet is 600 wide, or wider when its header's tools need it (max-content); the bodies are fixed at
    560 so long text wraps instead of widening it. */
 .island { box-sizing: border-box; width: max-content; min-width: 600px; border-radius: 28px; padding: 16px 20px 20px; animation: panel-in 0.5s var(--ease) backwards; transition: border-radius 0.3s var(--ease); }
-.island[data-stage="pill"] { width: 272px; min-width: 0; border-radius: 999px; padding: 0; }
+.island[data-stage="pill"] { width: 288px; min-width: 0; border-radius: 999px; padding: 0; }
 .island[data-stage="notice"] { border-radius: 24px; padding: 16px 20px; }
 .body, .notice { width: 560px; max-width: 560px; }
 
@@ -104,6 +104,8 @@ body[data-view="all"].idle .island { opacity: 0.3; transition: opacity 0.8s ease
 .spark-btn:hover { background: var(--hover); }
 .mark { width: 18px; height: 18px; flex: none; fill: var(--ink); }
 .badge { display: grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 9px; background: var(--ink); color: #111; font-size: 11px; font-weight: 700; }
+.badge.pulse { animation: badge-pulse 0.3s var(--ease); } /* a later insight: a nudge, not an expansion */
+@keyframes badge-pulse { 50% { scale: 1.3; } }
 
 .notice { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 12px; }
 .notice .t { flex: 1; min-width: 0; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -120,7 +122,8 @@ body[data-view="all"].idle .island { opacity: 0.3; transition: opacity 0.8s ease
 @media (max-width: 520px) {
   .tool { width: 26px; height: 26px; }
   .tool.end { padding: 0 8px; }
-  .tool.end span { display: none; }
+  .tool.end span, .pause-label { display: none; }
+  .pause-btn { width: 26px; height: 26px; padding: 0; justify-content: center; }
 }
 .tool { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 10px; background: none; color: var(--ink-2); -webkit-app-region: no-drag; transition: background-color 0.15s ease, color 0.15s ease; }
 .tool:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
@@ -130,8 +133,21 @@ body[data-view="all"].idle .island { opacity: 0.3; transition: opacity 0.8s ease
 .tool.end { width: auto; display: inline-flex; gap: 7px; padding: 0 14px 0 11px; border-radius: 999px; background: rgba(255, 120, 110, 0.18); color: var(--coral); font-size: 14px; font-weight: 600; white-space: nowrap; }
 .tool.end:hover:not(:disabled) { background: rgba(255, 120, 110, 0.3); color: #FFD3CC; }
 .tool svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-.tool .i-play, .head[data-state="paused"] .i-pause { display: none; }
-.head[data-state="paused"] .i-play { display: block; }
+/* pause/resume: in every stage but the Recap. ⏸ while listening, a filled ▶ on amber while paused; once the
+   island is open it also says which ("Listening" / "Paused") */
+.pause-btn {
+  flex: none; display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px 0 9px; border: 0; border-radius: 999px;
+  background: var(--fill); color: var(--ink); font-size: 14px; font-weight: 600; white-space: nowrap; -webkit-app-region: no-drag;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.pause-btn:hover:not(:disabled) { background: var(--hover); }
+.pause-btn:disabled { opacity: 0.35; }
+.pause-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.pause-btn .i-play, .head[data-state="paused"] .pause-btn .i-pause { display: none; }
+.head[data-state="paused"] .pause-btn .i-play { display: block; fill: currentColor; }
+.island[data-stage="pill"] .pause-btn { width: 32px; padding: 0; justify-content: center; background: none; }
+.island[data-stage="pill"] .pause-label, .island[data-stage="recap"] .pause-btn { display: none; }
+.island .head[data-state="paused"] .pause-btn { background: rgba(255, 210, 122, 0.16); color: var(--amber); }
 #closeRecap { flex: 0 0 auto; margin-left: auto; margin-right: 16px; background: var(--fill); border-radius: 50%; }
 
 /* the bodies: Live insights and the thread in the sheet, the Recap in its place */

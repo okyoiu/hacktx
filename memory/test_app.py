@@ -54,6 +54,7 @@ def http(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "INSIGHTS_SECONDS", 0.3)
     monkeypatch.setattr(notes, "NOTES", tmp_path)
     monkeypatch.setattr(store, "notes_for", lambda pids, per_person=5: {})
+    monkeypatch.setattr(store, "add_call", lambda *args: None)  # these tests never write to the database; a call's recap row included
     serp._lookup.cache_clear()
     serp._search.cache_clear()
     with TestClient(server.app, client=LAPTOP) as client:
@@ -314,12 +315,14 @@ def test_pause_ignores_transcript_and_resume_restarts_timer_only_between_calls(h
 
 def test_overlay_connecting_gets_listening_then_insights_first(http):
     with http.websocket_connect("/ws") as ws:
-        assert ws.receive_json() == server.listening  # no insights yet: listening only
+        assert ws.receive_json() == server.listening  # no insights yet: listening and mute only
+        assert ws.receive_json() == {"type": "mute", "on": False}
         http.post("/listening", json={"on": False})
         assert ws.receive_json()["on"] is False
     server.latest_insights = {"type": "insights", "topic": "Jordan's move", "points": [], "actions": []}
     with http.websocket_connect("/ws") as ws:
         assert ws.receive_json()["type"] == "listening"
+        assert ws.receive_json() == {"type": "mute", "on": False}
         assert ws.receive_json() == server.latest_insights
 
 
@@ -574,9 +577,11 @@ def test_window_app_and_rect_are_validated_broadcast_and_replayed_to_a_late_over
     assert events == [shown]
     with http.websocket_connect("/ws") as ws:
         assert ws.receive_json()["type"] == "listening"
+        assert ws.receive_json() == {"type": "mute", "on": False}
         assert ws.receive_json() == shown
     http.post("/window", json={"app": None, "rect": None})  # the window went away
     with http.websocket_connect("/ws") as ws:
+        ws.receive_json()
         ws.receive_json()
         assert ws.receive_json() == {"type": "window", "app": None, "rect": None}
     assert TestClient(server.app, client=WIFI).post("/window", json={"app": None, "rect": None}).status_code == 403
@@ -614,12 +619,13 @@ def test_recap_is_sent_when_the_call_ends_with_this_calls_last_time_and_kept_for
 
     with http.websocket_connect("/ws") as ws:  # an overlay that starts after the call ended
         assert ws.receive_json()["type"] == "listening"
+        assert ws.receive_json() == {"type": "mute", "on": False}
         assert ws.receive_json() == recap
     assert http.post(f"/actions/{action['id']}").status_code == 200  # the recap's actions keep working
 
     http.post("/transcript", json=line("speaker_0", "A new call begins."))
     with http.websocket_connect("/ws") as ws:
-        types = [ws.receive_json()["type"]]
+        types = [ws.receive_json()["type"], ws.receive_json()["type"]]
         assert "recap" not in types and server.latest_recap is None
 
 
@@ -885,6 +891,7 @@ def test_deleting_someone_mid_call_takes_them_out_of_the_call_the_recap_and_the_
     assert sorted(e["trackId"] for e in events if e["type"] == "face_gone") == [1, 2]
     with http.websocket_connect("/ws") as ws:  # an overlay that connects now is told about Maya only
         assert ws.receive_json()["type"] == "listening"
+        assert ws.receive_json() == {"type": "mute", "on": False}
         assert [p["id"] for p in ws.receive_json()["people"]] == ["p_maya"]
 
 
@@ -962,7 +969,8 @@ def test_mute_is_broadcast_kept_for_a_late_overlay_shown_in_health_and_drops_tra
     http.post("/transcript", json=line("speaker_0", "Spoken after unmuting."))
     assert [e["text"] for e in events if e["type"] == "caption"] == ["Spoken after unmuting."]
     with http.websocket_connect("/ws") as ws:
-        assert ws.receive_json()["type"] == "listening"  # nothing to replay once unmuted
+        assert ws.receive_json()["type"] == "listening"
+        assert ws.receive_json() == {"type": "mute", "on": False}  # the current mute state, now off
     assert http.post("/mute", json={}).status_code == 422
     assert TestClient(server.app, client=WIFI).post("/mute", json={"on": True}).status_code == 403
 
@@ -994,3 +1002,22 @@ def test_places_events_and_search_responses_carry_result_rows_and_nothing_else_d
     assert [r["title"] for r in rows] == ["Result 0", "Result 1", "Result 2"] and len(rows) <= 5 and rows[0]["url"] == "https://example.com/0"
     for aid in ("a_follow", "a_recall"):
         assert all("items" not in e for e in done(aid))
+
+
+def test_pause_answers_with_its_state_a_new_overlay_gets_all_three_and_end_call_keeps_listening(http, events):
+    paused = http.post("/listening", json={"on": False}).json()
+    assert paused["on"] is False and paused["startedAt"] and paused == events[-1]  # the reply is the broadcast state
+    resumed = http.post("/listening", json={"on": True}).json()
+    assert resumed["on"] is True and resumed == events[-1]
+    http.post("/window", json={"app": "zoom.us", "rect": [0, 0, 800, 600]})
+    http.post("/mute", json={"on": True})
+    with http.websocket_connect("/ws") as ws:
+        assert [ws.receive_json()["type"] for _ in range(3)] == ["listening", "mute", "window"]
+
+    http.post("/mute", json={"on": False})
+    http.post("/transcript", json=line("speaker_0", "We are in a call now."))
+    assert server.call is not None
+    before = dict(server.listening)
+    assert http.post("/calls/end").status_code == 200
+    assert server.listening == before and server.listening["on"] is True  # ending the call never pauses
+    assert not any(e["type"] == "listening" and e["on"] is False for e in events[-3:])
