@@ -476,3 +476,38 @@ def test_card_fields_last_seen_last_spoke_topic_and_context_come_from_the_calls_
     with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
         assert {k: http.get(f"/people/{pid}").json()[k] for k in blank} == want
         assert {k: next(p for p in http.get("/people").json() if p["id"] == pid)[k] for k in blank} == want
+
+
+def test_stale_lists_people_not_met_in_a_while_most_overdue_first(db, enroll):
+    old, recent, never = enroll(random_print())[0], enroll(random_print())[0], enroll(random_print())[0]
+    now = datetime.now().astimezone()
+    store.add_encounter(old, now.replace(year=now.year - 1), "x", "Long ago.")
+    store.add_encounter(recent, now, "x", "Today.")
+    db.execute("update people set first_met = current_date - 50 where id = %s", (never,))  # enrolled, never on a call
+    mine = {old, recent, never}
+    got = [p for p in store.stale(30) if p["id"] in mine]
+    assert [p["id"] for p in got] == [old, never] and got[0]["daysSince"] >= 365 and got[0]["lastTime"] == "Long ago."
+    assert got[1]["daysSince"] in (49, 50, 51) and got[1]["lastTime"] is None  # counted from enrollment
+    assert [p["id"] for p in store.stale(100) if p["id"] in mine] == [old]
+    db.execute("update consents set expires_at = current_date - 1 where person_id = %s", (old,))
+    assert old not in [p["id"] for p in store.stale(30)]  # no consent, not listed
+
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http, TestClient(server.app, client=("192.168.1.9", 50000)) as phone:
+        assert never in [p["id"] for p in http.get("/people/stale?days=30").json()]
+        assert never in [p["id"] for p in http.get("/people/stale").json()]  # 30 days by default
+        assert http.get("/people/stale?days=0").status_code == 422 and http.get("/people/stale?days=x").status_code == 422
+        assert phone.get("/people/stale").status_code == 403
+
+
+def test_encounters_become_a_hypertable_when_timescaledb_exists_and_the_schema_reruns_cleanly(db, enroll):
+    schema = Path(store.__file__).with_name("schema.sql").read_text()
+    db.execute(schema)
+    db.execute(schema)  # idempotent on both backends
+    has_timescale = db.execute("select exists (select 1 from pg_extension where extname = 'timescaledb')").fetchone()[0]
+    if not has_timescale:
+        assert db.execute("select count(*) from pg_constraint where conname = 'encounters_pkey'").fetchone()[0] == 1  # plain Postgres: untouched
+        pytest.skip("timescaledb is not installed here (local Docker): only the plain-Postgres path ran")
+    assert db.execute("select count(*) from timescaledb_information.hypertables where hypertable_name = 'encounters'").fetchone()[0] == 1
+    pid, _ = enroll(random_print())
+    store.add_encounter(pid, datetime.now().astimezone(), "x", "Works on a hypertable.")
+    assert store.last_time(pid) == "Works on a hypertable."

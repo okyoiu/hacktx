@@ -24,6 +24,10 @@ def conn() -> psycopg.Connection:
     if _conn is None:
         _conn = psycopg.connect(os.environ["DATABASE_URL"], autocommit=True, connect_timeout=5)  # fail fast, never hang
         _conn.execute("create extension if not exists vector")
+        try:
+            _conn.execute("create extension if not exists timescaledb")  # Tiger Cloud has it; plain Postgres doesn't, and that is fine
+        except psycopg.Error:
+            pass
         register_vector(_conn)
         _conn.execute(Path(__file__).with_name("schema.sql").read_text())
         purge_expired()
@@ -126,6 +130,23 @@ def people() -> list[dict]:
         by_person.setdefault(pid, []).append(tuple(row))
     return [{"id": i, "name": n, "role": r, "howMet": h, "firstMet": f, "lastMet": m, "lastTime": t, **seen_fields(by_person.get(i, []))}
             for i, n, r, f, h, m, t in rows]
+
+
+def stale(days: int) -> list[dict]:
+    """Consenting people not seen on a call for `days` days or more, most overdue first. Someone never on a call
+    counts from the day they were enrolled."""
+    rows = conn().execute(
+        """select p.id, p.name, p.role, last_met, (select last_time from encounters e where e.person_id = p.id
+                                                   order by e.met_at desc, e.id desc limit 1)
+           from people p join consents c on c.person_id = p.id
+           cross join lateral (select coalesce(max(met_at), p.first_met::timestamptz) as last_met
+                               from encounters where person_id = p.id) m
+           where c.expires_at >= current_date and last_met <= now() - make_interval(days => %s)
+           order by last_met, p.id""",
+        (days,),
+    ).fetchall()
+    now = datetime.now().astimezone()
+    return [{"id": i, "name": n, "role": r, "lastMet": m, "daysSince": (now - m).days, "lastTime": t} for i, n, r, m, t in rows]
 
 
 def rename(pid: str, name: str) -> None:

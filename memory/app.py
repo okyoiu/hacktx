@@ -17,7 +17,7 @@ from typing import Annotated
 
 import numpy as np
 import psycopg
-from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, StringConstraints
 from starlette.requests import HTTPConnection
@@ -673,6 +673,12 @@ async def enroll(
 @app.get("/people")
 def list_people():
     return store.people()
+
+
+@app.get("/people/stale")
+def stale_people(days: int = Query(30, ge=1, le=3650)):
+    """"Haven't talked in a while": people you last met at least `days` days ago, most overdue first."""
+    return store.stale(days)
 
 
 @app.get("/people/{pid}")
