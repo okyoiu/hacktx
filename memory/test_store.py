@@ -240,6 +240,25 @@ def test_remember_from_the_call_enrolls_with_consent_and_no_photo(db, monkeypatc
     assert saved_prints() == 0
 
 
+def test_remembering_someone_too_unlike_their_enrollment_makes_a_second_record(db, enroll, monkeypatch):
+    for name, value in {"call": None, "tracks": {}, "unknown": {}}.items():
+        monkeypatch.setattr(server, name, value)
+    first = random_print()
+    old_pid, _ = enroll(first)
+    today = near(first, store.MATCH_MIN - 0.05)  # same person, but too unlike their enrollment to be recognized
+
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
+        assert http.post("/faces", json={"trackId": 990401, "screenBox": [0, 0, 100, 100], "facePrint": today.tolist()}).json() == {"person": None}
+        got = http.post("/faces/990401/remember", json={"name": "Same Person", "consent": True}).json()
+        try:
+            assert got["id"] != old_pid  # agreed: a duplicate becomes a second record, nothing is merged
+            assert server.card_for(today.tolist())["id"] == got["id"]
+            assert server.card_for(first.tolist())["id"] == old_pid
+            http.post("/faces/gone", json={"trackId": 990401})
+        finally:
+            store.delete_person(got["id"], got["deleteToken"])
+
+
 def test_summary_without_model_key_is_skipped_and_logged(db, enroll, monkeypatch, capsys):
     monkeypatch.delenv("MODEL_API_KEY", raising=False)
     picks.client.cache_clear()
