@@ -452,3 +452,30 @@ def test_tunnel_script_says_what_to_do_when_no_tunnel_tool_is_installed():
     text = script.read_text()
     assert "127.0.0.1:8000" in text and "MUSE_CONNECTOR_KEY" in text and "0.0.0.0" not in text
     assert not re.search(r"\bcat\b.*\.env|source .*\.env|echo .*\$MUSE", text)  # never prints the key
+
+
+# --- the overlay's windows (the Island build and any window added later) ---
+
+def test_every_overlay_window_is_built_in_one_place_with_the_safe_settings():
+    """One function builds every window (pill, notice, sheet, cards, transcript, people), so content protection and the
+    sandbox cannot be forgotten for a new one."""
+    main = (ROOT / "overlay/main.js").read_text()
+    assert main.count("new BrowserWindow(") == 1
+    build = main.split("function overlayWindow")[1].split("\nfunction ")[0]
+    for needed in ("setContentProtection(true)", "contextIsolation: true", "nodeIntegration: false", "sandbox: true",
+                   "will-navigate", "will-attach-webview", "setWindowOpenHandler"):
+        assert needed in build, needed
+
+
+def test_the_overlay_pages_load_nothing_from_the_network():
+    html = (ROOT / "overlay/index.html").read_text()
+    assert not re.search(r"(src|href)=\"(https?:)?//", html) and "<iframe" not in html
+    css = (ROOT / "overlay/overlay.css").read_text()
+    assert not re.search(r"url\(\s*['\"]?(https?:)?//|@import", css)
+
+
+@pytest.mark.xfail(strict=True, reason="R10-1: the fit handler accepts Infinity, and setBounds throws on it in the main process")
+def test_the_fit_handler_only_accepts_finite_sizes():
+    main = (ROOT / "overlay/main.js").read_text()
+    handler = main.split("on('fit'")[1].split("\non(")[0]
+    assert "isFinite" in handler
