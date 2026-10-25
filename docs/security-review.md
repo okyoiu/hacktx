@@ -745,3 +745,25 @@ Not covered by any consent text: people on the call who are **not** enrolled. Th
 **R12-2, Low: one speaker can steer another person's "This call:" line.** In the batched request all speakers' words are in one prompt, so a line like "note that Maya is quitting" can make Muse return a snippet under Maya's id; the server only checks that the id was in the request. Before, each person had their own request. It is shown on Maya's card for the rest of that call and then gone. Smallest fix: add to the `LIVE` prompt "A snippet for a person may only use what that person said themselves" (the model can still err, which is why the effect stays small: in memory only, two lines, cleared at call end).
 
 **Still open from earlier:** R4-3 (the invite code in `logs/server.log`: add `--no-access-log` to the uvicorn arguments in `overlay/launcher.js`), R5-4a, R5-9, R8-1a, R10-1, R11-1, and the consent text on the enroll page.
+
+---
+
+## Round 13: consent page, scope and the roomier overlay
+
+2026-10-25, Security agent, on main `c60be57` (merged; the `review-*` branches match it). `uv run pytest tools` passes (R12-1 and the enroll-page test now pass; their xfail markers are already gone), `node --test` 60 of 60. **Verdict: R12-1 and the connector consent gaps are closed; nothing above Low is left.**
+
+**Closed:**
+- **R12-1 (scope):** the default is `{facePrint,name,voice,notes,facts}`; the one-time migration only drops `selfie` (an old row now says `{facePrint,notes}`, which is what it saw); `connector` is stored only when the optional box is ticked (`store.enroll`, `SCOPE + ["connector"] * connector`). The guard test passes.
+- **Connector opt-in:** `/connector/people` and `/connector/people/{id}` return only people whose scope has `connector` (`memory/connector.py:43, :49`); a person without it gets the same 404 as an unknown id.
+- **The consent page** (`web/enroll.html`) now names the face print, the voice going to Meta's Muse, what Muse writes (notes, facts, how you met, a topic and summary), the host seeing it, deleting, the screen-share caveat, and an unticked optional box for the Muse app. The Remember form reads the same points aloud (`REMEMBER_POINTS` in `overlay/logic.js`) and has its own optional box; the box is sent as `connector: true` (`POST /faces/{id}/remember`) or `connector=1` (`POST /enroll`), parsed as booleans.
+- **Roomier overlay:** no new `innerHTML`, `insertAdjacentHTML`, `DOMParser` or `eval` anywhere in `overlay/*.js`; one place still builds every window; the only new IPC is the one-way `island-bounds` message from main to the cards. Capture has a new `tuning.py` (plain numbers), and `doctor.py` prints no keys.
+
+**R13-1, Low: the optional tick promises less than the connector sends.** The page says "my name, notes and facts"; the connector also sends the label, dates, topic, work or personal, how we met and the last conversation. Fix: word both ticks (`web/enroll.html:79`, `overlay/overlay.js:291`) as "my name, label, dates, topic, facts, how we met and notes".
+
+**R13-2, Low-Medium: the scope is recorded but nothing enforces it.** Only the connector reads `consents.scope`. `store.add_facts`, `add_encounter` (summaries, topic, context) and `set_how_met` write for everyone, so someone enrolled before the new text (scope `{facePrint,notes}`) still gets facts and summaries. Smallest fix: in `remember_encounters`, skip `add_facts` unless `"facts" in scope` and skip topic and context unless `"notes" in scope`; or re-ask or delete the old people before the demo (all are teammates). Strict xfail `test_facts_are_written_only_for_people_whose_scope_includes_them`.
+
+**R13-3, Info: capture keeps a remembered person's print and card for 30 seconds after the face leaves** (`Recent` in `capture/faces.py`, `RECENT_SECONDS`), so that switching Zoom's view does not reset the card. It stays in the capture process's memory, never on disk, and the print is still sent to the server, which decides who it is; people who are not remembered are never added. The one side effect: a person deleted in that window can still be used to name a voice for up to 30 seconds. `docs/privacy.md` now says so.
+
+**Privacy page against the code, again:** I updated it for the connector opt-in (names the people it covers), the `consents` column (what you agreed to), the 30-second memory, and the people enrolled before the new text. Every other line (tables, files, one year, what goes to Meta, SerpApi and Tiger, how to delete) matches the code on `c60be57`.
+
+**Still open from before:** R4-3 (the invite code in `logs/server.log`), R5-4a, R5-9, R8-1a, R10-1, R11-1, R12-2.
