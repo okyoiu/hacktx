@@ -143,18 +143,32 @@ def test_a_role_you_typed_is_never_replaced_by_muses_suggestion(db, enroll):
         db.execute("delete from people where id = %s", (typed,))
 
 
-def test_face_card_has_role_last_time_and_a_key_fact_as_at_most_three_bullets(db, enroll):
+def test_face_card_bullets_run_role_facts_last_time_how_we_met_then_this_calls_snippets(db, enroll, monkeypatch):
     face = random_print()
     pid, _ = enroll(face)
+    monkeypatch.setattr(server, "snippets", {})
     assert server.card_for(face.tolist())["bullets"] == [] and server.card_for(face.tolist())["role"] == ""
+    store.add_note(pid, "My own note")  # the user's notes are not card bullets
+    assert server.card_for(face.tolist())["bullets"] == []
+
     store.set_role(pid, "Your team lead", "user")
-    store.add_note(pid, "Has a dog named Biscuit")
-    card = server.card_for(face.tolist())
-    assert card["bullets"] == ["Your team lead", "Has a dog named Biscuit"]  # no call yet: the note is the key fact
-    store.add_encounter(pid, datetime.now().astimezone(), "Starts a fintech job Monday", "Talked about his move.")
+    store.add_facts(pid, ["Loves F1"])
+    store.add_facts(pid, ["Has two kids"])
+    store.add_facts(pid, ["Moving to Austin in May"])
+    store.add_encounter(pid, datetime.now().astimezone(), "x", "Talked about his move.")
+    store.set_how_met(pid, "Oct 25, 2026 on Zoom: a HackTX demo call")
     card = server.card_for(face.tolist())
     assert card["role"] == "Your team lead" and card["line"] == "Last time: Talked about his move."
-    assert card["bullets"] == ["Your team lead", "Last time: Talked about his move.", "Starts a fintech job Monday"]
+    assert card["bullets"] == ["Your team lead", "Moving to Austin in May", "Has two kids",  # newest facts first, two at most
+                               "Last time: Talked about his move.", "Met Oct 25, 2026 on Zoom: a HackTX demo call"]
+
+    server.snippets[pid] = ["This call: Took up climbing", "This call: Lives in Austin"]  # more than 5: shorter "Met", fewer facts
+    card = server.card_for(face.tolist())
+    assert card["bullets"] == ["Your team lead", "Last time: Talked about his move.", "Met Oct 25, 2026 on Zoom",
+                               "This call: Took up climbing", "This call: Lives in Austin"]
+    server.snippets[pid] = ["This call: Took up climbing"]
+    assert server.card_for(face.tolist())["bullets"] == ["Your team lead", "Moving to Austin in May", "Last time: Talked about his move.",
+                                                         "Met Oct 25, 2026 on Zoom", "This call: Took up climbing"]
 
 
 def test_dashboard_lists_edits_and_deletes_people_from_this_laptop(db, enroll, monkeypatch):
@@ -382,3 +396,54 @@ def test_person_file_is_private_complete_named_by_id_and_goes_with_the_person(db
 
     notes.forget(pid, "Renamed")  # what the delete route does after store.delete_person
     assert list((tmp_path / "people").iterdir()) == []
+
+
+def test_muses_facts_are_kept_apart_from_notes_never_repeat_and_go_with_the_person(db, enroll, tmp_path, monkeypatch):
+    monkeypatch.setattr(notes, "NOTES", tmp_path)
+    pid, token = enroll(random_print())
+    store.add_note(pid, "My own note")
+    store.add_facts(pid, ["Loves F1", "Has two kids"])
+    store.add_facts(pid, ["loves f1", "Moving to Austin in May"])  # a repeat in other capitalisation is skipped
+    got = store.person(pid)
+    assert [f["text"] for f in got["facts"]] == ["Moving to Austin in May", "Has two kids", "Loves F1"]  # newest first
+    assert [n["text"] for n in got["notes"]] == ["My own note"] and "createdAt" in got["facts"][0]
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
+        assert [f["text"] for f in http.get(f"/people/{pid}").json()["facts"]] == ["Moving to Austin in May", "Has two kids", "Loves F1"]
+    text = notes.write_person(pid).read_text()
+    assert "## Facts (Muse)\n\n- Moving to Austin in May" in text and text.index("Facts (Muse)") < text.index("## Notes")
+    assert "My own note" not in text.split("## Notes")[0]
+
+    prompts = []
+
+    def muse(prompt: str, seconds=None) -> str:
+        prompts.append(prompt)
+        return json.dumps({"people": [{"personId": pid, "about": "", "lastTime": "Chat.", "facts": ["Loves F1", "Plays chess"]}]})
+
+    monkeypatch.setattr(picks, "chat", muse)
+    server.remember_encounters(server.Call(people={pid: []}, lines=["Someone: I love F1 and chess"]))
+    assert "[known facts: Moving to Austin in May; Has two kids; Loves F1]" in prompts[0]  # Muse is told what is known
+    assert [f["text"] for f in store.person(pid)["facts"]][0] == "Plays chess" and len(store.person(pid)["facts"]) == 4
+
+    assert store.delete_person(pid, token)
+    assert db.execute("select count(*) from facts where person_id = %s", (pid,)).fetchone()[0] == 0
+
+
+def test_how_we_met_is_written_once_from_the_first_calls_date_app_and_topic(db, enroll, tmp_path, monkeypatch):
+    monkeypatch.setattr(notes, "NOTES", tmp_path)
+    pid, _ = enroll(random_print())
+    monkeypatch.setattr(picks, "chat", lambda prompt, seconds=None: json.dumps({"people": [{"personId": pid, "lastTime": "Chat."}]}))
+    first = server.Call(started=datetime(2026, 10, 25, 14, 0), people={pid: []}, lines=["x: hi"], app="zoom.us", topic="A HackTX demo of Hello Again")
+    server.remember_encounters(first)
+    assert store.person(pid)["howMet"] == "Oct 25, 2026 on Zoom: A HackTX demo of Hello Again"
+    later = server.Call(started=datetime(2026, 11, 2, 9, 0), people={pid: []}, lines=["x: hi"], app="FaceTime", topic="Other")
+    server.remember_encounters(later)
+    assert store.person(pid)["howMet"] == "Oct 25, 2026 on Zoom: A HackTX demo of Hello Again"  # never rewritten
+    assert "How we met: Oct 25, 2026 on Zoom" in (tmp_path / "people" / f"{pid}.md").read_text()
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
+        assert next(p for p in http.get("/people").json() if p["id"] == pid)["howMet"].startswith("Oct 25, 2026 on Zoom")
+        assert http.get(f"/people/{pid}").json()["howMet"].startswith("Oct 25, 2026 on Zoom")
+
+    other, _ = enroll(random_print())
+    monkeypatch.setattr(picks, "chat", lambda prompt, seconds=None: json.dumps({"people": [{"personId": other, "lastTime": "Chat."}]}))
+    server.remember_encounters(server.Call(started=datetime(2026, 10, 26, 9, 0), people={other: []}, lines=["x: hi"]))
+    assert store.person(other)["howMet"] == "Oct 26, 2026 on a call"  # no app followed, no topic
