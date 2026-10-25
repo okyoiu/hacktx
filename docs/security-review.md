@@ -244,3 +244,40 @@ Nothing high or critical is open. Before the demo: #9 if enrolling happens on a 
 - **R3-3 still open:** the role is not in the Muse prompts yet (the fence xfail stays). When it is added, go through `picks.fence`.
 
 **Not built yet, so still on the checklist:** `notes/people/<id>.md` files (R3-4) and the one-launch process starter (R3-5). `/review/capture` has only the window-lost `face_gone` change, which sends no new data.
+
+---
+
+## Round 4: final pre-demo pass on the combined code
+
+2026-10-25, Security agent, on the merged base (`c344951`). Skills: cybersecurity, ponytail. Tests: `tools/test_security.py` (19 pass, 5 strict xfails, each checked to fail for the stated reason).
+
+**Closed since round 1/2/3:** #1 to #9, #11 (tokens are hashed, invite code with a constant-time compare and a per-IP rate limit, notes cleaned on delete), R3-4 (`notes/people/<id>.md`, named by id, mode 0600, text collapsed to one line; tested), R3-5 (launcher: fixed argument lists, no shell, keys stay in `.env`, DB bound to `127.0.0.1`; tested).
+
+### New findings, most severe first
+
+**R4-1. Medium: everything people say is saved in `logs/transcribe.log`.**
+- **Where:** `capture/transcribe.py:86` prints `[speaker] sentence` for each sentence; `overlay/launcher.js:43-46` sends that output to `logs/<name>.log`, opened in append mode with the default permissions.
+- **Risk:** a full verbatim transcript of every call stays on disk indefinitely, readable by other accounts on the laptop, and it is not removed when someone deletes themselves. It is the one place the words of people who never enrolled are kept.
+- **Smallest fix (capture owner):** print only the speaker and length, or print the text only when run by hand (`sys.stdout.isatty()`). (Launcher owner) open logs with `fs.openSync(file, 'w', 0o600)` so each launch starts empty and private. Strict xfails added for both.
+- **Also:** `memory/app.py:134,140,308,399` print exception text. Provider errors do not carry the key (checked in round 1), so this is fine, but keep it that way.
+
+**R4-2. Low: call notes `notes/*.md` use the default file mode.** `memory/notes.py:write` uses `path.open("a")`, so on a normal umask they are `0644` and `notes/` is `0755`, while the per-person files are `0600`. They hold names and what was learned. Fix: `NOTES.mkdir(mode=0o700, exist_ok=True)` and open with `os.open(path, O_WRONLY|O_APPEND|O_CREAT, 0o600)`. Strict xfail added.
+
+**R4-3. Low: the invite code ends up in `logs/server.log`.** The invite link is `…/enroll?code=…`, and uvicorn's access log prints the full path with the query string. It is only a laptop log, but with R4-1 unfixed that file is also readable. The `POST /enroll` code travels in the form body, not the URL. Fix: launch uvicorn with `--no-access-log`, or accept it and clear `logs/` after the demo.
+
+**R4-4. Info: no `GET /health` route exists.** The launcher checks the port instead. If one is added, leave it out of the guest list in `memory/app.py:75`, so only the laptop reaches it, and return no counts or names.
+
+**R4-5. Info: no End call button exists yet.** `POST /calls/end` is laptop-only, and a web page cannot call it (browsers send an Origin on POST). The overlay's `ROUTES` does not list it, so a future button needs exactly `calls/end` added to `ROUTES` (no wildcard) and must send no body.
+
+**R4-6. Low (carried): a typed role keeps newlines (R3-8).** It is no longer dangerous: the role is not in any Muse prompt, and the per-person file and cards collapse or escape it. Collapse it in `store.set_role`/`enroll` anyway.
+
+### Checked and fine
+
+- **Launcher:** `execFile`/`spawn` with fixed argument arrays, no shell, no user text in a command; keys are in `.env`, never in an argument (a test already checks this); children are stopped on quit; the database runs only on `127.0.0.1:5432`; the server on `127.0.0.1:8000`.
+- **Enrollment:** `ENROLL_CODE` compared with `secrets.compare_digest`; rate limit by client address only (no `X-Forwarded-For`); the selfie is never kept; if `ENROLL_CODE` is unset, anyone on the network may enroll (the demo checklist covers this).
+- **Routes:** every route except `/enroll` and `DELETE /people/*` answers only to this laptop with no browser Origin; laptop delete needs no token, phone delete does.
+- **Dependencies:** nothing new to audit since round 2 (no dependency changes in the merge).
+
+### Verdict
+
+Nothing high or critical. Fix R4-1 before the demo (two small edits); the rest can wait. The checklist for the day is in the TASKS.md Report.
