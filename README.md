@@ -179,7 +179,7 @@ The old `pick` event is retired: places and events from the conversation become 
 | `GET /people` | none → `[{id, name, role, firstMet, lastMet, lastTime}]`, newest first | overlay People dashboard |
 | `GET /people/{id}` | none → name, role, first met, encounters (about, last time) and notes | overlay dashboard, recall action |
 | `PATCH /people/{id}` | `{role?, name?}` (role ≤ 60, name ≤ 80 characters) → the updated person; a role set here is never replaced by Muse | overlay dashboard |
-| `GET /enroll`, `POST /enroll` | form: `name`, `consent`, `selfie`, optional `role` → `{id, deleteToken}` | guest's phone |
+| `GET /enroll`, `POST /enroll` | form: `name`, `consent`, `selfie`, optional `role`, and `code` (must match `ENROLL_CODE` when it's set; the invite link carries it as `?code=`) → `{id, deleteToken}` | guest's phone |
 | `DELETE /people/{id}` | from this laptop: nothing; from another device: header `X-Delete-Token` | dashboard, guest's phone |
 
 ## Files it keeps on this laptop
