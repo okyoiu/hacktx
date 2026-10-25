@@ -593,3 +593,13 @@ def test_places_from_ai_answers_go_to_the_person_they_concern_and_into_their_fil
     server.remember_encounters(server.Call(people={pid: []}, lines=["x: hi"]))  # no answers this call: nothing is stored, whatever Muse says
     assert len(store.person(pid)["mentions"]) == 2 and "(none)" in prompts[1]
     assert store.delete_person(pid, token) and db.execute("select count(*) from mentions where person_id = %s", (pid,)).fetchone()[0] == 0
+
+
+def test_facts_and_places_are_kept_only_for_people_whose_scope_includes_facts(db, enroll):
+    pid, _ = enroll(random_print())
+    old, _ = enroll(random_print())
+    db.execute("update consents set scope = '{facePrint,notes}' where person_id = %s", (old,))
+    for person in (pid, old):
+        store.add_facts(person, ["Loves F1"])
+        store.add_mentions(person, ["Zilker Park"])
+    assert [(len(store.person(p)["facts"]), len(store.person(p)["mentions"])) for p in (pid, old)] == [(1, 1), (0, 0)]

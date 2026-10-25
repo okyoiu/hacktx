@@ -963,3 +963,32 @@ def test_mute_is_broadcast_kept_for_a_late_overlay_shown_in_health_and_drops_tra
         assert ws.receive_json()["type"] == "listening"  # nothing to replay once unmuted
     assert http.post("/mute", json={}).status_code == 422
     assert TestClient(server.app, client=WIFI).post("/mute", json={"on": True}).status_code == 403
+
+
+def test_places_events_and_search_responses_carry_result_rows_and_nothing_else_does(http, events, monkeypatch):
+    monkeypatch.setenv("SERPAPI_KEY", "k")
+    serp._lookup.cache_clear()
+    serp._search.cache_clear()
+    monkeypatch.setattr(serp.httpx, "get", fake_serpapi)
+    monkeypatch.setattr(picks, "chat", FakeMuse())
+    server.actions.update({
+        "a_places": {"kind": "places", "label": "Find gyms", "query": "gyms", "personId": None},
+        "a_events": {"kind": "events", "label": "Find events", "query": "events", "personId": None},
+        "a_search": {"kind": "search", "label": "Search gyms", "query": "gyms", "personId": None},
+        "a_follow": {"kind": "followups", "label": "Follow-ups", "query": None, "personId": None},
+        "a_recall": {"kind": "recall", "label": "Remind me", "query": None, "personId": "p_nobody"}})
+
+    def done(aid):
+        rid = http.post(f"/actions/{aid}").json()["id"]
+        wait_for(lambda: any(e.get("id") == rid and e["status"] != "thinking" for e in events))
+        return [e for e in events if e.get("id") == rid]
+
+    thinking, final = done("a_places")
+    assert "items" not in thinking and final["items"] == [{"title": "Ledge", "detail": "Climbing gym \u00b7 1 Main St",
+                                                           "url": "https://www.google.com/maps/search/?api=1&query=Ledge"}]
+    events_done = done("a_events")[1]
+    assert events_done["status"] == "done" and events_done["items"] == []  # fake_serpapi has no events: nothing found, no rows
+    rows = done("a_search")[1]["items"]
+    assert [r["title"] for r in rows] == ["Result 0", "Result 1", "Result 2"] and len(rows) <= 5 and rows[0]["url"] == "https://example.com/0"
+    for aid in ("a_follow", "a_recall"):
+        assert all("items" not in e for e in done(aid))

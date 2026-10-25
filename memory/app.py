@@ -658,8 +658,10 @@ def clear_thread() -> None:
 async def finish(event: dict, kind: str, arg: str | None, present: dict[str, str], lines: list[str],
                  earlier: list[tuple[str, str]], epoch: int) -> None:
     try:
-        text, sources = await asyncio.wait_for(asyncio.to_thread(answer, kind, arg, present, lines, earlier), OUTBOUND_SECONDS)
+        text, sources, items = await asyncio.wait_for(asyncio.to_thread(answer, kind, arg, present, lines, earlier), OUTBOUND_SECONDS)
         event = event | {"status": "done", "text": text, "sources": sources}
+        if kind in ("places", "events", "search"):
+            event["items"] = items  # rows for the overlay beside the prose
         if kind == "ask" and epoch == thread_epoch:
             thread.append((event["query"], text))
             del thread[:-THREAD_TURNS]
@@ -676,17 +678,17 @@ async def finish(event: dict, kind: str, arg: str | None, present: dict[str, str
 
 
 def answer(kind: str, arg: str | None, present: dict[str, str], lines: list[str],
-           earlier: list[tuple[str, str]] | None = None) -> tuple[str, list[dict]]:
-    """Runs in a thread: the text and sources for one question or action."""
+           earlier: list[tuple[str, str]] | None = None) -> tuple[str, list[dict], list[dict]]:
+    """Runs in a thread: the text, sources and result rows (places, events, search only) for one question or action."""
     if kind == "recall":
-        return recall(arg), []
+        return recall(arg), [], []
     if kind in ("places", "events"):
         return pipeline.lookup(kind, arg)  # SerpApi only through pipeline, for a query Muse wrote
     known = store.notes_for(list(present))
     people = {pid: {"name": name, "notes": known.get(pid, [])} for pid, name in present.items()}
     if kind == "search":
         return pipeline.search(arg, people, lines)
-    return picks.answer(kind, arg or "", people, lines, thread=earlier if kind == "ask" else None), []
+    return picks.answer(kind, arg or "", people, lines, thread=earlier if kind == "ask" else None), [], []
 
 
 def recall(pid: str) -> str:

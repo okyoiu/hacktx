@@ -586,7 +586,6 @@ def test_the_consent_scope_never_claims_more_than_the_person_saw():
             assert not re.search(r"facts|voice", line.split("where")[0]), line
 
 
-@pytest.mark.xfail(strict=True, reason="R13-2: the consent scope is recorded but not enforced; facts are written for people who never agreed to them")
 def test_facts_are_written_only_for_people_whose_scope_includes_them():
     import secrets as _secrets
 

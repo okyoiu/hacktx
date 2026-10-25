@@ -241,16 +241,20 @@ def set_how_met(pid: str, line: str) -> None:
     conn().execute("update people set how_met = %s where id = %s and how_met = ''", (line, pid))
 
 
+# only for people whose consent covers Muse's facts: an older row (scope without `facts`) never saw that wording
+AGREED = "where exists (select 1 from consents where person_id = %s and 'facts' = any(scope))"
+
+
 def add_mentions(pid: str, texts: list[str]) -> None:
     """Places and events from the call's AI answers that concern this person; a repeat is skipped."""
     for text in texts:
-        conn().execute("insert into mentions (person_id, text) values (%s, %s) on conflict do nothing", (pid, text))
+        conn().execute(f"insert into mentions (person_id, text) select %s, %s {AGREED} on conflict do nothing", (pid, text, pid))
 
 
 def add_facts(pid: str, texts: list[str]) -> None:
     """Muse's facts about a person; one it already has (any capitalisation) is skipped."""
     for text in texts:
-        conn().execute("insert into facts (person_id, text) values (%s, %s) on conflict do nothing", (pid, text))
+        conn().execute(f"insert into facts (person_id, text) select %s, %s {AGREED} on conflict do nothing", (pid, text, pid))
 
 
 def add_note(pid: str, text: str) -> None:

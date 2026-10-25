@@ -49,6 +49,7 @@ def test_event_connection(monkeypatch):
     monkeypatch.setattr(serp.httpx, "get", get)
     assert serp.lookup("event", "climbing meetups") == {
         "title": "Climbing meetup", "detail": "Saturday · Austin",
+        "items": [{"title": "Climbing meetup", "detail": "Saturday · Austin", "url": "https://www.google.com/search?q=Climbing+meetup"}],
     }
 
 
@@ -138,3 +139,28 @@ def test_a_failed_request_is_retried_once_and_last_error_tracks_health(monkeypat
         serp.lookup("place", "gym")  # both tries failed: timeout, then 503
     assert serp.last_error == "HTTPStatusError"
     assert serp.lookup("place", "gym")["title"] == "Ledge" and serp.last_error is None  # recovered
+
+
+def test_result_rows_for_the_overlay_come_from_the_serpapi_hits(monkeypatch):
+    places = [{"title": f"Gym {i}", "rating": 4.7, "open_state": "Open \u22c5 Closes 10 PM", "type": "Climbing gym", "address": "1 Main St",
+               "place_id": "ChIJabc"} for i in range(7)] + [{"no": "title"}]
+    events = [{"title": "Boulder morning", "date": {"when": "Sat, 10 AM"}, "venue": {"name": "Ledge"}, "link": "https://events.example/boulder"},
+              {"title": "Bad link", "date": {"when": "Sun"}, "link": "javascript:alert(1)"}]
+    web = httpx.Response  # shorthand
+
+    def get(url, **kwargs):
+        engine = kwargs["params"]["engine"]
+        body = {"google_maps": {"local_results": places}, "google_events": {"events_results": events}}[engine]
+        return web(200, json=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(serp.httpx, "get", get)
+    monkeypatch.setenv("SERPAPI_KEY", "k")
+    serp._lookup.cache_clear()
+    rows = serp.lookup("place", "climbing gyms")["items"]
+    assert len(rows) == 5 and rows[0] == {
+        "title": "Gym 0", "detail": "4.7\u2605 \u00b7 Open \u22c5 Closes 10 PM \u00b7 Climbing gym \u00b7 1 Main St",
+        "url": "https://www.google.com/maps/search/?api=1&query=Gym+0&query_place_id=ChIJabc"}
+    rows = serp.lookup("event", "boulder events")["items"]
+    assert rows[0] == {"title": "Boulder morning", "detail": "Sat, 10 AM \u00b7 Ledge", "url": "https://events.example/boulder"}
+    assert rows[1]["url"].startswith("https://www.google.com/search?q=") or rows[1]["url"] == ""  # a script link never goes out
+    assert not any(r["url"].startswith("javascript") for r in rows)
