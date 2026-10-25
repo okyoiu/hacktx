@@ -39,3 +39,15 @@ def test_main_exits_0_only_when_everything_is_ok(monkeypatch, capsys):
     with pytest.raises(SystemExit) as stop:
         doctor.main()
     assert stop.value.code == 1
+
+
+def test_on_windows_the_permission_line_says_not_needed_but_the_window_finder_still_runs(monkeypatch):
+    from capture import window as win
+
+    monkeypatch.setattr(doctor.sys, "platform", "win32")
+    monkeypatch.setattr(win, "windows", lambda: [win.win32_window("Zoom Meeting", r"C:\\Zoom\\Zoom.exe", (0, 0, 1100, 700))])
+    state = {}
+    assert doctor.permission(state) == (True, "not needed on Windows; 1 windows listed through EnumWindows")
+    assert doctor.found(state) == (True, "Zoom window at (0, 0, 1100, 700), a call app")
+    monkeypatch.setattr(doctor.sys, "platform", "darwin")
+    assert doctor.permission(state) == (True, "the window list has names, so this process may record the screen")

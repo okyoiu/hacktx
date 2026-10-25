@@ -375,9 +375,9 @@ def test_every_action_kind_and_ask_answer_and_land_in_the_call_note(http, events
 
     note = http.post("/calls/end").json()["note"]
     text = open(note).read()
-    assert "## AI responses" in text and "### Where should we eat?" in text
+    assert "## Asked during the call" in text and "### Where should we eat?" in text
     assert "Sources: [Ledge](https://www.google.com/maps/search/?api=1&query=Ledge)" in text
-    assert "Remind me who Jordan is" not in text  # recall only repeats the database, and its person may delete themselves
+    assert "### Remind me who Jordan is <!-- p_jordan -->" in text  # kept, tagged with its person so deleting them removes it
 
 
 def test_missing_keys_end_as_errors_and_never_crash(http, events, monkeypatch):

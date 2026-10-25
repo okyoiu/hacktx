@@ -60,6 +60,15 @@ create unique index if not exists facts_once on facts (person_id, lower(text));
 alter table consents alter column scope set default '{facePrint,name,voice,notes,facts}';
 update consents set scope = array_remove(scope, 'selfie') where 'selfie' = any(scope);
 
+-- places and events from the AI answers that concern a person (Muse decides who), for their file
+create table if not exists mentions (
+  id bigserial primary key,
+  person_id text not null references people(id) on delete cascade,
+  text text not null,
+  created_at timestamptz not null default now()
+);
+create unique index if not exists mentions_once on mentions (person_id, lower(text));
+
 -- delete tokens are stored as sha256 hex; this upgrades older plain tokens (22 characters) once and does nothing after
 update people set delete_token = encode(sha256(convert_to(delete_token, 'UTF8')), 'hex') where length(delete_token) <> 64;
 

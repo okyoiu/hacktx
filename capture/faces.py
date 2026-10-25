@@ -216,7 +216,9 @@ def main() -> None:
     people: dict[int, dict] = {}  # track id -> the recognized person memory replied with
     tried: dict[int, float] = {}  # track id -> when InsightFace last looked for its face
     namer, captions = Namer(), deque()
-    threading.Thread(target=listen, args=(memory_url.replace("http", "ws", 1) + "/ws", captions), daemon=True).start()
+    listening = {"on": True}  # the pill's pause state, kept by listen(): paused means no faces either
+    threading.Thread(target=listen, args=(memory_url.replace("http", "ws", 1) + "/ws", captions, listening), daemon=True).start()
+    paused = False
 
     def send(path: str, body: dict) -> dict:
         try:
@@ -245,7 +247,10 @@ def main() -> None:
                 window = {"app": app, "rect": rect}  # on change only; if memory was down it is told again next frame
             if frame is not None:
                 stamps.append(time.monotonic())
-            if frame is None or not calls:
+            if paused != (not listening["on"]):
+                paused = not paused
+                print("paused from the pill: cards cleared, no faces until resume" if paused else "resumed: looking for faces again")
+            if frame is None or not calls or paused:
                 result = last_frame = None
             elif last_frame is None or not np.array_equal(frame, last_frame):
                 t0 = time.perf_counter()
@@ -334,7 +339,7 @@ def main() -> None:
                 print(f"capture: {frames_done / wall:.1f} fps, YOLO {yolo_ms / n:.0f} ms, InsightFace {insight_ms / n:.0f} ms, "
                       f"cpu {(cpu_seconds() - cpu0) / wall * 100:.0f}%")  # per frame; cpu over all threads, so it can pass 100
                 report_at, frames_done, yolo_ms, insight_ms, cpu0 = now, 0, 0.0, 0.0, cpu_seconds()
-            if frame is None or not calls or live:
+            if frame is None or not calls or paused or live:
                 last_person = quiet_told = now
             elif now - quiet_told >= QUIET_AFTER:
                 print(f"following {app or 'the region'}, no person seen for {int(now - last_person)} s")

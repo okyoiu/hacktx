@@ -191,7 +191,9 @@ On connect the server first sends the latest `listening` and `insights` events, 
              {"id": "x3", "kind": "followups", "label": "Suggest follow-up questions"}]}
 // action kinds: define · search · places · events · recall · followups · helpful
 {"type": "response", "id": "r1", "query": "Find climbing gyms near South Congress",
- "status": "thinking|done|error", "text": "…", "sources": [{"title": "…", "url": "https://…"}]}  // "thinking" first, then the same id with "done" or "error"
+ "status": "thinking|done|error", "text": "…", "sources": [{"title": "…", "url": "https://…"}],
+ "items": [{"title": "Ledge Climbing Co.", "detail": "1.2 mi · open until 10 PM · 4.7★", "url": "https://maps.google.com/…"}]}  // "thinking" first, then the same id with "done" or "error"; items (≤ 5) only for places/events/search results, so the overlay shows rows instead of a cut-off paragraph
+{"type": "mute", "on": true}   // the mic is muted for Hello Again: no audio goes to Muse, no captions, faces keep working
 ```
 
 `insights` events show in the preset's live-insights spot during the call and are kept for the Recap. The old `pick` event is retired: places and events from the conversation become `places`/`events` actions, and facts become insight points.
@@ -205,7 +207,8 @@ On connect the server first sends the latest `listening` and `insights` events, 
 | `POST /window` | `{app, rect}` (the app name and screen points, or both `null`), sent when the followed window moves, appears or goes away | `capture/faces.py` |
 | `POST /transcript` | `{speaker, text, final}`; ignored while paused | `capture/transcribe.py` |
 | `POST /speakers` | `{label, name}` | `capture/` (names voices from faces) or you |
-| `POST /listening` | `{on: bool}` → emits `listening` | overlay pause button |
+| `POST /listening` | `{on: bool}` → emits `listening` (pause: everything stops, faces too) | overlay pause button |
+| `POST /mute` | `{on: bool}` → emits `mute` (only the mic: capture.transcribe sends no audio while muted; `GET /health` shows `muted`) | overlay mute button, `⌘M` |
 | `POST /ask` | `{question, new?}` (≤ 500 characters) → `{id}`, then `response` events; the server keeps the last turns as a thread until `new: true` or the call ends | overlay `Ask AI` |
 | `POST /actions/{id}` | none → `{id}`, then `response` events | overlay action click |
 | `POST /faces/{trackId}/remember` | `{name, consent: true, role?}` → `{id, deleteToken}`; saves the print of the face on screen in that track, then pushes its updated `face` event; `409` if that face has left | overlay "Remember them" |
