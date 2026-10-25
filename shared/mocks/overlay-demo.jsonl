@@ -1,8 +1,8 @@
 {"delayMs": 300, "event": {"type": "listening", "on": true, "startedAt": "2026-10-24T21:40:00Z"}}
 {"delayMs": 300, "event": {"type": "face", "trackId": 3, "screenBox": [180, 260, 200, 260], "person": null}}
 {"delayMs": 300, "event": {"type": "face", "trackId": 4, "screenBox": [620, 270, 190, 250], "person": null}}
-{"delayMs": 2200, "event": {"type": "face", "trackId": 3, "screenBox": [184, 262, 200, 260], "person": {"id": "p_jordan", "name": "Jordan Lee", "line": "Was planning a move to Austin", "met": "Met Sep 24"}}}
-{"delayMs": 500, "event": {"type": "face", "trackId": 4, "screenBox": [618, 270, 190, 250], "person": {"id": "p_maya", "name": "Maya Chen", "line": "Product designer", "met": "Met Oct 2"}}}
+{"delayMs": 2200, "event": {"type": "face", "trackId": 3, "screenBox": [184, 262, 200, 260], "person": {"id": "p_jordan", "name": "Jordan Lee", "line": "Was planning a move to Austin", "met": "Met Sep 24", "role": "Friend from climbing (sample)", "bullets": ["Friend from climbing", "Last time: was planning a move to Austin", "Starts a new fintech job Monday"]}}}
+{"delayMs": 500, "event": {"type": "face", "trackId": 4, "screenBox": [618, 270, 190, 250], "person": {"id": "p_maya", "name": "Maya Chen", "line": "Product designer", "met": "Met Oct 2", "role": "Recruiter at Meta (sample)", "bullets": ["Recruiter at Meta", "Last time: new-grad timeline", "Goes bouldering most weekends"]}}}
 {"delayMs": 1500, "event": {"type": "caption", "speaker": "Jordan Lee", "text": "We finally finished the move", "final": false}}
 {"delayMs": 700, "event": {"type": "caption", "speaker": "Jordan Lee", "text": "We finally finished the move to Austin last week.", "final": true}}
 {"delayMs": 1200, "event": {"type": "insights", "topic": "Jordan's move to Austin", "points": ["Jordan moved to Austin last week"], "actions": [{"id": "x2", "kind": "recall", "label": "Remind me who Jordan is"}, {"id": "x9", "kind": "helpful", "label": "Give me helpful information"}]}}
