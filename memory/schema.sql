@@ -15,7 +15,7 @@ create table if not exists consents (
   person_id text primary key references people(id) on delete cascade,
   granted_at timestamptz not null default now(),
   expires_at date not null,
-  scope text[] not null default '{facePrint,selfie,notes}'
+  scope text[] not null default '{facePrint,name,voice,notes,facts}'
 );
 
 create table if not exists notes (
@@ -55,9 +55,10 @@ create table if not exists facts (
 );
 create unique index if not exists facts_once on facts (person_id, lower(text));
 
--- what a person agreed to be kept: their face print, name, voice, notes, Muse's facts, and the Muse connector. No selfie is kept.
-alter table consents alter column scope set default '{facePrint,name,voice,notes,facts,connector}';
-update consents set scope = '{facePrint,name,voice,notes,facts,connector}' where scope = '{facePrint,selfie,notes}';  -- once: the old default
+-- what a person agreed to be kept: face print, name, voice, notes and Muse's facts. `connector` (letting the Muse app read them)
+-- is added only when the person ticks it; no selfie is kept. Old rows only lose `selfie`: they never saw the newer wording.
+alter table consents alter column scope set default '{facePrint,name,voice,notes,facts}';
+update consents set scope = array_remove(scope, 'selfie') where 'selfie' = any(scope);
 
 -- delete tokens are stored as sha256 hex; this upgrades older plain tokens (22 characters) once and does nothing after
 update people set delete_token = encode(sha256(convert_to(delete_token, 'UTF8')), 'hex') where length(delete_token) <> 64;

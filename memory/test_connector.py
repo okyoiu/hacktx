@@ -11,9 +11,9 @@ from memory import connector, store
 KEY = "test-connector-key"
 JORDAN = {"id": "p_jordan", "name": "Jordan Lee", "role": "Your team lead", "howMet": "Oct 25, 2026 on Zoom", "firstMet": date(2026, 10, 1),
           "lastSeen": "2026-10-18", "lastSpoke": "2026-10-18", "topic": "his move", "context": "work",
-          "facts": [{"text": "Loves F1", "createdAt": None}], "notes": [{"text": "Owes me a book", "createdAt": None}],
+          "scope": ["facePrint", "connector"], "facts": [{"text": "Loves F1", "createdAt": None}], "notes": [{"text": "Owes me a book", "createdAt": None}],
           "encounters": [{"metAt": None, "about": "Engineer", "lastTime": "Talked about Austin."}]}
-LISTED = {k: JORDAN[k] for k in ("id", "name", "role", "lastSeen", "lastSpoke", "topic", "context")} | {"howMet": "x", "lastMet": "y"}
+LISTED = {k: JORDAN[k] for k in ("id", "name", "role", "lastSeen", "lastSpoke", "topic", "context", "scope")} | {"howMet": "x", "lastMet": "y"}
 
 
 @pytest.fixture
@@ -48,6 +48,7 @@ def test_the_key_is_required(web, path, monkeypatch):
 def test_people_and_one_person_are_read_only_and_never_hold_prints_or_tokens(web):
     listed = web.get("/connector/people", headers=auth()).json()
     assert listed == [{k: LISTED[k] for k in ("id", "name", "role", "lastSeen", "lastSpoke", "topic", "context")}]
+    assert "scope" not in listed[0]
     one = web.get("/connector/people/p_jordan", headers=auth()).json()
     assert one["facts"] == ["Loves F1"] and one["notes"] == ["Owes me a book"] and one["howMet"] == "Oct 25, 2026 on Zoom"
     assert (one["about"], one["lastTime"]) == ("Engineer", "Talked about Austin.")
@@ -95,3 +96,13 @@ def test_the_detail_and_the_document_carry_how_we_met_and_context(web):
     assert "howMet" in doc["info"]["description"] and "context" in doc["info"]["description"]
     props = doc["paths"]["/connector/people/{id}"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["properties"]
     assert "howMet" in props and "context" in props and "first call" in props["howMet"]["description"]
+
+
+def test_only_people_who_ticked_the_connector_are_listed_or_readable(web, monkeypatch):
+    private = {**LISTED, "id": "p_private", "name": "Private Pat", "scope": ["facePrint", "name", "voice", "notes", "facts"]}
+    monkeypatch.setattr(store, "people", lambda: [private, LISTED])
+    monkeypatch.setattr(store, "person", lambda pid: {**JORDAN, "id": pid, "scope": private["scope"]} if pid == "p_private" else JORDAN)
+    assert [p["id"] for p in web.get("/connector/people", headers=auth()).json()] == ["p_jordan"]
+    assert web.get("/connector/people/p_private", headers=auth()).status_code == 404
+    assert "Private Pat" not in web.get("/connector/people", headers=auth()).text
+    assert web.get("/connector/people/p_jordan", headers=auth()).status_code == 200

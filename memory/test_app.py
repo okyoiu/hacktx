@@ -158,7 +158,7 @@ def test_websocket_only_for_this_laptop(http):
 def test_remember_saves_the_face_on_screen_only_with_consent(http, events, monkeypatch):
     enrolled = []
 
-    def enroll(name, face_print, selfie, role=""):
+    def enroll(name, face_print, selfie, role="", connector=False):
         enrolled.append((name, face_print.tolist(), selfie, role))
         return "p_new", "token123"
 
@@ -227,10 +227,10 @@ def test_insights_survive_a_failed_note_and_ignore_a_garbage_reply(http, events,
 def test_enroll_keeps_the_face_print_but_never_the_selfie(http, monkeypatch):
     saved = []
     monkeypatch.setattr("capture.embed.embed_image", lambda data: [0.1] * 512)
-    monkeypatch.setattr(store, "enroll", lambda name, face_print, selfie, role="": saved.append((name, selfie, role)) or ("p_new", "tok"))
+    monkeypatch.setattr(store, "enroll", lambda name, face_print, selfie, role="", connector=False: saved.append((name, selfie, role, connector)) or ("p_new", "tok"))
     form = {"name": " Sam ", "consent": "true", "role": " Your friend "}
     r = http.post("/enroll", data=form, files={"selfie": ("s.jpg", b"jpeg bytes", "image/jpeg")})
-    assert r.json() == {"id": "p_new", "deleteToken": "tok"} and saved == [("Sam", None, "Your friend")]
+    assert r.json() == {"id": "p_new", "deleteToken": "tok"} and saved == [("Sam", None, "Your friend", False)]
 
 
 def test_deleting_yourself_mid_call_removes_your_card_and_keeps_insights_flowing(http, events, monkeypatch):

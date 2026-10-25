@@ -40,14 +40,14 @@ def health():
 @router.get("/people", dependencies=[Depends(require_key)])
 def people():
     keep = ("id", "name", "role", "lastSeen", "lastSpoke", "topic", "context")
-    return [{k: p[k] for k in keep} for p in store.people()]
+    return [{k: p[k] for k in keep} for p in store.people() if "connector" in p["scope"]]  # only people who ticked it
 
 
 @router.get("/people/{pid}", dependencies=[Depends(require_key)])
 def one_person(pid: str):
     p = store.person(pid)
-    if p is None:
-        raise HTTPException(404, "Nobody with that id (or their consent has run out).")
+    if p is None or "connector" not in p["scope"]:
+        raise HTTPException(404, "Nobody with that id (or they did not agree to the connector).")
     latest = p["encounters"][0] if p["encounters"] else None
     return {**{k: p[k] for k in ("id", "name", "role", "lastSeen", "lastSpoke", "topic", "context", "howMet")},
             "facts": [f["text"] for f in p["facts"]],

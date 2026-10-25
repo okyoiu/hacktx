@@ -403,6 +403,7 @@ class Remember(BaseModel):
     name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
     consent: bool
     role: Annotated[str, StringConstraints(strip_whitespace=True, max_length=picks.ROLE_CHARS)] = ""
+    connector: bool = False  # ticked: the Muse app may read this person
 
 
 @app.post("/faces/{track_id}/remember")
@@ -413,7 +414,7 @@ async def remember(track_id: int, body: Remember):
     face = unknown.pop(track_id, None)  # popped first, so a double click can't enroll them twice
     if face is None:
         raise HTTPException(409, "That face has left the call")
-    pid, token = await asyncio.to_thread(store.enroll, body.name, np.asarray(face["print"], dtype=np.float32), None, body.role)
+    pid, token = await asyncio.to_thread(store.enroll, body.name, np.asarray(face["print"], dtype=np.float32), None, body.role, body.connector)
     tracks[track_id] = await asyncio.to_thread(card_for, face["print"])
     saw_face(tracks[track_id])
     await push({"type": "face", "trackId": track_id, "screenBox": face["box"], "person": tracks[track_id]})
@@ -715,6 +716,7 @@ async def enroll(
     name: str = Form(min_length=1, max_length=80),
     consent: bool = Form(),
     role: str = Form("", max_length=picks.ROLE_CHARS),
+    connector: bool = Form(False),  # ticked on the enroll page: the Muse app may read them
     code: str = Form("", max_length=200),
     selfie: UploadFile = File(),
 ):
@@ -735,7 +737,7 @@ async def enroll(
     face_print = await asyncio.to_thread(embed_image, data)
     if face_print is None:
         raise HTTPException(422, "No face found in that photo. Try again facing the camera in good light.")
-    pid, token = await asyncio.to_thread(store.enroll, name.strip(), face_print, None, role.strip())  # the selfie is never kept
+    pid, token = await asyncio.to_thread(store.enroll, name.strip(), face_print, None, role.strip(), connector)  # the selfie is never kept
     return {"id": pid, "deleteToken": token}
 
 
