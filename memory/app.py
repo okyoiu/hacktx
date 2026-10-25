@@ -27,6 +27,9 @@ CALL_IDLE_SECONDS = 60  # a call ends this long after the last face was seen
 INSIGHTS_SECONDS = 8  # Muse Spark refreshes the insights at most this often
 MAX_ACTIONS_KEPT = 100  # actions from older insights stay clickable until this many newer ones exist
 ENROLLS_PER_MINUTE = 5  # POST /enroll attempts per IP address; each one runs the face model
+# Hard stop for one Muse Spark or SerpApi job: the clients time out per request and retry, so a slow service could
+# otherwise hold a response on "thinking" or stall Live insights for minutes. The abandoned thread finishes on its own.
+OUTBOUND_SECONDS = 45
 NOTE_POINTS = 10  # Muse rephrases points every refresh, so the call note keeps only the latest few
 
 
@@ -301,7 +304,7 @@ async def refresh_insights() -> None:
     try:
         known = await asyncio.to_thread(store.notes_for, list(present))
         people = {pid: {"name": p["name"], "notes": known.get(pid, [])} for pid, p in present.items()}
-        out = await asyncio.to_thread(picks.extract, people, history[-12:], new)
+        out = await asyncio.wait_for(asyncio.to_thread(picks.extract, people, history[-12:], new), OUTBOUND_SECONDS)
     finally:
         if call is owner:  # a call that ended meanwhile took its transcript with it
             history.extend(new)
@@ -367,12 +370,14 @@ async def respond(tasks: BackgroundTasks, query: str, kind: str, arg: str | None
 
 async def finish(event: dict, kind: str, arg: str | None, present: dict[str, str], lines: list[str]) -> None:
     try:
-        text, sources = await asyncio.to_thread(answer, kind, arg, present, lines)
+        text, sources = await asyncio.wait_for(asyncio.to_thread(answer, kind, arg, present, lines), OUTBOUND_SECONDS)
         event = event | {"status": "done", "text": text, "sources": sources}
         if call and kind != "recall":  # recall only repeats the database, about someone who may delete themselves
             call.responses.append(event)
     except (NoAnswer, picks.MuseError, pipeline.SerpApiError) as e:
         event = event | {"status": "error", "text": str(e)}
+    except TimeoutError:
+        event = event | {"status": "error", "text": "That took too long to answer. Try again."}
     except Exception as e:  # never leave the panel stuck on "thinking"
         print(f"response failed: {e!r}")
         event = event | {"status": "error", "text": "Something went wrong answering that. Try again."}

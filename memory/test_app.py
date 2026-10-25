@@ -432,3 +432,26 @@ def test_enroll_is_rate_limited_per_ip_and_still_needs_consent_and_a_name(http, 
     assert http.post("/enroll", data={"name": "Sam", "consent": "false"}, files=photo).status_code == 429
     with TestClient(server.app, client=WIFI) as phone:  # another address has its own allowance
         assert phone.post("/enroll", data={"name": "Sam", "consent": "false"}, files=photo).status_code == 400
+
+
+def test_a_hanging_muse_or_serpapi_ends_as_an_error_and_insights_recover(http, events, monkeypatch):
+    release = threading.Event()
+    hang = lambda *args, **kwargs: release.wait(5) and "late"
+    monkeypatch.setenv("SERPAPI_KEY", "test-key")
+    serp._lookup.cache_clear()
+    monkeypatch.setattr(server, "OUTBOUND_SECONDS", 0.2)
+    monkeypatch.setattr(picks, "chat", hang)
+    monkeypatch.setattr(serp, "_get", hang)
+    server.actions["a_places"] = {"kind": "places", "label": "Find gyms", "query": "gyms", "personId": None}
+
+    for path, body in (("/ask", {"question": "Hi?"}), ("/actions/a_places", None)):
+        rid = http.post(path, json=body).json()["id"]
+        wait_for(lambda: any(e.get("id") == rid and e["status"] == "error" for e in events))
+        assert [e["text"] for e in events if e.get("id") == rid and e["status"] == "error"] == ["That took too long to answer. Try again."]
+
+    http.post("/transcript", json=line("speaker_0", "Hello there"))  # a stuck insights call must not stall the worker
+    wait_for(lambda: server.history == ["speaker_0: Hello there"])
+    release.set()
+    monkeypatch.setattr(picks, "chat", FakeMuse({"topic": "Back", "points": ["Fine"], "actions": []}))
+    http.post("/transcript", json=line("speaker_0", "Are you back?"))
+    wait_for(lambda: server.latest_insights is not None)

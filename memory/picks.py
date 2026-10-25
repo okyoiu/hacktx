@@ -117,6 +117,7 @@ def client() -> OpenAI:
         base_url="https://api.meta.ai/v1",
         api_key=key,
         timeout=30,  # a live overlay can't wait out the SDK's 10-minute default
+        max_retries=1,  # the SDK's default of 2 would triple that
     )
 
 
