@@ -209,7 +209,7 @@ def test_call_note_on_end_and_after_faces_go_idle(db, enroll, tmp_path, monkeypa
     face = random_print()
     pid, _ = enroll(face)
     name = store.person(pid)["name"]
-    monkeypatch.setattr(picks, "chat", lambda prompt: json.dumps({
+    monkeypatch.setattr(picks, "chat", lambda prompt, seconds=None: json.dumps({
         "notes": [{"personId": pid, "text": "Training for a marathon"}],
         "topic": "Running", "points": ["They both run"], "actions": [],
     }))
@@ -267,7 +267,7 @@ def test_call_end_summarises_only_recognized_people(db, enroll, tmp_path, monkey
     store.set_role(quiet, "Your friend", "user")
     prompts = []
 
-    def muse(prompt: str) -> str:
+    def muse(prompt: str, seconds=None) -> str:
         prompts.append(prompt)
         if "A video call just ended" in prompt:
             return json.dumps({"people": [

@@ -47,6 +47,7 @@ history: list[str] = []  # lines Muse Spark has already seen, context for the ne
 fresh: list[str] = []  # final lines since the last insights refresh
 listening: dict = {"type": "listening", "on": True, "startedAt": utc_now()}  # latest listening event
 latest_insights: dict | None = None  # latest insights event
+last_refresh: float | None = None  # when the last insights refresh started (monotonic); None = the next one is immediate
 last_transcript_at: str | None = None  # when the last line was accepted, for the control bar's status dot
 actions: dict[str, dict] = {}  # action id -> {kind, label, query, personId}
 wake: asyncio.Event | None = None  # set when fresh lines wait for Muse Spark; made per event loop in lifespan
@@ -106,11 +107,12 @@ def this_call() -> Call:
 
 def end_call() -> asyncio.Future:
     """Close the current call and write its note in a thread; the future resolves to the note's path or None."""
-    global call, latest_insights
+    global call, latest_insights, last_refresh
     if idle_timer:
         idle_timer.cancel()
     ended, call = call or Call(), None
     latest_insights = None  # the next call, and overlays connecting later, start clean
+    last_refresh = None  # the next call's first insights don't wait out this call's interval
     history.clear()
     unknown.clear()  # strangers' prints never outlive the call
     fresh.clear()
@@ -314,14 +316,17 @@ async def transcript(line: Line):
 
 
 async def insights_worker() -> None:
+    global last_refresh
     while True:
         await wake.wait()
         wake.clear()
+        if last_refresh is not None:  # the first refresh of a call goes out at once, later ones keep the pace
+            await asyncio.sleep(max(0, last_refresh + INSIGHTS_SECONDS - time.monotonic()))
+        last_refresh = time.monotonic()  # paced from the start, so Muse's own delay doesn't add to the wait
         try:
             await refresh_insights()
         except Exception as e:  # a failed model call or note insert must not stop the stream
             print(f"insights failed: {e!r}")
-        await asyncio.sleep(INSIGHTS_SECONDS)  # lines arriving meanwhile wait for the next refresh
 
 
 async def refresh_insights() -> None:
