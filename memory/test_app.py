@@ -553,23 +553,28 @@ def test_refreshes_are_paced_from_their_start_and_the_summary_has_a_short_hard_l
     assert not any("timeout" in s for s in seen)  # ordinary calls keep the client's own limit
 
 
-def test_window_rect_is_validated_broadcast_and_replayed_to_a_late_overlay(http, events):
+def test_window_app_and_rect_are_validated_broadcast_and_replayed_to_a_late_overlay(http, events):
     for bad in ([1, 2, 3], [1, 2, 0, 5], [1, 2, 5, -1], [1, 2, 3, 4, 5], ["a", 2, 3, 4], [1, 2, float("inf"), 4], [1, 2, 3, None], {}, "x"):
-        body = json.dumps({"rect": bad}, allow_nan=True)
+        body = json.dumps({"app": "zoom.us", "rect": bad}, allow_nan=True)
         assert http.post("/window", content=body, headers={"content-type": "application/json"}).status_code == 422, bad
-    assert http.post("/window", json={}).status_code == 422  # rect is required (null is how you say "no window")
+    assert http.post("/window", json={}).status_code == 422  # both fields are required (null is how you say "no window")
+    assert http.post("/window", json={"rect": [1, 2, 3, 4]}).status_code == 422  # a rect needs its app
+    for mismatch in ({"app": "zoom.us", "rect": None}, {"app": None, "rect": [1, 2, 3, 4]}, {"app": " ", "rect": [1, 2, 3, 4]},
+                     {"app": "x" * 101, "rect": [1, 2, 3, 4]}):
+        assert http.post("/window", json=mismatch).status_code == 422, mismatch  # null together, or a real name
     assert events == []
 
-    assert http.post("/window", json={"rect": [10, 20.5, 800, 600]}).status_code == 200
-    assert events == [{"type": "window", "rect": [10, 20.5, 800, 600]}]
+    assert http.post("/window", json={"app": " zoom.us ", "rect": [10, 20.5, 800, 600]}).status_code == 200
+    shown = {"type": "window", "app": "zoom.us", "rect": [10, 20.5, 800, 600]}
+    assert events == [shown]
     with http.websocket_connect("/ws") as ws:
         assert ws.receive_json()["type"] == "listening"
-        assert ws.receive_json() == {"type": "window", "rect": [10, 20.5, 800, 600]}
-    http.post("/window", json={"rect": None})  # the window went away
+        assert ws.receive_json() == shown
+    http.post("/window", json={"app": None, "rect": None})  # the window went away
     with http.websocket_connect("/ws") as ws:
         ws.receive_json()
-        assert ws.receive_json() == {"type": "window", "rect": None}
-    assert TestClient(server.app, client=WIFI).post("/window", json={"rect": None}).status_code == 403
+        assert ws.receive_json() == {"type": "window", "app": None, "rect": None}
+    assert TestClient(server.app, client=WIFI).post("/window", json={"app": None, "rect": None}).status_code == 403
 
 
 def test_recap_is_sent_when_the_call_ends_with_this_calls_last_time_and_kept_for_a_late_overlay(http, events, monkeypatch):

@@ -281,6 +281,7 @@ async def faces(t: FaceTrack):
 
 
 class Window(BaseModel):
+    app: str | None  # the followed app's name, e.g. "zoom.us"; null together with rect
     rect: list | None  # checked by hand: pydantic's own 422 would echo an infinite number back and fail to serialize it
 
 
@@ -294,7 +295,9 @@ async def set_window(w: Window):
     global latest_window
     if not good_rect(w.rect):
         raise HTTPException(422, "rect must be null or [x, y, w, h] as finite numbers with w and h above 0")
-    latest_window = {"type": "window", "rect": w.rect}
+    if (w.app is None) != (w.rect is None) or (w.app is not None and not 0 < len(w.app.strip()) <= 100):
+        raise HTTPException(422, "app and rect must both be null, or an app name (up to 100 characters) with its rect")
+    latest_window = {"type": "window", "app": w.app and w.app.strip(), "rect": w.rect}
     await push(latest_window)
     return {"ok": True}
 
