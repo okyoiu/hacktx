@@ -532,6 +532,15 @@ function renderBadge() {
   $('badge').textContent = unseen
 }
 
+// A later insight while closed: the badge pulses once (300 ms, none under reduced motion) instead of the pill growing.
+let callNo = 0 // counts calls: a recap ends one
+let autoOpenedFor = null // the call the island already opened itself for
+function pulseBadge() {
+  $('badge').classList.remove('pulse')
+  void $('badge').offsetWidth // restart the animation
+  $('badge').classList.add('pulse')
+}
+
 if (shows('bar')) {
   $('pillBtn').addEventListener('click', () => !recapOn && setOpen(!open))
   $('askBtn').addEventListener('click', () => (window.overlay ? window.overlay.ask() : startAsk()))
@@ -724,8 +733,9 @@ function showInsights(next) {
   $('points').replaceChildren(...points.map((p) => fresh(el('li', null, p), seen.has(p))))
   const had = new Set(prev?.actions.map((a) => a.id))
   $('actions').replaceChildren(...shownActions(next.actions).map((a) => fresh(actionRow(a, $('actionsNote')), had.has(a.id))))
-  if (open || recapOn) return
-  // closed: the pill widens for a moment with the newest point and the first action, and counts the rest
+  if (open || recapOn) return // an open sheet just updates in place
+  // closed: the notice text stays current for when the user hovers; the badge counts what's new; only the
+  // call's first insight widens the pill by itself
   const fresh_ = points.filter((p) => !seen.has(p))
   unseen += fresh_.length
   renderBadge()
@@ -739,7 +749,10 @@ function showInsights(next) {
     $('noticeAction').lastElementChild.textContent = first.label
     $('noticeAction').onclick = () => runAction(first.id, $('actionsNote'))
   }
-  notify()
+  if (insightAutoOpens(autoOpenedFor, callNo)) {
+    autoOpenedFor = callNo
+    notify()
+  } else pulseBadge()
 }
 
 function setInsightsEmpty(on) {
@@ -943,6 +956,7 @@ if (shows('response')) {
 function showRecap(r) {
   recapOn = true
   open = false
+  callNo++ // that call is over: the next one's first insight may open the island again
   turns = [] // the thread ends with the call
   renderThread()
   const minutes = listening.startedAt ? Math.max(1, Math.round((Date.now() - Date.parse(listening.startedAt)) / 60000)) : 0

@@ -510,6 +510,18 @@ test('hover is decided from where the pointer is: inside the island plus a margi
   assert.equal(s.collapse, true, 'outside for 600 ms: back off')
 })
 
+test('only the first insight of a call opens the notice by itself; a new call resets it', () => {
+  const { insightAutoOpens } = require('./logic')
+  let openedFor = null // the call the island already opened itself for
+  let call = 0 // counts calls: a recap ends one
+  assert.ok(insightAutoOpens(openedFor, call), 'the first insight of the call')
+  openedFor = call
+  assert.ok(!insightAutoOpens(openedFor, call), 'a later insight: badge only')
+  assert.ok(!insightAutoOpens(openedFor, call), 'and the one after')
+  call++ // the recap: that call is over
+  assert.ok(insightAutoOpens(openedFor, call), 'the next call opens once again')
+})
+
 test('the island keeps its centre as it grows (Teams: its left edge) and stays on screen', () => {
   const spot = { x: 440, y: 31, width: BAR.width, height: BAR.height, anchor: 'center' }
   assert.deepEqual(islandBounds(spot, { width: ISLAND.pill, height: 44 }, WORK), { x: 440 + (BAR.width - ISLAND.pill) / 2, y: 31, width: ISLAND.pill, height: 44 })

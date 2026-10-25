@@ -104,6 +104,8 @@ body[data-view="all"].idle .island { opacity: 0.3; transition: opacity 0.8s ease
 .spark-btn:hover { background: var(--hover); }
 .mark { width: 18px; height: 18px; flex: none; fill: var(--ink); }
 .badge { display: grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 9px; background: var(--ink); color: #111; font-size: 11px; font-weight: 700; }
+.badge.pulse { animation: badge-pulse 0.3s var(--ease); } /* a later insight: a nudge, not an expansion */
+@keyframes badge-pulse { 50% { scale: 1.3; } }
 
 .notice { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 12px; }
 .notice .t { flex: 1; min-width: 0; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
