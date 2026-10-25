@@ -38,6 +38,11 @@ create table if not exists encounters (
 alter table people add column if not exists role text not null default '';
 alter table people add column if not exists role_source text not null default 'muse';
 
+-- what each call was about, whether the person spoke in it, and whether Muse called it "work" or "personal" ("" = unsure)
+alter table encounters add column if not exists topic text not null default '';
+alter table encounters add column if not exists spoke boolean not null default false;
+alter table encounters add column if not exists context text not null default '';
+
 -- one line about the first call together; written once
 alter table people add column if not exists how_met text not null default '';
 

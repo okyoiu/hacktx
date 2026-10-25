@@ -37,6 +37,7 @@ THREAD_TURNS = 6  # question/answer turns of an Ask AI chat that follow-ups can 
 LIVE_BULLET_SECONDS = 60  # check what a person has said at most this often
 LIVE_MIN_WORDS = 8  # fewer words than this since the last check is not worth a Muse call
 MAX_BULLETS = 5  # a card past this gets a shorter "Met …" line, then fewer facts
+TOPIC_CHARS = 60  # the topic shown on a card is kept short
 NOTE_POINTS = 10  # Muse rephrases points every refresh, so the call note keeps only the latest few
 
 
@@ -180,7 +181,9 @@ def remember_encounters(ended: Call) -> dict[str, str]:
         if not people or not ended.lines:
             return  # the finally below still refreshes their files
         for s in picks.summarise(people, ended.lines):
-            store.add_encounter(s["personId"], ended.started.astimezone(), s["about"], s["lastTime"])
+            spoke = any(l.startswith(f"{people[s['personId']]['name']}: ") for l in ended.lines)  # a caption under their name
+            store.add_encounter(s["personId"], ended.started.astimezone(), s["about"], s["lastTime"],
+                                ended.topic[:TOPIC_CHARS], spoke, s["context"])
             lasts[s["personId"]] = s["lastTime"]
             if s["role"]:
                 store.set_role(s["personId"], s["role"], "muse")  # never replaces a role the user typed
@@ -264,7 +267,7 @@ def card(person: dict) -> dict:
     """The face-event card for a store.match or store.person result."""
     met = person["firstMet"]
     last = store.last_time(person["id"])
-    how, facts = store.card_extras(person["id"])
+    how, facts, seen = store.card_extras(person["id"])
     last_bullet = f"Last time: {last}" if last else ""
     live = snippets.get(person["id"], [])
     met_bullet = f"Met {how}" if how else ""
@@ -277,6 +280,7 @@ def card(person: dict) -> dict:
         "role": person["role"],
         "line": f"Last time: {last}" if last else store.latest_note(person["id"]) or "",
         "met": f"Met {met:%b} {met.day}",
+        **seen,
         "bullets": [b for b in (person["role"], *facts, last_bullet, met_bullet) if b] + live,
     }
 

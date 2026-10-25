@@ -96,7 +96,8 @@ Return one JSON object only, with this shape:
       "about": "Who they are: a few short facts, or \\"\\" if the transcript reveals little about them",
       "lastTime": "What you talked about together this time, 1-2 short lines",
       "role": "Who they are to the user, under 60 characters, like \\"Your team lead\\" or \\"Recruiter at Meta\\"; \\"\\" if the transcript doesn't say",
-      "facts": ["Loves F1", "Has two kids", "Moving to Austin in May"]
+      "facts": ["Loves F1", "Has two kids", "Moving to Austin in May"],
+      "context": "work, personal, or \\"\\" if you can't tell: what kind of conversation the user had with this person"
     }}
   ]
 }}
@@ -296,10 +297,11 @@ def parse_summary(reply: str, known_ids: set[str]) -> list[dict]:
 
         found[pid] = {"personId": pid, "about": about.strip()[:300], "lastTime": last.strip()[:240] or TOGETHER,
                       "role": " ".join(role.split())[:ROLE_CHARS] if isinstance(role, str) else "",
-                      "facts": clean_facts(entry.get("facts"))}
+                      "facts": clean_facts(entry.get("facts")),
+                      "context": entry.get("context") if entry.get("context") in ("work", "personal") else ""}
 
     # everyone in the call gets a last-time line, even when Muse leaves them out
-    missing = [{"personId": pid, "about": "", "lastTime": TOGETHER, "role": "", "facts": []} for pid in sorted(known_ids - found.keys())]
+    missing = [{"personId": pid, "about": "", "lastTime": TOGETHER, "role": "", "facts": [], "context": ""} for pid in sorted(known_ids - found.keys())]
     return list(found.values()) + missing
 
 

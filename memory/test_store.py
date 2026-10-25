@@ -447,3 +447,32 @@ def test_how_we_met_is_written_once_from_the_first_calls_date_app_and_topic(db, 
     monkeypatch.setattr(picks, "chat", lambda prompt, seconds=None: json.dumps({"people": [{"personId": other, "lastTime": "Chat."}]}))
     server.remember_encounters(server.Call(started=datetime(2026, 10, 26, 9, 0), people={other: []}, lines=["x: hi"]))
     assert store.person(other)["howMet"] == "Oct 26, 2026 on a call"  # no app followed, no topic
+
+
+def test_card_fields_last_seen_last_spoke_topic_and_context_come_from_the_calls_together(db, enroll, tmp_path, monkeypatch):
+    monkeypatch.setattr(notes, "NOTES", tmp_path)
+    monkeypatch.setattr(server, "snippets", {})
+    face = random_print()
+    pid, _ = enroll(face)
+    name = store.person(pid)["name"]
+    blank = {"lastSeen": None, "lastSpoke": None, "topic": None, "context": None}
+    assert {k: server.card_for(face.tolist())[k] for k in blank} == blank  # nothing before a first call together
+    assert {k: store.person(pid)[k] for k in blank} == blank
+
+    context = iter(["work", "banana"])  # anything but work/personal becomes "" (unsure)
+    monkeypatch.setattr(picks, "chat", lambda prompt, seconds=None: json.dumps(
+        {"people": [{"personId": pid, "lastTime": "Chat.", "context": next(context)}]}))
+    spoke = server.Call(started=datetime(2026, 10, 1, 12), people={pid: []}, lines=[f"{name}: hello", "Me: hi"], topic="Hello Again demo")
+    quiet = server.Call(started=datetime(2026, 10, 20, 12), people={pid: []}, lines=["Me: anyone there?"], topic="T" * 100)
+    server.remember_encounters(spoke)
+    card = server.card_for(face.tolist())
+    assert (card["lastSeen"], card["lastSpoke"], card["topic"], card["context"]) == ("2026-10-01", "2026-10-01", "Hello Again demo", "work")
+    server.remember_encounters(quiet)
+    card = server.card_for(face.tolist())
+    assert (card["lastSeen"], card["lastSpoke"], card["context"]) == ("2026-10-20", "2026-10-01", "")  # seen later, spoke earlier
+    assert card["topic"] == "T" * server.TOPIC_CHARS  # kept short
+
+    want = {k: card[k] for k in blank}
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
+        assert {k: http.get(f"/people/{pid}").json()[k] for k in blank} == want
+        assert {k: next(p for p in http.get("/people").json() if p["id"] == pid)[k] for k in blank} == want
