@@ -46,7 +46,7 @@ def fake_serpapi(url, params, timeout):
 def http(monkeypatch, tmp_path):
     """A fresh server: no call, transcript, insights or faces, and listening."""
     state = {"call": None, "history": [], "fresh": [], "actions": {}, "latest_insights": None, "tracks": {}, "unknown": {},
-             "speakers": {}, "clients": set(), "listening": {"type": "listening", "on": True, "startedAt": "2026-10-24T20:00:00Z"}}
+             "speakers": {}, "clients": set(), "last_transcript_at": None, "listening": {"type": "listening", "on": True, "startedAt": "2026-10-24T20:00:00Z"}}
     for name, value in state.items():
         monkeypatch.setattr(server, name, value)
     monkeypatch.setattr(server, "INSIGHTS_SECONDS", 0.3)
@@ -486,3 +486,32 @@ def test_enroll_needs_the_invite_code_only_when_one_is_set(http, monkeypatch):
         denied = http.post("/enroll", data=form | wrong, files=photo)
         assert denied.status_code == 403 and "invite link" in denied.json()["detail"]
     assert http.post("/enroll", data=form | {"code": "s3cret-é"}, files=photo).status_code == 400  # right code, on to consent
+
+
+def test_health_reports_database_keys_pause_and_last_line_for_this_laptop_only(http, monkeypatch):
+    class Db:
+        def execute(self, sql):
+            return self
+
+    monkeypatch.setattr(store, "conn", lambda: Db())
+    monkeypatch.setenv("MODEL_API_KEY", "secret-muse")
+    monkeypatch.delenv("SERPAPI_KEY", raising=False)
+    body = http.get("/health").json()
+    assert body == {"db": "ok", "muse": True, "serpapi": False, "listening": True, "lastTranscriptAt": None}
+    assert "secret-muse" not in http.get("/health").text  # key presence only, never the key
+
+    http.post("/transcript", json=line("speaker_0", "Hello"))
+    http.post("/listening", json={"on": False})
+    http.post("/transcript", json=line("speaker_0", "ignored while paused"))
+    body = http.get("/health").json()
+    assert body["listening"] is False and body["lastTranscriptAt"] == server.last_transcript_at and body["lastTranscriptAt"].endswith("Z")
+    first = body["lastTranscriptAt"]
+    http.post("/transcript", json=line("speaker_0", "still paused"))
+    assert http.get("/health").json()["lastTranscriptAt"] == first
+
+    def down():
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(store, "conn", down)
+    assert http.get("/health").json()["db"] == "error"
+    assert TestClient(server.app, client=WIFI).get("/health").status_code == 403

@@ -47,6 +47,7 @@ history: list[str] = []  # lines Muse Spark has already seen, context for the ne
 fresh: list[str] = []  # final lines since the last insights refresh
 listening: dict = {"type": "listening", "on": True, "startedAt": utc_now()}  # latest listening event
 latest_insights: dict | None = None  # latest insights event
+last_transcript_at: str | None = None  # when the last line was accepted, for the control bar's status dot
 actions: dict[str, dict] = {}  # action id -> {kind, label, query, personId}
 wake: asyncio.Event | None = None  # set when fresh lines wait for Muse Spark; made per event loop in lifespan
 
@@ -276,6 +277,18 @@ async def name_speaker(s: SpeakerName):
     return {"ok": True}
 
 
+@app.get("/health")
+async def health():
+    """What the control bar's status dot shows: is the database up, are the keys set, is the mic feeding us."""
+    try:
+        await asyncio.wait_for(asyncio.to_thread(lambda: store.conn().execute("select 1")), 3)
+        db = "ok"
+    except Exception:  # down, unreachable or slow: all the same to the dot
+        db = "error"
+    return {"db": db, "muse": bool(os.getenv("MODEL_API_KEY")), "serpapi": bool(os.getenv("SERPAPI_KEY")),
+            "listening": listening["on"], "lastTranscriptAt": last_transcript_at}
+
+
 @app.post("/listening")
 async def set_listening(body: Listening):
     if body.on and not listening["on"] and call is None:
@@ -287,8 +300,10 @@ async def set_listening(body: Listening):
 
 @app.post("/transcript")
 async def transcript(line: Line):
+    global last_transcript_at
     if not listening["on"]:
         return {"ok": True, "ignored": True}  # paused: nothing is shown, kept or sent to Muse
+    last_transcript_at = utc_now()
     who = speakers.get(line.speaker, line.speaker)
     await push({"type": "caption", "speaker": who, "text": line.text, "final": line.final})
     if line.final and line.text.strip():
