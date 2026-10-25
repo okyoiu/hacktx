@@ -473,3 +473,16 @@ def test_call_ends_by_itself_when_no_face_has_been_seen_for_the_idle_time(http, 
     assert server.call is not None
     wait_for(lambda: server.call is None)
     assert server.unknown == {} and server.fresh == [] and server.latest_insights is None
+
+
+def test_enroll_needs_the_invite_code_only_when_one_is_set(http, monkeypatch):
+    monkeypatch.setattr(server, "enroll_hits", {})
+    photo = {"selfie": ("s.jpg", b"x", "image/jpeg")}
+    form = {"name": "Sam", "consent": "false"}  # stops at the consent check, which comes after the code check
+    monkeypatch.delenv("ENROLL_CODE", raising=False)
+    assert http.post("/enroll", data=form, files=photo).status_code == 400  # no code set: no check
+    monkeypatch.setenv("ENROLL_CODE", "s3cret-é")
+    for wrong in ({}, {"code": "nope"}, {"code": ""}):
+        denied = http.post("/enroll", data=form | wrong, files=photo)
+        assert denied.status_code == 403 and "invite link" in denied.json()["detail"]
+    assert http.post("/enroll", data=form | {"code": "s3cret-é"}, files=photo).status_code == 400  # right code, on to consent

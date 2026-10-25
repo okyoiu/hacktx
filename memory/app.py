@@ -4,6 +4,8 @@ Run: uv run --env-file .env uvicorn memory.app:app --reload
 Keep it on localhost or your LAN; nothing here is authenticated except deleting a person.
 """
 import asyncio
+import os
+import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -456,10 +458,14 @@ async def enroll(
     name: str = Form(min_length=1, max_length=80),
     consent: bool = Form(),
     role: str = Form("", max_length=picks.ROLE_CHARS),
+    code: str = Form("", max_length=200),
     selfie: UploadFile = File(),
 ):
     if rate_limited(request.client.host if request.client else ""):
         raise HTTPException(429, "Too many tries from this device. Wait a minute and try again.")
+    expected = os.getenv("ENROLL_CODE")  # unset: anyone who can reach the page may enroll
+    if expected and not secrets.compare_digest(code.encode(), expected.encode()):
+        raise HTTPException(403, "That invite link is missing its code or the code is wrong. Ask for a new link.")
     if not consent:
         raise HTTPException(400, "Consent is required to enroll. Nothing was saved.")
     if not name.strip():
