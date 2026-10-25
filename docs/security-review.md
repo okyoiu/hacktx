@@ -316,3 +316,15 @@ Checked by applying the commits to a scratch copy of this branch and running `to
 
 - **Fine:** laptop-only (not in the guest list); `rect` is null or exactly four plain numbers (booleans are refused because it checks `type(n) in (int, float)`), all finite (NaN and infinity give 422 by hand, so the error never echoes them), width and height above 0; nothing is stored on disk; the replay to a late overlay goes only over `/ws`.
 - **R5-4a, Low: no upper bound.** `1e300` passes, so the overlay could be handed numbers that turn into `Infinity` or `NaN` in its placement math and break card layout for the rest of the call. Smallest fix in `good_rect`: add `abs(n) <= 20000` to the `all(...)`. My strict xfail (`test_window_rect_is_validated`) asserts a `1e9` width is refused, so it keeps xfailing until this bound lands, then delete its marker.
+
+### Round 5, code pass 2 (`/review/memory` `0880763` debug, `d36cdf5` recap; `/review/capture` `1e04914`)
+
+**Fine:**
+- **Debug gate:** `memory/app.py` turns debug on only when the `debug` body field is present **and** the server's own `HELLO_DEBUG == "1"`; otherwise the field is ignored. The `face` event and `/faces` reply still carry no score, and the score appears only in the `debug` event on the laptop-only `/ws`. My guard test passes. Capture adds the field only when its own `HELLO_DEBUG == "1"`. The debug body is length-checked (`personBox` and `faceBox` are exactly 4 numbers).
+- **Recap:** built once per call from the validated insights and from `store.person`, so anyone already deleted or expired is left out when it is built; cleared when the next call starts; replayed only over `/ws`.
+- **Window:** capture sends `rect` only on change and as plain numbers.
+
+**New findings:**
+- **R5-6, Low-Medium: a person who deletes themselves stays in the stored recap.** `latest_recap` keeps `{id, name, role, lastTime}` until the next call, and `forget` in `memory/app.py` does not touch it, so an overlay that connects afterwards is told their name again. Smallest fix, in `forget` after the delete: `if latest_recap: latest_recap["people"] = [p for p in latest_recap["people"] if p["id"] != pid]`. Strict xfail added.
+- **R5-9, Low: a NaN in a box is accepted and drops every overlay.** `screenBox` and the debug boxes are `list[float]`, which accepts `NaN`/`Infinity`; `push()` then fails inside `send_json` (strict JSON) and the `except` discards the socket, so the overlay silently stops updating until it reconnects. Only a laptop process can send it, but a division by zero in capture would do it by accident. Smallest fix: `Field(..., allow_inf_nan=False)` on those lists (or `list[Annotated[float, Field(allow_inf_nan=False)]]`). Strict xfail added.
+- **R5-10, Info (demo day): `HELLO_DEBUG=1` in `.env` would turn the debug view on for the packaged app too**, because both the launcher (`uv run --env-file .env`) and Electron's `loadEnvFile` read it. Add to the checklist: make sure `.env` has no `HELLO_DEBUG` line.

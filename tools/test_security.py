@@ -327,3 +327,29 @@ def test_the_app_build_never_packs_secrets_or_data():
     listed = [x for x in listed if not x.startswith("!")]  # exclusions are fine
     banned = re.compile(r"(^|[/*])(\.env|notes|logs|\.git)(/|\*|$)|^\.\.|(^|/)\*\*$|\.pt$|\.onnx$")
     assert [x for x in listed if banned.search(x)] == []
+
+
+@pytest.mark.xfail(strict=True, reason="R5-6: the recap kept for a late overlay still names someone who deleted themselves")
+def test_a_deleted_person_leaves_the_stored_recap(monkeypatch):
+    recap = {"type": "recap", "topic": "", "points": [], "actions": [], "people": [{"id": "p_zed", "name": "Zed", "role": "", "lastTime": "x"}]}
+    monkeypatch.setattr(server, "latest_recap", recap, raising=False)
+    monkeypatch.setattr(server, "tracks", {})
+    monkeypatch.setattr(store, "delete_person", lambda pid, token: True)
+    assert TestClient(server.app, client=LAPTOP).delete("/people/p_zed").status_code == 200
+    assert "p_zed" not in json.dumps(server.latest_recap)
+
+
+@pytest.mark.xfail(strict=True, reason="R5-9: a NaN box is accepted, then breaks the push and drops every connected overlay")
+def test_a_nan_box_is_refused_and_does_not_drop_the_overlay(monkeypatch):
+    class Overlay:
+        async def send_json(self, event):
+            json.dumps(event, allow_nan=False)  # what starlette's send_json does
+
+    ws = Overlay()
+    monkeypatch.setattr(server, "clients", {ws})
+    monkeypatch.setattr(server, "tracks", {1: None})
+    monkeypatch.setattr(server, "unknown", {})
+    monkeypatch.setattr(server, "saw_face", lambda card: None)
+    r = TestClient(server.app, client=LAPTOP).post(
+        "/faces", content='{"trackId":1,"screenBox":[NaN,0,1,1]}', headers={"content-type": "application/json"})
+    assert r.status_code == 422 and ws in server.clients
