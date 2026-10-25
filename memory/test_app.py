@@ -155,8 +155,8 @@ def test_websocket_only_for_this_laptop(http):
 def test_remember_saves_the_face_on_screen_only_with_consent(http, events, monkeypatch):
     enrolled = []
 
-    def enroll(name, face_print, selfie):
-        enrolled.append((name, face_print.tolist(), selfie))
+    def enroll(name, face_print, selfie, role=""):
+        enrolled.append((name, face_print.tolist(), selfie, role))
         return "p_new", "token123"
 
     monkeypatch.setattr(store, "enroll", enroll)
@@ -173,12 +173,13 @@ def test_remember_saves_the_face_on_screen_only_with_consent(http, events, monke
     assert http.post("/faces/7/remember", json={"name": "Kai Park", "consent": False}).status_code == 400
     assert http.post("/faces/7/remember", json={"name": "   ", "consent": True}).status_code == 422
     assert http.post("/faces/7/remember", json={"name": "x" * 81, "consent": True}).status_code == 422
+    assert http.post("/faces/7/remember", json={"name": "Kai", "consent": True, "role": "r" * 61}).status_code == 422
     assert TestClient(server.app, client=WIFI).post("/faces/7/remember", json={"name": "Kai", "consent": True}).status_code == 403
     assert enrolled == []
 
-    saved = http.post("/faces/7/remember", json={"name": "  Kai Park ", "consent": True})
+    saved = http.post("/faces/7/remember", json={"name": "  Kai Park ", "consent": True, "role": " Your team lead "})
     assert saved.json() == {"id": "p_new", "deleteToken": "token123"}
-    assert enrolled == [("Kai Park", face, None)]  # the print from the call, no selfie
+    assert enrolled == [("Kai Park", face, None, "Your team lead")]  # the print from the call, no selfie
     assert events[-1] == {"type": "face", "trackId": 7, "screenBox": box,
                           "person": {"id": "p_new", "name": "Kai Park", "line": "", "met": "Met Oct 24"}}
     assert "p_new" in server.call.people  # counted in this call from now on
@@ -221,10 +222,10 @@ def test_insights_survive_a_failed_note_and_ignore_a_garbage_reply(http, events,
 def test_enroll_keeps_the_face_print_but_never_the_selfie(http, monkeypatch):
     saved = []
     monkeypatch.setattr("capture.embed.embed_image", lambda data: [0.1] * 512)
-    monkeypatch.setattr(store, "enroll", lambda name, face_print, selfie: saved.append((name, selfie)) or ("p_new", "tok"))
-    form = {"name": " Sam ", "consent": "true"}
+    monkeypatch.setattr(store, "enroll", lambda name, face_print, selfie, role="": saved.append((name, selfie, role)) or ("p_new", "tok"))
+    form = {"name": " Sam ", "consent": "true", "role": " Your friend "}
     r = http.post("/enroll", data=form, files={"selfie": ("s.jpg", b"jpeg bytes", "image/jpeg")})
-    assert r.json() == {"id": "p_new", "deleteToken": "tok"} and saved == [("Sam", None)]
+    assert r.json() == {"id": "p_new", "deleteToken": "tok"} and saved == [("Sam", None, "Your friend")]
 
 
 def test_deleting_yourself_mid_call_removes_your_card_and_keeps_insights_flowing(http, events, monkeypatch):

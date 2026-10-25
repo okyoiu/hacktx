@@ -61,13 +61,13 @@ def digest(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def enroll(name: str, face_print: np.ndarray, selfie: bytes | None) -> tuple[str, str]:
+def enroll(name: str, face_print: np.ndarray, selfie: bytes | None, role: str = "") -> tuple[str, str]:
     """Save a consenting person; returns (personId, deleteToken)."""
     pid, token = "p_" + secrets.token_hex(4), secrets.token_urlsafe(16)
     with conn().transaction():
         conn().execute(
-            "insert into people (id, name, selfie, delete_token) values (%s, %s, %s, %s)",
-            (pid, name, selfie, digest(token)),
+            "insert into people (id, name, selfie, delete_token, role, role_source) values (%s, %s, %s, %s, %s, %s)",
+            (pid, name, selfie, digest(token), role, "user" if role else "muse"),
         )
         conn().execute("insert into faces (person_id, print) values (%s, %s)", (pid, face_print))
         conn().execute(
@@ -88,10 +88,18 @@ def delete_person(pid: str, token: str) -> bool:
     return True
 
 
+def set_role(pid: str, role: str, source: str) -> None:
+    """A user's role always wins; Muse's suggestion only fills in or replaces an earlier suggestion."""
+    conn().execute(
+        "update people set role = %s, role_source = %s where id = %s and (%s = 'user' or role_source <> 'user')",
+        (role, source, pid, source),
+    )
+
+
 def person(pid: str) -> dict | None:
     """Name, first-met date, every encounter and note, newest first; None if unknown or their consent has run out."""
     row = conn().execute(
-        """select p.name, p.first_met from people p join consents c on c.person_id = p.id
+        """select p.name, p.first_met, p.role from people p join consents c on c.person_id = p.id
            where p.id = %s and c.expires_at >= current_date""",
         (pid,),
     ).fetchone()
@@ -106,6 +114,7 @@ def person(pid: str) -> dict | None:
     return {
         "id": pid,
         "name": row[0],
+        "role": row[2],
         "firstMet": row[1],
         "encounters": [{"metAt": at, "about": about, "lastTime": last} for at, about, last in encounters],
         "notes": [{"text": t, "createdAt": at} for t, at in notes],

@@ -46,7 +46,7 @@ def test_parse_survives_garbage():
 
 def test_parse_summary_gives_every_known_person_one_last_time_line():
     reply = "Here you go:\n" + json.dumps({"people": [
-        {"personId": "p_jordan", "about": " Engineer, just moved to Austin ", "lastTime": "Talked about finding a climbing gym."},
+        {"personId": "p_jordan", "about": " Engineer, just moved to Austin ", "lastTime": "Talked about finding a climbing gym.", "role": "  Your   team lead "},
         {"personId": "p_jordan", "about": "duplicate", "lastTime": "duplicate"},
         {"personId": "p_stranger", "about": "Not in the call", "lastTime": "x"},
         {"personId": "p_maya", "about": None, "lastTime": "Asked Jordan about climbing gyms."},
@@ -55,12 +55,12 @@ def test_parse_summary_gives_every_known_person_one_last_time_line():
     ]})
     together = "You were on a call together."
     assert parse_summary(reply, {"p_jordan", "p_maya", "p_sam", "p_kai"}) == [
-        {"personId": "p_jordan", "about": "Engineer, just moved to Austin", "lastTime": "Talked about finding a climbing gym."},
-        {"personId": "p_maya", "about": "", "lastTime": "Asked Jordan about climbing gyms."},  # about may be empty
-        {"personId": "p_sam", "about": "Nurse", "lastTime": together},
-        {"personId": "p_kai", "about": "", "lastTime": together},  # Muse left them out
+        {"personId": "p_jordan", "about": "Engineer, just moved to Austin", "lastTime": "Talked about finding a climbing gym.", "role": "Your team lead"},
+        {"personId": "p_maya", "about": "", "lastTime": "Asked Jordan about climbing gyms.", "role": ""},  # about may be empty
+        {"personId": "p_sam", "about": "Nurse", "lastTime": together, "role": ""},
+        {"personId": "p_kai", "about": "", "lastTime": together, "role": ""},  # Muse left them out
     ]
-    assert parse_summary("no json", KNOWN) == [{"personId": "p_jordan", "about": "", "lastTime": together}]
+    assert parse_summary("no json", KNOWN) == [{"personId": "p_jordan", "about": "", "lastTime": together, "role": ""}]
     assert parse_summary('{"people": "nope"}', set()) == []
 
 
@@ -134,3 +134,9 @@ def test_forget_removes_only_that_persons_section(tmp_path, monkeypatch):
     text = path.read_text()
     assert "Jordan" not in text and "Austin" not in text
     assert "## Maya Chen <!-- p_m -->" in text and "Climbs" in text and "## Key points" in text
+
+
+def test_parse_summary_caps_a_role_and_ignores_a_non_string():
+    reply = json.dumps({"people": [{"personId": "a", "lastTime": "x", "role": "R" * 100}, {"personId": "b", "lastTime": "x", "role": 7}]})
+    got = {e["personId"]: e["role"] for e in parse_summary(reply, {"a", "b"})}
+    assert got == {"a": "R" * 60, "b": ""}

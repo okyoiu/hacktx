@@ -126,6 +126,8 @@ def remember_encounters(ended: Call) -> None:
             return
         for s in picks.summarise(people, ended.lines):
             store.add_encounter(s["personId"], ended.started.astimezone(), s["about"], s["lastTime"])
+            if s["role"]:
+                store.set_role(s["personId"], s["role"], "muse")  # never replaces a role the user typed
     except Exception as e:  # e.g. no MODEL_API_KEY: the call still ends and its note is still written
         print(f"encounter summaries skipped: {e}")
 
@@ -218,6 +220,7 @@ async def face_gone(g: Gone):
 class Remember(BaseModel):
     name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
     consent: bool
+    role: Annotated[str, StringConstraints(strip_whitespace=True, max_length=picks.ROLE_CHARS)] = ""
 
 
 @app.post("/faces/{track_id}/remember")
@@ -228,7 +231,7 @@ async def remember(track_id: int, body: Remember):
     face = unknown.pop(track_id, None)  # popped first, so a double click can't enroll them twice
     if face is None:
         raise HTTPException(409, "That face has left the call")
-    pid, token = await asyncio.to_thread(store.enroll, body.name, np.asarray(face["print"], dtype=np.float32), None)
+    pid, token = await asyncio.to_thread(store.enroll, body.name, np.asarray(face["print"], dtype=np.float32), None, body.role)
     tracks[track_id] = await asyncio.to_thread(card_for, face["print"])
     saw_face(tracks[track_id])
     await push({"type": "face", "trackId": track_id, "screenBox": face["box"], "person": tracks[track_id]})
@@ -440,6 +443,7 @@ async def enroll(
     request: Request,
     name: str = Form(min_length=1, max_length=80),
     consent: bool = Form(),
+    role: str = Form("", max_length=picks.ROLE_CHARS),
     selfie: UploadFile = File(),
 ):
     if rate_limited(request.client.host if request.client else ""):
@@ -456,7 +460,7 @@ async def enroll(
     face_print = await asyncio.to_thread(embed_image, data)
     if face_print is None:
         raise HTTPException(422, "No face found in that photo. Try again facing the camera in good light.")
-    pid, token = await asyncio.to_thread(store.enroll, name.strip(), face_print, None)  # the selfie is never kept
+    pid, token = await asyncio.to_thread(store.enroll, name.strip(), face_print, None, role.strip())  # the selfie is never kept
     return {"id": pid, "deleteToken": token}
 
 

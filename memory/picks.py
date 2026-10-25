@@ -14,6 +14,7 @@ QUERY_KINDS = {"define", "search", "places", "events"}  # kinds that act on a se
 MAX_POINTS = 3
 MAX_ACTIONS = 4
 MAX_NOTES_PER_CALL = 3  # new notes saved per person per call; a flood of claims about one person stops here
+ROLE_CHARS = 60
 POINT_CHARS = 120  # each point must stay under this
 
 PROMPT = """You help someone on a live video call: keep a short running summary, suggest useful one-click actions, and remember facts about the people in it.
@@ -87,7 +88,8 @@ Return one JSON object only, with this shape:
     {{
       "personId": "an ID from the people list",
       "about": "Who they are: a few short facts, or \\"\\" if the transcript reveals little about them",
-      "lastTime": "What you talked about together this time, 1-2 short lines"
+      "lastTime": "What you talked about together this time, 1-2 short lines",
+      "role": "Who they are to the user, under 60 characters, like \\"Your team lead\\" or \\"Recruiter at Meta\\"; \\"\\" if the transcript doesn't say"
     }}
   ]
 }}
@@ -204,7 +206,7 @@ def summarise(people: dict[str, dict], lines: list[str]) -> list[dict]:
 
 
 def parse_summary(reply: str, known_ids: set[str]) -> list[dict]:
-    """Validated [{personId, about, lastTime}]: exactly one per known person; about may be empty."""
+    """Validated [{personId, about, lastTime, role}]: exactly one per known person; about may be empty."""
     entries = []
     match = re.search(r"\{.*\}", reply, re.S)
     if match:
@@ -223,16 +225,18 @@ def parse_summary(reply: str, known_ids: set[str]) -> list[dict]:
         pid = entry.get("personId")
         about = entry.get("about") or ""
         last = entry.get("lastTime") or ""
+        role = entry.get("role")
 
         if pid not in known_ids or pid in found:
             continue
         if not isinstance(about, str) or not isinstance(last, str):
             continue
 
-        found[pid] = {"personId": pid, "about": about.strip()[:300], "lastTime": last.strip()[:240] or TOGETHER}
+        found[pid] = {"personId": pid, "about": about.strip()[:300], "lastTime": last.strip()[:240] or TOGETHER,
+                           "role": " ".join(role.split())[:ROLE_CHARS] if isinstance(role, str) else ""}
 
     # everyone in the call gets a last-time line, even when Muse leaves them out
-    missing = [{"personId": pid, "about": "", "lastTime": TOGETHER} for pid in sorted(known_ids - found.keys())]
+    missing = [{"personId": pid, "about": "", "lastTime": TOGETHER, "role": ""} for pid in sorted(known_ids - found.keys())]
     return list(found.values()) + missing
 
 

@@ -127,6 +127,21 @@ def test_delete_tokens_are_stored_hashed_and_old_plain_ones_upgrade(db, enroll):
     assert store.delete_person(old, "plain-old-token") is True
 
 
+def test_a_role_you_typed_is_never_replaced_by_muses_suggestion(db, enroll):
+    typed, _ = store.enroll("Test " + secrets.token_hex(3), random_print(), None, "Your team lead")
+    guessed, _ = enroll(random_print())  # no role given
+    try:
+        assert store.person(typed)["role"] == "Your team lead" and store.person(guessed)["role"] == ""
+        for pid in (typed, guessed):
+            store.set_role(pid, "Recruiter at Meta", "muse")
+        assert [store.person(p)["role"] for p in (typed, guessed)] == ["Your team lead", "Recruiter at Meta"]
+        store.set_role(guessed, "Your friend", "user")  # the dashboard edit wins, and later suggestions can't undo it
+        store.set_role(guessed, "Someone else", "muse")
+        assert store.person(guessed)["role"] == "Your friend"
+    finally:
+        db.execute("delete from people where id = %s", (typed,))
+
+
 def test_person_returns_notes_newest_first(db, enroll):
     pid, _ = enroll(random_print())
     store.add_note(pid, "Moved to Austin")
@@ -202,13 +217,14 @@ def test_call_end_summarises_only_recognized_people(db, enroll, tmp_path, monkey
     pid, _ = enroll(face)
     quiet, _ = enroll(quiet_face)  # recognized, mostly asks questions, and Muse leaves them out
     name, quiet_name = store.person(pid)["name"], store.person(quiet)["name"]
+    store.set_role(quiet, "Your friend", "user")
     prompts = []
 
     def muse(prompt: str) -> str:
         prompts.append(prompt)
         if "A video call just ended" in prompt:
             return json.dumps({"people": [
-                {"personId": pid, "about": "Runner training for a marathon", "lastTime": "Talked about the March race."},
+                {"personId": pid, "about": "Runner training for a marathon", "lastTime": "Talked about the March race.", "role": "Running buddy"},
                 {"personId": "p_stranger", "about": "Not in the call", "lastTime": "Never stored"},
             ]})
         return json.dumps({"topic": "", "points": [], "actions": []})
@@ -225,8 +241,9 @@ def test_call_end_summarises_only_recognized_people(db, enroll, tmp_path, monkey
         http.post("/transcript", json={"speaker": "speaker_0", "text": "My race is in March.", "final": True})
         http.post("/calls/end")
         deadline = time.time() + 3
-        while (store.last_time(pid) is None or store.last_time(quiet) is None) and time.time() < deadline:
+        while (store.last_time(pid) is None or store.last_time(quiet) is None or not store.person(pid)["role"]) and time.time() < deadline:
             time.sleep(0.05)
+        assert [store.person(p)["role"] for p in (pid, quiet)] == ["Running buddy", "Your friend"]  # Muse fills in a missing role; one you typed stays
 
         summary = next(p for p in prompts if "A video call just ended" in p)
         roster = summary.split("<people>\n")[1].split("\n</people>")[0]
