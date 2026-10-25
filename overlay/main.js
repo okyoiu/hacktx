@@ -9,7 +9,7 @@
 const { app, BrowserWindow, clipboard, globalShortcut, ipcMain, screen, shell, systemPreferences } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
-const { ROUTES } = require('./logic')
+const { validCall, webUrl } = require('./logic')
 
 const MOCK = process.argv.includes('--mock')
 const MEMORY_URL = process.env.MEMORY_URL || 'http://localhost:8000'
@@ -33,7 +33,13 @@ function overlayWindow(query, opts) {
     resizable: false,
     skipTaskbar: true,
     show: false,
-    webPreferences: { preload: path.join(__dirname, 'preload.js') },
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webviewTag: false,
+    },
     ...opts,
   })
   win.setAlwaysOnTop(true, 'screen-saver')
@@ -42,10 +48,13 @@ function overlayWindow(query, opts) {
   win.setContentProtection(true)
   // Source links open in the browser; nothing navigates the overlay itself.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:\/\//.test(url)) shell.openExternal(url)
+    if (webUrl(url)) shell.openExternal(url)
     return { action: 'deny' }
   })
   win.webContents.on('will-navigate', (e) => e.preventDefault())
+  win.webContents.on('will-attach-webview', (e) => e.preventDefault())
+  // The overlay needs no camera, microphone or other permission of its own.
+  win.webContents.session.setPermissionRequestHandler((_wc, _permission, deny) => deny(false))
   win.loadFile('index.html', { query: { ...query, mock: MOCK ? '1' : '' } })
   return win
 }
@@ -191,8 +200,8 @@ function demoApi(route, body) {
 // ---------- calls from the panels ----------
 
 // Resolves to the service's JSON, or to { error } with a sentence the panel can show as is.
-ipcMain.handle('api', async (_e, route, body) => {
-  if (!ROUTES.test(route)) return { error: 'The overlay never makes that call.' }
+ipcMain.handle('api', async (e, route, body) => {
+  if (!ours(e) || !validCall(route, body)) return { error: 'The overlay never makes that call.' }
   if (MOCK) return demoApi(route, body)
   try {
     const res = await fetch(MEMORY_URL + route, {
@@ -209,8 +218,12 @@ ipcMain.handle('api', async (_e, route, body) => {
   }
 })
 
+// Only our own pages (local files) may use the channels below.
+const ours = (e) => e.senderFrame?.url.startsWith('file://')
+const on = (channel, handler) => ipcMain.on(channel, (e, ...args) => ours(e) && handler(e, ...args))
+
 // Panels grow and shrink with their content, so the blur never shows past the glass, and stop at the screen's edge.
-ipcMain.on('fit', (e, height) => {
+on('fit', (e, height) => {
   const win = BrowserWindow.fromWebContents(e.sender)
   const bounds = win?.getBounds()
   if (!bounds || !(height > 0)) return
@@ -219,15 +232,16 @@ ipcMain.on('fit', (e, height) => {
   if (bounds.height !== fitted) win.setBounds({ ...bounds, height: fitted })
 })
 
-ipcMain.on('panel-idle', (e, idle) => {
+on('panel-idle', (e, idle) => {
+  if (typeof idle !== 'boolean') return
   const win = BrowserWindow.fromWebContents(e.sender)
   if (win?.isVisible() && !allHidden && !closing.has(win)) fade(win, idle ? IDLE_OPACITY : 1, idle ? 800 : 200)
 })
 
-ipcMain.on('copy', (_e, text) => clipboard.writeText(String(text)))
+on('copy', (_e, text) => typeof text === 'string' && clipboard.writeText(text.slice(0, 20000)))
 // A thinking pill takes the mouse while the pointer is over it, and the keyboard while its form is open.
-ipcMain.on('click-through', (_e, on) => windows.cards.setIgnoreMouseEvents(Boolean(on), { forward: true }))
-ipcMain.on('cards-focus', (_e, on) => {
+on('click-through', (_e, on) => windows.cards.setIgnoreMouseEvents(Boolean(on), { forward: true }))
+on('cards-focus', (_e, on) => {
   if (on) {
     windows.cards.setFocusable(true)
     windows.cards.focus()
@@ -236,10 +250,11 @@ ipcMain.on('cards-focus', (_e, on) => {
     windows.cards.setFocusable(false)
   }
 })
-ipcMain.on('copy-invite', () => clipboard.writeText(ENROLL_URL))
-ipcMain.on('ask', openAsk)
-ipcMain.on('toggle-all', toggleAll)
-ipcMain.on('close-response', (_e, id) => {
+on('copy-invite', () => clipboard.writeText(ENROLL_URL))
+on('ask', openAsk)
+on('toggle-all', toggleAll)
+on('close-response', (_e, id) => {
+  if (typeof id !== 'string') return
   closedResponse = id
   conceal(windows.response)
 })

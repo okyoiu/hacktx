@@ -29,4 +29,20 @@ function isQuiet(cardCount, lastActive, now) {
   return cardCount >= BIG_CALL && now - lastActive > QUIET_MS
 }
 
-if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver, cleanName, isQuiet, BIG_CALL, QUIET_MS }
+// A call is a known route plus no body or a small plain object; main checks this before forwarding.
+function validCall(route, body) {
+  if (typeof route !== 'string' || !ROUTES.test(route)) return false
+  if (body == null) return true
+  return typeof body === 'object' && !Array.isArray(body) && JSON.stringify(body).length <= 2000
+}
+
+// Only web links open in the browser.
+function webUrl(url) {
+  try {
+    return ['http:', 'https:'].includes(new URL(url).protocol)
+  } catch {
+    return false
+  }
+}
+
+if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver, cleanName, validCall, webUrl, isQuiet, BIG_CALL, QUIET_MS }

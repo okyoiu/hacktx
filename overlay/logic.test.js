@@ -1,7 +1,7 @@
 // node --test (npm test in overlay/)
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { ROUTES, elapsed, takesOver, cleanName, isQuiet, BIG_CALL, QUIET_MS } = require('./logic')
+const { ROUTES, elapsed, takesOver, cleanName, validCall, webUrl, isQuiet, BIG_CALL, QUIET_MS } = require('./logic')
 
 test('main only forwards the memory API calls the overlay makes', () => {
   for (const route of ['/listening', '/ask', '/actions/x1', '/actions/act_2-b']) assert.ok(ROUTES.test(route), route)
@@ -46,4 +46,20 @@ test('name cards only go quiet in big calls, after a minute without activity', (
   assert.ok(isQuiet(BIG_CALL, 0, QUIET_MS + 1))
   assert.ok(!isQuiet(BIG_CALL, 0, QUIET_MS), 'exactly a minute is not yet quiet')
   assert.ok(!isQuiet(BIG_CALL - 1, 0, QUIET_MS * 10), 'a small call keeps every card')
+})
+
+test('main forwards only known routes with a small plain-object body', () => {
+  assert.ok(validCall('/ask', { question: 'hi' }))
+  assert.ok(validCall('/listening'))
+  assert.ok(!validCall('/ask', 'text'))
+  assert.ok(!validCall('/ask', [1]))
+  assert.ok(!validCall('/ask', { question: 'x'.repeat(3000) }))
+  assert.ok(!validCall({ toString: () => '/ask' }, {}), 'a route that is not a string')
+  assert.ok(!validCall('/people/p_1'))
+})
+
+test('only http(s) links open in the browser', () => {
+  assert.ok(webUrl('https://example.com/a'))
+  assert.ok(webUrl('http://example.com'))
+  for (const url of ['file:///etc/passwd', 'javascript:alert(1)', 'smb://host/share', 'not a url', undefined]) assert.ok(!webUrl(url), String(url))
 })
