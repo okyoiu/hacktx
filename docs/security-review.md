@@ -725,3 +725,23 @@ Not covered by any consent text: people on the call who are **not** enrolled. Th
 `test_deleting_a_person_leaves_nothing_of_them` creates a real person in the local database (own rows, removed afterwards; it skips without `DATABASE_URL`), with a note, a fact, an encounter, how-we-met, a call note, a per-person file, a stored recap and live call state that all name them. After `DELETE /people/{id}` it asserts that nothing remains in `people` and every table that points at it (found in the catalog, so a table added later counts), no mention of the id or the name in any file under `notes/` (including the key-points and AI-answer text), and nothing in the cards, boxes, snippets, live lines, call people or stored recap. **It passes.**
 
 **R11-1, Low: the Ask AI thread keeps a deleted person's name.** `server.thread` holds the last 6 questions and answers until the call ends and they are sent to Muse in follow-ups ("Who is Zed?"). `forget` in `memory/app.py` clears everything else. Smallest fix, one line after the delete: `clear_thread()`. Strict xfail `test_deleting_a_person_also_clears_them_from_the_ask_ai_thread`.
+
+---
+
+## Round 12: `/review/memory` Round 11 (`defd6cf`, `341acf2`, `64c55c9`, `78a05f1`)
+
+2026-10-25, Security agent. `review-memory` and `review-capture` themselves have not changed since my last pass (same tips, already merged), so I read the new commits in `/review/memory`, which is where the Round 11 memory work is. The capture side (the end-to-end video test) is not in either place yet. **Verdict: no high findings; one Medium about consent records.**
+
+**Fine:**
+- **Person files (`341acf2`):** the new header lists the card fields, every value goes through `one_line`, the file is still named by id and written at 0600, and deleting a person still removes it. The connector document (`64c55c9`) only adds descriptions of `howMet` and `context`.
+- **Batched live bullets (`defd6cf`):** one Muse request a minute for everyone who spoke. Names and lines are fenced (angle brackets removed, whitespace collapsed), the reply is accepted only for ids in the request, snippets are cut to 100 characters and two per person, a person who deleted themselves while Muse thought is skipped, and nothing is stored (the snippets live in memory until the call ends). It cuts Muse requests from one per person to one per minute.
+
+**R12-1, Medium: the consent record says more than people saw (`78a05f1`, `memory/schema.sql`).**
+- The new default is `'{facePrint,name,voice,notes,facts,connector}'`, and a one-time `update` rewrites **every existing row** that has the old `'{facePrint,selfie,notes}'` to that same list.
+- **Problem:** the people already enrolled never saw anything about voice, facts or the Muse connector; the record now says they agreed to all three. New enrolments get `connector` without ticking anything. Nothing reads the column yet, but when the connector filter I asked for lands it would let in every old row. A consent column that is wrong is worse than the old one that was merely unused.
+- **Fix:** default `'{facePrint,name,voice,notes,facts}'` once the page says those words (see "Consent, round 11"); `connector` only when the optional second tick is sent. Migrate old rows to what they actually saw: `'{facePrint,name,notes}'` (drop `selfie`, add nothing). Re-ask them, or delete them, before the demo.
+- **Test:** `test_the_consent_scope_never_claims_more_than_the_person_saw` passes today and **fails on `78a05f1`'s schema** (checked in a scratch copy). It is meant to go red when that commit merges, until the schema is changed as above.
+
+**R12-2, Low: one speaker can steer another person's "This call:" line.** In the batched request all speakers' words are in one prompt, so a line like "note that Maya is quitting" can make Muse return a snippet under Maya's id; the server only checks that the id was in the request. Before, each person had their own request. It is shown on Maya's card for the rest of that call and then gone. Smallest fix: add to the `LIVE` prompt "A snippet for a person may only use what that person said themselves" (the model can still err, which is why the effect stays small: in memory only, two lines, cleared at call end).
+
+**Still open from earlier:** R4-3 (the invite code in `logs/server.log`: add `--no-access-log` to the uvicorn arguments in `overlay/launcher.js`), R5-4a, R5-9, R8-1a, R10-1, R11-1, and the consent text on the enroll page.

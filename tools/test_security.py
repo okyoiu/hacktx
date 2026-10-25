@@ -574,3 +574,15 @@ def test_the_enroll_page_names_every_use_of_what_it_keeps():
     for word in ("connector", "facts", "voice"):
         assert word in text, word
     assert re.search(r"(each|every|per) call", text) or "summar" in text
+
+
+def test_the_consent_scope_never_claims_more_than_the_person_saw():
+    """R12-1: connector is an optional second tick, never a default, and the one-time migration of old rows must not add
+    uses they never saw (facts, voice, connector)."""
+    sql = (ROOT / "memory/schema.sql").read_text()
+    for line in sql.splitlines():
+        if re.search(r"scope", line) and re.search(r"set default|^update consents", line.strip()):
+            assert "connector" not in line, line
+    for line in sql.splitlines():
+        if line.strip().startswith("update consents"):
+            assert not re.search(r"facts|voice", line.split("where")[0]), line
