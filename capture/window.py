@@ -1,11 +1,13 @@
-"""Find a call app's window on macOS and grab its pixels, so capture/faces.py can run without --region.
+"""Find a call app's window and grab its pixels, so capture/faces.py can run without --region.
 
-Reads the window list macOS already exposes (CGWindowListCopyWindowInfo, through osascript) and captures one window with
-the screencapture tool that ships with macOS, so no extra dependency.
+macOS: the window list CGWindowListCopyWindowInfo exposes (through osascript) and the screencapture tool, both shipped with
+the system. Windows: EnumWindows through ctypes; windows are grabbed by rect with mss. No extra dependency either way.
 """
 import json
+import os
 import re
 import subprocess
+import sys
 from collections import namedtuple
 
 import cv2
@@ -23,11 +25,54 @@ JSON.stringify(ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo
 
 
 def windows() -> list[dict]:
-    """Normal on-screen app windows (layer 0; menus, docks and overlays sit on other layers)."""
+    """Normal on-screen app windows, front to back, as macOS describes them (kCGWindow… keys), on either platform."""
+    if sys.platform == "win32":
+        return win32_windows()
     out = subprocess.run(["osascript", "-l", "JavaScript", "-e", LIST_WINDOWS], capture_output=True, text=True)
     if out.returncode != 0:
         raise SystemExit(f"couldn't list windows: {out.stderr.strip()}")
-    return [w for w in json.loads(out.stdout) if w.get("kCGWindowLayer") == 0]
+    return [w for w in json.loads(out.stdout) if w.get("kCGWindowLayer") == 0]  # layer 0: menus, docks, overlays sit higher
+
+
+# Windows process names (without .exe) -> the app names the rest of this file knows, so the same CALL_APPS, has_call and
+# window event work on both platforms
+WIN_APPS = {"zoom": "Zoom", "chrome": "Google Chrome", "arc": "Arc", "msedge": "Microsoft Edge", "teams": "Microsoft Teams",
+            "ms-teams": "Microsoft Teams", "discord": "Discord", "slack": "Slack", "webex": "Webex", "webexmta": "Webex"}
+
+
+def win32_window(title: str, exe: str, rect: tuple[int, int, int, int]) -> dict:
+    """One Windows top-level window in the shape of a macOS list entry (no window number: it is grabbed by rect)."""
+    stem = os.path.splitext(exe.replace("\\", "/").rsplit("/", 1)[-1])[0]  # file name; os.path on a Mac keeps backslashes
+    left, top, right, bottom = rect
+    return {"kCGWindowOwnerName": WIN_APPS.get(stem.lower(), stem), "kCGWindowName": title,
+            "kCGWindowBounds": {"X": left, "Y": top, "Width": right - left, "Height": bottom - top}}
+
+
+def win32_windows() -> list[dict]:
+    """Visible, titled top-level windows, front to back. Untested: written without a Windows machine (see TASKS.md)."""
+    import ctypes
+    from ctypes import wintypes
+
+    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+    user32.SetProcessDPIAware()  # so GetWindowRect gives the same pixels mss grabs
+    found = []
+
+    def each(hwnd, _):
+        if user32.IsWindowVisible(hwnd) and user32.GetWindowTextLengthW(hwnd):
+            title, rect, pid = ctypes.create_unicode_buffer(512), wintypes.RECT(), wintypes.DWORD()
+            user32.GetWindowTextW(hwnd, title, 512)
+            user32.GetWindowRect(hwnd, ctypes.byref(rect))
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            exe, size = ctypes.create_unicode_buffer(1024), wintypes.DWORD(1024)
+            if handle := kernel32.OpenProcess(0x1000, False, pid):  # PROCESS_QUERY_LIMITED_INFORMATION
+                kernel32.QueryFullProcessImageNameW(handle, 0, exe, ctypes.byref(size))
+                kernel32.CloseHandle(handle)
+            if title.value != "Program Manager":  # the desktop itself
+                found.append(win32_window(title.value, exe.value, (rect.left, rect.top, rect.right, rect.bottom)))
+        return True
+
+    user32.EnumWindows(ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(each), 0)
+    return found
 
 
 MIN_SIZE = (300, 200)  # points; a call's toolbar or thumbnail window is smaller, so it doesn't count as the call
