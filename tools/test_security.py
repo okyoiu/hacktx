@@ -567,7 +567,6 @@ def _enroll_page_text():
     return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", page))).lower()
 
 
-@pytest.mark.xfail(strict=True, reason="R11-2: the enroll page does not name the Muse connector, the facts, the per-call summaries or the voice")
 def test_the_enroll_page_names_every_use_of_what_it_keeps():
     text = _enroll_page_text()
     for word in ("connector", "facts", "voice"):
