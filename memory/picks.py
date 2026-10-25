@@ -354,7 +354,7 @@ def parse(reply: str, known_ids: set[str]) -> dict:
                 notes.append({"personId": pid, "text": value[:200]})
 
     topic = data.get("topic")
-    topic = topic.strip()[:80] if isinstance(topic, str) else ""
+    topic = " ".join(topic.split())[:80] if isinstance(topic, str) else ""  # one line: it ends up in bullets and files
 
     points = []
     if isinstance(raw_points, list):

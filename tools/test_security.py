@@ -364,7 +364,6 @@ def test_a_nan_box_is_refused_and_does_not_drop_the_overlay(monkeypatch):
     assert r.status_code == 422 and ws in server.clients
 
 
-@pytest.mark.xfail(strict=True, reason="R8-1a: Muse's topic keeps its newlines, and it reaches card bullets and the how-we-met line")
 def test_a_muse_topic_is_one_line():
     from memory import picks
 

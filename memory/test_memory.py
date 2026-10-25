@@ -182,3 +182,8 @@ def test_notes_are_private_and_older_ones_are_tightened_on_startup(tmp_path, mon
         os.umask(old)
     modes = {p: p.stat().st_mode & 0o777 for p in (path, legacy, path.parent, legacy.parent)}
     assert modes == {path: 0o600, legacy: 0o600, path.parent: 0o700, legacy.parent: 0o700}
+
+
+def test_a_topic_is_one_line_of_at_most_80_characters():
+    out = parse(json.dumps({"topic": "  Move to\n## Austin\t<!-- p_y -->  " + "x" * 100}), KNOWN)
+    assert "\n" not in out["topic"] and out["topic"].startswith("Move to ## Austin") and len(out["topic"]) == 80
