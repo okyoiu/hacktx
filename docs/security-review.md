@@ -158,3 +158,34 @@ async def guests_only_enroll(request: Request, call_next):
 - Windows behavior;
 - the Muse realtime protocol beyond what capture sends;
 - the overlay's uncommitted `overlay.js` beyond HTML sinks and links (it was changing while I read it).
+
+---
+
+## Round 2
+
+2026-10-25, Security agent. Skills used: cybersecurity, `/security-review` pass over the merged `sandbox/base` (`29ce149`), `pip-audit`, `npm audit`. Pass 1 of the review reads `/review/capture` (`144a9f8` plus uncommitted `faces.py`), `/review/memory` (`3a97bbb`) and `/review/overlay` (`e718d21`).
+
+**Status of round 1:** #1, #2, #3 (README and middleware), #5, #7, #8 are fixed on `sandbox/base`. #4 is fixed on `/review/memory` (`3a97bbb`, not merged yet). #6, #9 and #11 are open, and each now has a strict xfail in `tools/test_security.py` (as does #4, until `3a97bbb` merges). #10: `npm audit --omit=dev` now reports 0 vulnerabilities, though `overlay/package.json:13` still pins Electron 44.6.0; bump it anyway when convenient.
+
+**Tools:** `pip-audit` and `npm audit --omit=dev` found nothing. The secrets-in-history grep matched only the skill's own example pattern, so no keys in history.
+
+### New findings, most severe first
+
+#### R2-1. Low: `notes/*.md` still keeps a deleted person's name outside their own section (`3a97bbb`)
+
+- **Where:** `memory/notes.py:forget`, which removes only the `## name <!-- id -->` section.
+- **Risk:** the same person's name can still appear in other people's bullets, in "Key points" and in "AI responses" (for example "Zed is moving to Austin"). Note files written before the id marker existed have no marker, so they are never cleaned.
+- **Smallest fix:** accept it and say so on the enroll page ("call notes on the host's laptop may still mention you"), or also drop lines containing the person's name. Tell the host to delete old `notes/` files once.
+
+#### R2-2. Low: a name can carry another person's marker (`3a97bbb`)
+
+- **Where:** `memory/notes.py:render`. `<!-- p_x -->` typed into an enrollment name goes into the section header, so when `p_x` deletes themselves, the attacker's own section goes too.
+- **Risk:** harmless (it only removes the attacker's own section, and ids are not secret anyway), but the marker is the sole link between a section and a person.
+- **Smallest fix:** strip `<!--` and `-->` from the name in `render` (one `.replace`).
+
+### Reviewed and fine
+
+- **`3a97bbb`:** `re.escape` on the id, no path built from user text, section ends at the next heading so AI answers (`###`) under their own `##` are untouched, and `store.delete_person` calls `forget` only after the token check passes.
+- **Capture `faces.py` (uncommitted):** when the call window is gone it now yields no frame and clears every card, instead of capturing the old screen region. That is a privacy gain: it no longer reads whatever app sits where the call was. The loop is still paced by the `fps` sleep (`faces.py:160`), so no busy loop.
+- **Capture tests:** use InsightFace's bundled `t1` image and a local fake server on `127.0.0.1`; no real people.
+- **Overlay `e718d21`:** names are read and written through `textContent`/`dataset`, the speaker string is only compared, and quiet cards hide names (less on screen, not more). No new IPC or network use.
