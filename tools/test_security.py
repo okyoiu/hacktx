@@ -1,6 +1,7 @@
 """Security checks across the app: consent, unknown faces, deletion, Electron settings and who may reach the server.
 Each xfail is an open finding in docs/security-review.md; it starts failing once fixed, so delete its marker then.
 Run: uv run pytest tools/test_security.py (the deletion test also needs DATABASE_URL)."""
+import json
 import os
 import re
 from datetime import date
@@ -260,3 +261,69 @@ def test_the_notes_folders_are_private(monkeypatch, tmp_path):
     finally:
         os.umask(old)
     assert all((tmp_path / "notes" / d).stat().st_mode & 0o077 == 0 for d in ("", "people"))
+
+
+# --- Round 5: debug view, /window and the packaged app ---
+
+def _face_events(monkeypatch, headers=None, params=None, extra=None):
+    """Post one matched face from this laptop with HELLO_DEBUG unset; returns (every pushed event, the response)."""
+    from datetime import date
+
+    pushed = []
+
+    async def push(event):
+        pushed.append(event)
+
+    monkeypatch.delenv("HELLO_DEBUG", raising=False)
+    monkeypatch.setattr(server, "push", push)
+    monkeypatch.setattr(server, "tracks", {})
+    monkeypatch.setattr(server, "unknown", {})
+    monkeypatch.setattr(server, "saw_face", lambda card: None)
+    monkeypatch.setattr(store, "match", lambda p: {"id": "p_x", "name": "Sam", "role": "", "firstMet": date(2026, 10, 1), "score": 0.62})
+    for name in ("last_time", "key_fact", "latest_note"):
+        monkeypatch.setattr(store, name, lambda pid: None)
+    body = {"trackId": 1, "screenBox": [0, 0, 10, 10], "facePrint": [0.044] * 512} | (extra or {})
+    r = TestClient(server.app, client=LAPTOP).post("/faces", json=body, headers=headers or {}, params=params or {})
+    return pushed, r
+
+
+def test_without_hello_debug_nothing_debug_reaches_the_overlay(monkeypatch):
+    """HELLO_DEBUG comes from the server's own environment only: no body field, header or query turns it on, and the
+    match score never rides in a face event or a reply."""
+    debug_body = {"debug": {"personBox": [0, 0, 1, 1], "faceBox": None, "fps": 5}, "HELLO_DEBUG": "1"}
+    for kwargs in ({}, {"extra": debug_body}, {"headers": {"X-Hello-Debug": "1"}}, {"params": {"debug": "1", "HELLO_DEBUG": "1"}}):
+        pushed, r = _face_events(monkeypatch, **kwargs)
+        assert r.status_code == 200 and pushed
+        assert all(e["type"] != "debug" for e in pushed)
+        assert "score" not in json.dumps(pushed) and "score" not in r.text
+
+
+def test_the_guest_pages_know_nothing_about_debug():
+    assert "debug" not in (ROOT / "web/enroll.html").read_text().lower()
+
+
+@pytest.mark.xfail(strict=True, reason="POST /window is not built yet; the rect must be null or 4 finite, bounded numbers")
+def test_window_rect_is_validated(monkeypatch):
+    laptop = TestClient(server.app, client=LAPTOP)
+    for bad in ("x", [0, 0, 1], [0, 0, 1, 2, 3], [0, 0, "a", 1], [0, 0, 1, None], [0, 0, 1e9, 1], [0, 0, -5, 10], [float("nan"), 0, 1, 1]):
+        assert laptop.post("/window", json={"rect": bad}).status_code == 422, bad
+    assert laptop.post("/window", json={"rect": [100, 80, 1200, 800]}).status_code == 200
+    assert laptop.post("/window", json={"rect": None}).status_code == 200
+
+
+def test_the_wifi_and_web_pages_cannot_post_the_window():
+    for client, headers in ((WIFI, {}), (LAPTOP, {"origin": "https://example.com"})):
+        r = TestClient(server.app, client=client).post("/window", json={"rect": [0, 0, 10, 10]}, headers=headers)
+        assert r.status_code == 403
+
+
+def test_the_app_build_never_packs_secrets_or_data():
+    """Reads the build config in overlay/package.json (electron-builder / packager keys) once it exists."""
+    cfg = json.loads((ROOT / "overlay/package.json").read_text())
+    build = cfg.get("build") or cfg.get("config") or {}
+    if not build and not any("package" in k or "dist" in k for k in cfg.get("scripts", {})):
+        pytest.skip("no packaging config yet")
+    listed = [str(x) for key in ("files", "extraResources", "extraFiles", "asarUnpack") for x in (build.get(key) or [])]
+    listed = [x for x in listed if not x.startswith("!")]  # exclusions are fine
+    banned = re.compile(r"(^|[/*])(\.env|notes|logs|\.git)(/|\*|$)|^\.\.|(^|/)\*\*$|\.pt$|\.onnx$")
+    assert [x for x in listed if banned.search(x)] == []
