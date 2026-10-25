@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import psycopg
+from pgvector import Vector
 from pgvector.psycopg import register_vector
 
 # Cosine similarity an ArcFace print needs to count as the same person.
@@ -64,12 +65,13 @@ def digest(token: str) -> str:
 def enroll(name: str, face_print: np.ndarray, selfie: bytes | None, role: str = "") -> tuple[str, str]:
     """Save a consenting person; returns (personId, deleteToken)."""
     pid, token = "p_" + secrets.token_hex(4), secrets.token_urlsafe(16)
+    role = " ".join(role.split())
     with conn().transaction():
         conn().execute(
             "insert into people (id, name, selfie, delete_token, role, role_source) values (%s, %s, %s, %s, %s, %s)",
             (pid, name, selfie, digest(token), role, "user" if role else "muse"),
         )
-        conn().execute("insert into faces (person_id, print) values (%s, %s)", (pid, face_print))
+        conn().execute("insert into faces (person_id, print) values (%s, %s)", (pid, Vector(face_print)))
         conn().execute(
             "insert into consents (person_id, expires_at) values (%s, current_date + %s::int)",
             (pid, CONSENT_DAYS),
@@ -90,6 +92,7 @@ def delete_person(pid: str, token: str | None) -> bool:
 def set_role(pid: str, role: str, source: str) -> None:
     """A user's role always wins; Muse's suggestion only fills in or replaces an earlier suggestion.
     A role the user cleared (empty) stays empty: it is theirs, so Muse never suggests one again."""
+    role = " ".join(role.split())  # one line: a role ends up in prompts and in notes files
     conn().execute(
         "update people set role = %s, role_source = %s where id = %s and (%s = 'user' or role_source <> 'user')",
         (role, source, pid, source),

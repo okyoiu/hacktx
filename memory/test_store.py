@@ -294,7 +294,7 @@ def test_call_end_summarises_only_recognized_people(db, enroll, tmp_path, monkey
 
         summary = next(p for p in prompts if "A video call just ended" in p)
         roster = summary.split("<people>\n")[1].split("\n</people>")[0]
-        assert roster.splitlines() == [f"{pid}: {name} (nothing yet)", f"{quiet}: {quiet_name} (nothing yet)"]  # no stranger
+        assert roster.splitlines() == [f"{pid}: {name} (nothing yet)", f"{quiet}: {quiet_name}, Your friend (nothing yet)"]  # no stranger; roles are shown
         assert f"{name}: My race is in March." in summary
         got = http.get(f"/people/{pid}").json()["encounters"]
         assert [(e["about"], e["lastTime"]) for e in got] == [("Runner training for a marathon", "Talked about the March race.")]

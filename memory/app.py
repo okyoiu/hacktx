@@ -123,7 +123,7 @@ def remember_encounters(ended: Call) -> None:
     """Runs in a thread: store Muse Spark's about/last-time summary for each recognized person of a finished call."""
     try:
         # store.person drops anyone who deleted themselves or whose consent ran out; unenrolled faces never got here
-        people = {p["id"]: {"name": p["name"], "notes": [n["text"] for n in p["notes"][:5]]}
+        people = {p["id"]: {"name": p["name"], "role": p["role"], "notes": [n["text"] for n in p["notes"][:5]]}
                   for p in map(store.person, ended.people) if p}
         if not people or not ended.lines:
             return  # the finally below still refreshes their files
@@ -335,7 +335,7 @@ async def refresh_insights() -> None:
     present = {p["id"]: p for p in tracks.values() if p}
     try:
         known = await asyncio.to_thread(store.notes_for, list(present))
-        people = {pid: {"name": p["name"], "notes": known.get(pid, [])} for pid, p in present.items()}
+        people = {pid: {"name": p["name"], "role": p.get("role", ""), "notes": known.get(pid, [])} for pid, p in present.items()}
         out = await asyncio.wait_for(asyncio.to_thread(picks.extract, people, history[-12:], new), OUTBOUND_SECONDS)
     finally:
         if call is owner:  # a call that ended meanwhile took its transcript with it

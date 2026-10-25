@@ -150,7 +150,8 @@ def fence(tag: str, lines: list[str]) -> str:
 def roster(people: dict[str, dict]) -> str:
     """People in the call (id: name, existing notes)."""
     return fence("people", [
-        f"{pid}: {person['name']} ({'; '.join(person.get('notes') or []) or 'nothing yet'})"
+        f"{pid}: {person['name']}{', ' + person['role'] if person.get('role') else ''} "
+        f"({'; '.join(person.get('notes') or []) or 'nothing yet'})"
         for pid, person in people.items()
     ] or ["(nobody recognized yet)"])
 
