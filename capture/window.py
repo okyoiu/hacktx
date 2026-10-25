@@ -25,13 +25,19 @@ def windows() -> list[dict]:
     return [w for w in json.loads(out.stdout) if w.get("kCGWindowLayer") == 0]
 
 
+MIN_SIZE = (300, 200)  # points; a call's toolbar or thumbnail window is smaller, so it doesn't count as the call
+
+
 def pick(windows: list[dict], apps) -> tuple[str, tuple[int, int, int, int]] | None:
-    """(owner, (x, y, width, height)) of the largest window of any of these apps; toolbars and thumbnails are smaller."""
+    """(owner, (x, y, width, height)) of the frontmost window of any of these apps, as macOS lists them front to back.
+    Toolbars and thumbnails are skipped; if every window is that small, the largest wins."""
     # \b so "Arc" doesn't match "Archive Utility" but "zoom" still matches "zoom.us"
     ours = [w for w in windows if any(re.match(re.escape(a) + r"\b", w.get("kCGWindowOwnerName", ""), re.I) for a in apps)]
     if not ours:
         return None
-    w = max(ours, key=lambda w: w["kCGWindowBounds"]["Width"] * w["kCGWindowBounds"]["Height"])
+    size = lambda w: (w["kCGWindowBounds"]["Width"], w["kCGWindowBounds"]["Height"])
+    roomy = [w for w in ours if size(w)[0] >= MIN_SIZE[0] and size(w)[1] >= MIN_SIZE[1]]
+    w = roomy[0] if roomy else max(ours, key=lambda w: size(w)[0] * size(w)[1])
     b = w["kCGWindowBounds"]
     return w["kCGWindowOwnerName"], (int(b["X"]), int(b["Y"]), int(b["Width"]), int(b["Height"]))
 
