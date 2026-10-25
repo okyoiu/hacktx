@@ -14,6 +14,7 @@ from memory import app as server
 from memory import notes, picks, serp, store
 
 JORDAN = {"id": "p_jordan", "name": "Jordan Lee", "line": "", "met": "Met Sep 24"}
+NEVER = {"lastSeen": None, "lastSpoke": None, "topic": None, "context": None}  # a card for someone with no call yet
 LAPTOP = ("127.0.0.1", 50000)  # capture, the overlay and curl run on the laptop with the server
 WIFI = ("192.168.1.23", 50000)  # any other device on the venue Wi-Fi
 
@@ -165,7 +166,7 @@ def test_remember_saves_the_face_on_screen_only_with_consent(http, events, monke
                         if enrolled else None)
     monkeypatch.setattr(store, "last_time", lambda pid: None)
     monkeypatch.setattr(store, "latest_note", lambda pid: None)
-    monkeypatch.setattr(store, "card_extras", lambda pid, facts=2: ("", []))
+    monkeypatch.setattr(store, "card_extras", lambda pid, facts=2: ("", [], NEVER))
     monkeypatch.setattr(store, "person", lambda pid: None)  # read by the call note at /calls/end
     face = [0.0] * 511 + [1.0]
     box = [10.0, 20.0, 100.0, 120.0]
@@ -184,7 +185,7 @@ def test_remember_saves_the_face_on_screen_only_with_consent(http, events, monke
     assert enrolled == [("Kai Park", face, None, "Your team lead")]  # the print from the call, no selfie
     assert events[-1] == {"type": "face", "trackId": 7, "screenBox": box,
                           "person": {"id": "p_new", "name": "Kai Park", "role": "Your team lead", "line": "", "met": "Met Oct 24",
-                                     "bullets": ["Your team lead"]}}
+                                     "bullets": [], **NEVER}}
     assert "p_new" in server.call.people  # counted in this call from now on
     assert http.post("/faces/7/remember", json={"name": "Kai Park", "consent": True}).status_code == 409  # already saved
 
@@ -630,7 +631,7 @@ def test_debug_events_exist_only_in_developer_mode(http, events, monkeypatch):
     monkeypatch.setattr(store, "nearest_score", lambda p: lookups.append(1) or (0.7 if p[0] > 0.5 else 0.31))
     monkeypatch.setattr(store, "last_time", lambda pid: None)
     monkeypatch.setattr(store, "latest_note", lambda pid: None)
-    monkeypatch.setattr(store, "card_extras", lambda pid, facts=2: ("", []))
+    monkeypatch.setattr(store, "card_extras", lambda pid, facts=2: ("", [], NEVER))
     debug = {"personBox": [0, 0, 50, 90], "faceBox": [10, 5, 20, 20], "fps": 4.8}
     known, stranger = [1.0] + [0.0] * 511, [0.0] * 511 + [1.0]
 
@@ -711,7 +712,7 @@ def test_live_bullets_add_this_calls_facts_to_the_card_and_skip_when_nothing_is_
                                                        "firstMet": date(2026, 10, 1)} if pid == "p_jordan" else None)
     monkeypatch.setattr(store, "last_time", lambda pid: "Talked about his move.")
     monkeypatch.setattr(store, "latest_note", lambda pid: None)
-    monkeypatch.setattr(store, "card_extras", lambda pid, facts=2: ("", ["Starts a fintech job Monday"]))
+    monkeypatch.setattr(store, "card_extras", lambda pid, facts=2: ("", ["Starts a fintech job Monday"], NEVER))
     replies, live_prompts = [], []
 
     def muse(prompt: str, seconds=None) -> str:
@@ -721,11 +722,11 @@ def test_live_bullets_add_this_calls_facts_to_the_card_and_skip_when_nothing_is_
         return json.dumps({"topic": "", "points": [], "actions": []})
 
     monkeypatch.setattr(picks, "chat", muse)
-    base = ["Your team lead", "Starts a fintech job Monday", "Last time: Talked about his move."]
+    base = ["Starts a fintech job Monday", "Last time: Talked about his move."]
     server.tracks[1] = JORDAN
     http.post("/faces", json={"trackId": 1, "screenBox": [5, 6, 70, 80]})
     http.post("/speakers", json={"label": "speaker_0", "name": "Jordan Lee"})
-    faces = lambda: [e for e in events if e["type"] == "face" and e["person"] and len(e["person"].get("bullets", [])) > 3]
+    faces = lambda: [e for e in events if e["type"] == "face" and e["person"] and len(e["person"].get("bullets", [])) > 2]
 
     def say(label: str, text: str) -> None:
         http.post("/transcript", json=line(label, text))
@@ -738,7 +739,7 @@ def test_live_bullets_add_this_calls_facts_to_the_card_and_skip_when_nothing_is_
     wait_for(lambda: len(faces()) == 1)
     shown = faces()[0]
     assert shown["screenBox"] == [5, 6, 70, 80] and shown["trackId"] == 1
-    assert shown["person"]["bullets"] == base + ["This call: Took up climbing", "This call: Lives in Austin"]  # 5 at most
+    assert shown["person"]["bullets"] == base[:1] + ["This call: Took up climbing", "This call: Lives in Austin"]  # 3 at most
     assert len(live_prompts) == 1 and "Somebody unrecognised" not in live_prompts[0] and "bouldering" in live_prompts[0]
     assert server.tracks[1]["bullets"] == shown["person"]["bullets"]  # later frames keep them
 

@@ -24,6 +24,10 @@ def conn() -> psycopg.Connection:
     if _conn is None:
         _conn = psycopg.connect(os.environ["DATABASE_URL"], autocommit=True, connect_timeout=5)  # fail fast, never hang
         _conn.execute("create extension if not exists vector")
+        try:
+            _conn.execute("create extension if not exists timescaledb")  # Tiger Cloud has it; plain Postgres doesn't, and that is fine
+        except psycopg.Error:
+            pass
         register_vector(_conn)
         _conn.execute(Path(__file__).with_name("schema.sql").read_text())
         purge_expired()
@@ -121,8 +125,28 @@ def people() -> list[dict]:
            from people p join consents c on c.person_id = p.id
            where c.expires_at >= current_date
            order by last_met desc, p.first_met desc, p.id""").fetchall()
-    return [{"id": i, "name": n, "role": r, "howMet": h, "firstMet": f, "lastMet": m, "lastTime": t}
+    by_person: dict[str, list] = {}
+    for pid, *row in conn().execute("select person_id, met_at, spoke, topic, context from encounters order by met_at desc, id desc").fetchall():
+        by_person.setdefault(pid, []).append(tuple(row))
+    return [{"id": i, "name": n, "role": r, "howMet": h, "firstMet": f, "lastMet": m, "lastTime": t, **seen_fields(by_person.get(i, []))}
             for i, n, r, f, h, m, t in rows]
+
+
+def stale(days: int) -> list[dict]:
+    """Consenting people not seen on a call for `days` days or more, most overdue first. Someone never on a call
+    counts from the day they were enrolled."""
+    rows = conn().execute(
+        """select p.id, p.name, p.role, last_met, (select last_time from encounters e where e.person_id = p.id
+                                                   order by e.met_at desc, e.id desc limit 1)
+           from people p join consents c on c.person_id = p.id
+           cross join lateral (select coalesce(max(met_at), p.first_met::timestamptz) as last_met
+                               from encounters where person_id = p.id) m
+           where c.expires_at >= current_date and last_met <= now() - make_interval(days => %s)
+           order by last_met, p.id""",
+        (days,),
+    ).fetchall()
+    now = datetime.now().astimezone()
+    return [{"id": i, "name": n, "role": r, "lastMet": m, "daysSince": (now - m).days, "lastTime": t} for i, n, r, m, t in rows]
 
 
 def rename(pid: str, name: str) -> None:
@@ -139,7 +163,8 @@ def person(pid: str) -> dict | None:
     if row is None:
         return None
     encounters = conn().execute(
-        "select met_at, about, last_time from encounters where person_id = %s order by met_at desc, id desc", (pid,)
+        "select met_at, about, last_time, spoke, topic, context from encounters where person_id = %s order by met_at desc, id desc",
+        (pid,),
     ).fetchall()
     notes = conn().execute(
         "select text, created_at from notes where person_id = %s order by created_at desc, id desc", (pid,)
@@ -153,17 +178,35 @@ def person(pid: str) -> dict | None:
         "role": row[2],
         "howMet": row[3],
         "firstMet": row[1],
-        "encounters": [{"metAt": at, "about": about, "lastTime": last} for at, about, last in encounters],
+        **seen_fields([(at, spoke, topic, ctx) for at, _, _, spoke, topic, ctx in encounters]),
+        "encounters": [{"metAt": at, "about": about, "lastTime": last} for at, about, last, *_ in encounters],
         "notes": [{"text": t, "createdAt": at} for t, at in notes],
         "facts": [{"text": t, "createdAt": at} for t, at in facts],
     }
 
 
-def add_encounter(pid: str, met_at: datetime, about: str, last_time: str) -> None:
+def add_encounter(pid: str, met_at: datetime, about: str, last_time: str,
+                  topic: str = "", spoke: bool = False, context: str = "") -> None:
     conn().execute(
-        "insert into encounters (person_id, met_at, about, last_time) values (%s, %s, %s, %s)",
-        (pid, met_at, about, last_time),
+        "insert into encounters (person_id, met_at, about, last_time, topic, spoke, context) values (%s, %s, %s, %s, %s, %s, %s)",
+        (pid, met_at, about, last_time, topic, spoke, context),
     )
+
+
+def seen_fields(rows: list[tuple]) -> dict:
+    """lastSeen, lastSpoke, topic and context from a person's encounters, newest first, as (met_at, spoke, topic, context).
+    All None before a first call together; lastSpoke is lastSeen when we never knew them to speak."""
+    if not rows:
+        return {"lastSeen": None, "lastSpoke": None, "topic": None, "context": None}
+    day = lambda at: at.astimezone().date().isoformat()
+    spoke = next((r for r in rows if r[1]), rows[0])
+    return {"lastSeen": day(rows[0][0]), "lastSpoke": day(spoke[0]), "topic": rows[0][2] or None, "context": rows[0][3]}
+
+
+def seen(pid: str) -> dict:
+    return seen_fields(conn().execute(
+        "select met_at, spoke, topic, context from encounters where person_id = %s order by met_at desc, id desc", (pid,)
+    ).fetchall())
 
 
 def last_time(pid: str) -> str | None:
@@ -174,11 +217,11 @@ def last_time(pid: str) -> str | None:
     return row[0] if row else None
 
 
-def card_extras(pid: str, facts: int = 2) -> tuple[str, list[str]]:
-    """What a card shows beyond role and last time: how we met, and the newest facts."""
+def card_extras(pid: str, facts: int = 2) -> tuple[str, list[str], dict]:
+    """What a card shows beyond role and last time: how we met, the newest facts, and the lastSeen/lastSpoke/topic/context fields."""
     how = conn().execute("select how_met from people where id = %s", (pid,)).fetchone()
     rows = conn().execute("select text from facts where person_id = %s order by created_at desc, id desc limit %s", (pid, facts)).fetchall()
-    return (how[0] if how else ""), [r[0] for r in rows]
+    return (how[0] if how else ""), [r[0] for r in rows], seen(pid)
 
 
 def set_how_met(pid: str, line: str) -> None:

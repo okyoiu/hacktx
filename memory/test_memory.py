@@ -46,7 +46,7 @@ def test_parse_survives_garbage():
 
 def test_parse_summary_gives_every_known_person_one_last_time_line():
     reply = "Here you go:\n" + json.dumps({"people": [
-        {"personId": "p_jordan", "about": " Engineer, just moved to Austin ", "lastTime": "Talked about finding a climbing gym.", "role": "  Your   team lead ",
+        {"personId": "p_jordan", "about": " Engineer, just moved to Austin ", "lastTime": "Talked about finding a climbing gym.", "role": "  Your   team lead ", "context": "work",
          "facts": ["Loves F1", "  has two   kids ", "loves f1", 7, "x" * 200, "Third", "Fourth"]},
         {"personId": "p_jordan", "about": "duplicate", "lastTime": "duplicate"},
         {"personId": "p_stranger", "about": "Not in the call", "lastTime": "x"},
@@ -56,12 +56,12 @@ def test_parse_summary_gives_every_known_person_one_last_time_line():
     ]})
     together = "You were on a call together."
     assert parse_summary(reply, {"p_jordan", "p_maya", "p_sam", "p_kai"}) == [
-        {"personId": "p_jordan", "about": "Engineer, just moved to Austin", "lastTime": "Talked about finding a climbing gym.", "role": "Your team lead", "facts": ["Loves F1", "has two kids", "x" * 80]},  # cleaned, deduped, capped at 3
-        {"personId": "p_maya", "about": "", "lastTime": "Asked Jordan about climbing gyms.", "role": "", "facts": []},  # about may be empty
-        {"personId": "p_sam", "about": "Nurse", "lastTime": together, "role": "", "facts": []},
-        {"personId": "p_kai", "about": "", "lastTime": together, "role": "", "facts": []},  # Muse left them out
+        {"personId": "p_jordan", "about": "Engineer, just moved to Austin", "lastTime": "Talked about finding a climbing gym.", "role": "Your team lead", "facts": ["Loves F1", "has two kids", "x" * 80], "context": "work"},  # cleaned, deduped, capped at 3
+        {"personId": "p_maya", "about": "", "lastTime": "Asked Jordan about climbing gyms.", "role": "", "facts": [], "context": ""},  # about may be empty
+        {"personId": "p_sam", "about": "Nurse", "lastTime": together, "role": "", "facts": [], "context": ""},
+        {"personId": "p_kai", "about": "", "lastTime": together, "role": "", "facts": [], "context": ""},  # Muse left them out
     ]
-    assert parse_summary("no json", KNOWN) == [{"personId": "p_jordan", "about": "", "lastTime": together, "role": "", "facts": []}]
+    assert parse_summary("no json", KNOWN) == [{"personId": "p_jordan", "about": "", "lastTime": together, "role": "", "facts": [], "context": ""}]
     assert parse_summary('{"people": "nope"}', set()) == []
 
 

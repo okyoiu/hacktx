@@ -143,32 +143,32 @@ def test_a_role_you_typed_is_never_replaced_by_muses_suggestion(db, enroll):
         db.execute("delete from people where id = %s", (typed,))
 
 
-def test_face_card_bullets_run_role_facts_last_time_how_we_met_then_this_calls_snippets(db, enroll, monkeypatch):
+def test_face_card_has_three_bullets_facts_then_last_time_then_how_we_met_and_this_calls_snippets_replace_the_oldest(db, enroll, monkeypatch):
     face = random_print()
     pid, _ = enroll(face)
     monkeypatch.setattr(server, "snippets", {})
     assert server.card_for(face.tolist())["bullets"] == [] and server.card_for(face.tolist())["role"] == ""
     store.add_note(pid, "My own note")  # the user's notes are not card bullets
+    store.set_role(pid, "Your team lead", "user")  # nor is the role: the card shows it as its own field
     assert server.card_for(face.tolist())["bullets"] == []
 
-    store.set_role(pid, "Your team lead", "user")
-    store.add_facts(pid, ["Loves F1"])
-    store.add_facts(pid, ["Has two kids"])
-    store.add_facts(pid, ["Moving to Austin in May"])
+    for fact in ("Loves F1", "Has two kids", "Moving to Austin in May"):
+        store.add_facts(pid, [fact])
     store.add_encounter(pid, datetime.now().astimezone(), "x", "Talked about his move.")
     store.set_how_met(pid, "Oct 25, 2026 on Zoom: a HackTX demo call")
     card = server.card_for(face.tolist())
     assert card["role"] == "Your team lead" and card["line"] == "Last time: Talked about his move."
-    assert card["bullets"] == ["Your team lead", "Moving to Austin in May", "Has two kids",  # newest facts first, two at most
-                               "Last time: Talked about his move.", "Met Oct 25, 2026 on Zoom: a HackTX demo call"]
+    assert card["bullets"] == ["Moving to Austin in May", "Has two kids", "Last time: Talked about his move."]  # newest facts first
 
-    server.snippets[pid] = ["This call: Took up climbing", "This call: Lives in Austin"]  # more than 5: shorter "Met", fewer facts
-    card = server.card_for(face.tolist())
-    assert card["bullets"] == ["Your team lead", "Last time: Talked about his move.", "Met Oct 25, 2026 on Zoom",
-                               "This call: Took up climbing", "This call: Lives in Austin"]
+    pid2, _ = enroll(random_print())
+    store.add_encounter(pid2, datetime.now().astimezone(), "x", "Chatted about golf.")
+    store.set_how_met(pid2, "Oct 25, 2026 on Zoom")
+    assert server.card(store.person(pid2))["bullets"] == ["Last time: Chatted about golf.", "Met Oct 25, 2026 on Zoom"]
+
     server.snippets[pid] = ["This call: Took up climbing"]
-    assert server.card_for(face.tolist())["bullets"] == ["Your team lead", "Moving to Austin in May", "Last time: Talked about his move.",
-                                                         "Met Oct 25, 2026 on Zoom", "This call: Took up climbing"]
+    assert server.card_for(face.tolist())["bullets"] == ["Moving to Austin in May", "Has two kids", "This call: Took up climbing"]
+    server.snippets[pid] = ["This call: Took up climbing", "This call: Lives in Austin"]
+    assert server.card_for(face.tolist())["bullets"] == ["Moving to Austin in May", "This call: Took up climbing", "This call: Lives in Austin"]
 
 
 def test_dashboard_lists_edits_and_deletes_people_from_this_laptop(db, enroll, monkeypatch):
@@ -186,7 +186,7 @@ def test_dashboard_lists_edits_and_deletes_people_from_this_laptop(db, enroll, m
         server.tracks[1] = {"id": a, "name": "old"}
         edited = http.patch(f"/people/{a}", json={"role": " Your team lead ", "name": " New Name "})
         assert edited.status_code == 200 and (edited.json()["name"], edited.json()["role"]) == ("New Name", "Your team lead")
-        assert server.tracks[1]["name"] == "New Name" and server.tracks[1]["bullets"][0] == "Your team lead"
+        assert server.tracks[1]["name"] == "New Name" and server.tracks[1]["role"] == "Your team lead"
         store.set_role(a, "Muse guess", "muse")
         assert store.person(a)["role"] == "Your team lead"  # a role set in the dashboard is the user's
         assert http.patch(f"/people/{a}", json={"role": ""}).json()["role"] == ""
@@ -447,3 +447,67 @@ def test_how_we_met_is_written_once_from_the_first_calls_date_app_and_topic(db, 
     monkeypatch.setattr(picks, "chat", lambda prompt, seconds=None: json.dumps({"people": [{"personId": other, "lastTime": "Chat."}]}))
     server.remember_encounters(server.Call(started=datetime(2026, 10, 26, 9, 0), people={other: []}, lines=["x: hi"]))
     assert store.person(other)["howMet"] == "Oct 26, 2026 on a call"  # no app followed, no topic
+
+
+def test_card_fields_last_seen_last_spoke_topic_and_context_come_from_the_calls_together(db, enroll, tmp_path, monkeypatch):
+    monkeypatch.setattr(notes, "NOTES", tmp_path)
+    monkeypatch.setattr(server, "snippets", {})
+    face = random_print()
+    pid, _ = enroll(face)
+    name = store.person(pid)["name"]
+    blank = {"lastSeen": None, "lastSpoke": None, "topic": None, "context": None}
+    assert {k: server.card_for(face.tolist())[k] for k in blank} == blank  # nothing before a first call together
+    assert {k: store.person(pid)[k] for k in blank} == blank
+
+    context = iter(["work", "banana"])  # anything but work/personal becomes "" (unsure)
+    monkeypatch.setattr(picks, "chat", lambda prompt, seconds=None: json.dumps(
+        {"people": [{"personId": pid, "lastTime": "Chat.", "context": next(context)}]}))
+    spoke = server.Call(started=datetime(2026, 10, 1, 12), people={pid: []}, lines=[f"{name}: hello", "Me: hi"], topic="Hello Again demo")
+    quiet = server.Call(started=datetime(2026, 10, 20, 12), people={pid: []}, lines=["Me: anyone there?"], topic="T" * 100)
+    server.remember_encounters(spoke)
+    card = server.card_for(face.tolist())
+    assert (card["lastSeen"], card["lastSpoke"], card["topic"], card["context"]) == ("2026-10-01", "2026-10-01", "Hello Again demo", "work")
+    server.remember_encounters(quiet)
+    card = server.card_for(face.tolist())
+    assert (card["lastSeen"], card["lastSpoke"], card["context"]) == ("2026-10-20", "2026-10-01", "")  # seen later, spoke earlier
+    assert card["topic"] == "T" * server.TOPIC_CHARS  # kept short
+
+    want = {k: card[k] for k in blank}
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
+        assert {k: http.get(f"/people/{pid}").json()[k] for k in blank} == want
+        assert {k: next(p for p in http.get("/people").json() if p["id"] == pid)[k] for k in blank} == want
+
+
+def test_stale_lists_people_not_met_in_a_while_most_overdue_first(db, enroll):
+    old, recent, never = enroll(random_print())[0], enroll(random_print())[0], enroll(random_print())[0]
+    now = datetime.now().astimezone()
+    store.add_encounter(old, now.replace(year=now.year - 1), "x", "Long ago.")
+    store.add_encounter(recent, now, "x", "Today.")
+    db.execute("update people set first_met = current_date - 50 where id = %s", (never,))  # enrolled, never on a call
+    mine = {old, recent, never}
+    got = [p for p in store.stale(30) if p["id"] in mine]
+    assert [p["id"] for p in got] == [old, never] and got[0]["daysSince"] >= 365 and got[0]["lastTime"] == "Long ago."
+    assert got[1]["daysSince"] in (49, 50, 51) and got[1]["lastTime"] is None  # counted from enrollment
+    assert [p["id"] for p in store.stale(100) if p["id"] in mine] == [old]
+    db.execute("update consents set expires_at = current_date - 1 where person_id = %s", (old,))
+    assert old not in [p["id"] for p in store.stale(30)]  # no consent, not listed
+
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http, TestClient(server.app, client=("192.168.1.9", 50000)) as phone:
+        assert never in [p["id"] for p in http.get("/people/stale?days=30").json()]
+        assert never in [p["id"] for p in http.get("/people/stale").json()]  # 30 days by default
+        assert http.get("/people/stale?days=0").status_code == 422 and http.get("/people/stale?days=x").status_code == 422
+        assert phone.get("/people/stale").status_code == 403
+
+
+def test_encounters_become_a_hypertable_when_timescaledb_exists_and_the_schema_reruns_cleanly(db, enroll):
+    schema = Path(store.__file__).with_name("schema.sql").read_text()
+    db.execute(schema)
+    db.execute(schema)  # idempotent on both backends
+    has_timescale = db.execute("select exists (select 1 from pg_extension where extname = 'timescaledb')").fetchone()[0]
+    if not has_timescale:
+        assert db.execute("select count(*) from pg_constraint where conname = 'encounters_pkey'").fetchone()[0] == 1  # plain Postgres: untouched
+        pytest.skip("timescaledb is not installed here (local Docker): only the plain-Postgres path ran")
+    assert db.execute("select count(*) from timescaledb_information.hypertables where hypertable_name = 'encounters'").fetchone()[0] == 1
+    pid, _ = enroll(random_print())
+    store.add_encounter(pid, datetime.now().astimezone(), "x", "Works on a hypertable.")
+    assert store.last_time(pid) == "Works on a hypertable."

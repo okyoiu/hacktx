@@ -2,8 +2,8 @@
 
 Run: uv run --env-file .env python -m capture.faces --region 0,38,1100,700
 The region is the call window as x,y,width,height in screen points (on a Mac: the numbers Cmd+Shift+4 shows).
-On a Mac, --app zoom.us (or FaceTime, 'Google Chrome', …) follows that app's frontmost window instead, even when you move it;
-with neither, it follows the frontmost window of a known call app (capture/window.py), waiting quietly until one appears.
+On a Mac or Windows, --app Zoom (or FaceTime, 'Google Chrome', …) follows that app's frontmost window instead, even when you
+move it; with neither, it follows the frontmost window of a known call app (capture/window.py), waiting quietly until one appears.
 Without a live call: --video call.mp4 reads a recording instead; its pixels stand in for screen points.
 It also names Muse's voices from whose lips move (capture/speakers.py) and tells memory with POST /speakers.
 Nothing here shows frames or boxes to anyone; tools/cv_check.py is the debug view.
@@ -35,6 +35,7 @@ STILL_AFTER = 3.0  # seconds between two looks at a person box; the same picture
 # grabbed again 0.00; the cleanest simulated camera noise (sigma 0.5) 0.52, sigma 2 1.13, a 1 px move 4.36.
 # shortcut: a still tile with a flashing icon in it reads 0.78 and so counts as a person; use the median if that shows up
 STILL = 0.25
+REPORT_EVERY = 60  # seconds between "capture: N fps, YOLO x ms, InsightFace y ms, cpu z%" log lines
 
 
 def screen_frames(region: tuple[int, int, int, int] | None, follow: list[str] | None = None):
@@ -99,6 +100,11 @@ def video_frames(video: cv2.VideoCapture, fps: float):
         yield frame, (0, 0, frame.shape[1], None, True)  # video pixels stand in for screen points
         for _ in range(skip):
             video.grab()
+
+
+def cpu_seconds() -> float:
+    t = os.times()
+    return t.user + t.system
 
 
 def grey(frame: np.ndarray, box) -> np.ndarray:
@@ -170,7 +176,7 @@ def main() -> None:
         frames = video_frames(video, args.fps)
     elif args.region:
         frames = screen_frames(tuple(int(v) for v in args.region.split(",")))
-    elif sys.platform != "darwin":
+    elif sys.platform not in ("darwin", "win32"):
         ap.error("pass --region or --video")
     else:  # also how the overlay app starts us, before any call: wait for a call window to appear
         frames = screen_frames(None, follow=[args.app] if args.app else list(CALL_APPS))
@@ -200,6 +206,8 @@ def main() -> None:
     pictures = Pictures()
     window = {}  # the call window (app and rect) memory was last told about
     last_person = quiet_told = time.monotonic()  # when a person was last in the frame, and when the log last said nobody is
+    last_frame = result = None  # the last grab and YOLO's answer for it: a grab with the same bytes (a still window) reuses it
+    report_at, frames_done, yolo_ms, insight_ms, cpu0 = time.monotonic(), 0, 0.0, 0.0, cpu_seconds()
     for frame, (x, y, w, app, calls) in frames:
         started = time.time()
         scale = frame.shape[1] / w if frame is not None else 1  # pixels per screen point (2.0 on Retina)
@@ -208,7 +216,14 @@ def main() -> None:
             window = {"app": app, "rect": rect}  # on change only; if memory was down it is told again next frame
         if frame is not None:
             stamps.append(time.monotonic())
-        result = model.track(frame, persist=True, classes=[PERSON], verbose=False)[0] if frame is not None and calls else None
+        if frame is None or not calls:
+            result = last_frame = None
+        elif last_frame is None or not np.array_equal(frame, last_frame):
+            t0 = time.perf_counter()
+            # YOLO resizes to 640 itself; shrinking the frame first was measured as a loss (TASKS.md, round 8)
+            result = model.track(frame, persist=True, classes=[PERSON], verbose=False)[0]
+            yolo_ms += (time.perf_counter() - t0) * 1000
+            last_frame = frame
 
         live: set[int] = set()  # empty while the call window is gone or isn't a call, so every card clears
         if result is not None and result.boxes is not None and result.boxes.is_track:
@@ -220,6 +235,7 @@ def main() -> None:
             still = pictures.update(frame, boxes, now)
             boxes = {t: b for t, b in boxes.items() if t not in still}  # a picture is not a person: no card, no print
             wanting = {t for t in boxes.keys() - printed if now - tried.get(t, -RETRY) >= RETRY}
+            t0 = time.perf_counter()
             if wanting:
                 found = assign(find_faces(frame), boxes)  # one InsightFace pass gives every face's lips
                 for tid in wanting & found.keys():
@@ -229,6 +245,7 @@ def main() -> None:
                 found = assign(mouths_in(frame), boxes)
             else:
                 found = {}
+            insight_ms += (time.perf_counter() - t0) * 1000
             for tid, face in found.items():
                 if tid in people:
                     namer.saw(people[tid], face, now)
@@ -263,6 +280,12 @@ def main() -> None:
             printed.discard(tid)
             people.pop(tid, None)
         now = time.monotonic()
+        frames_done += frame is not None and calls
+        if now - report_at >= REPORT_EVERY:
+            wall, n = now - report_at, max(frames_done, 1)
+            print(f"capture: {frames_done / wall:.1f} fps, YOLO {yolo_ms / n:.0f} ms, InsightFace {insight_ms / n:.0f} ms, "
+                  f"cpu {(cpu_seconds() - cpu0) / wall * 100:.0f}%")  # per frame; cpu over all threads, so it can pass 100
+            report_at, frames_done, yolo_ms, insight_ms, cpu0 = now, 0, 0.0, 0.0, cpu_seconds()
         if frame is None or not calls or live:
             last_person = quiet_told = now
         elif now - quiet_told >= QUIET_AFTER:

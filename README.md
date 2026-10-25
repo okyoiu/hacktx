@@ -134,6 +134,15 @@ To stop everything, press `Ctrl+C` in each terminal.
 - **See what the computer vision sees (debugging only):** `uv run --env-file .env python -m tools.cv_check`. Users never see this.
 - **Tests:** `uv run pytest` (database tests use the local database)
 
+## Ask Muse about your people (optional)
+
+Lets the Muse app answer questions about the people you've met. It sees names, labels and what was learned, never face prints, and can't change anything.
+
+1. Put a long random `MUSE_CONNECTOR_KEY=` in `.env` (see `.env.example`) and restart the memory server. Without it the connector routes don't exist.
+2. Run `tools/tunnel.sh` (written by the security agent) and copy the URL it prints. It exposes `/connector/*` only; stop it after the demo.
+3. In the Muse app: add a custom connector with `<url>/connector/openapi.json` and that key (read-only).
+4. Try: "Who haven't I talked to in a while?", "What did Jordan and I talk about last time?", "Which of my contacts love F1?"
+
 ## Overlay UI rules
 
 The look is pinned by [`docs/ui-reference.png`](docs/ui-reference.png): dark smoked glass with real blur, floating over the call.

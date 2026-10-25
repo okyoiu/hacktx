@@ -137,3 +137,30 @@ def test_pictures_get_no_card_but_live_video_does(tmp_path, monkeypatch):
     live = kinds(run_video(tmp_path, monkeypatch, camera, still_after=0))
     assert live.count("print") == 6 and live.count("/faces") > 6  # cards stay and keep moving...
     assert live.index("/faces/gone") > max(i for i, k in enumerate(live) if k in ("/faces", "print"))  # ...until the video ends
+
+
+def test_yolo_is_skipped_while_the_grab_is_unchanged_and_the_minute_line_sums_up(tmp_path, monkeypatch, capsys):
+    import re
+
+    monkeypatch.setattr(faces, "REPORT_EVERY", 0)  # the once-a-minute line, every frame
+    widths = []
+    real = faces.YOLO
+
+    class Counting:
+        def __init__(self, weights):
+            self.model = real(weights)
+
+        def track(self, img, **kw):
+            widths.append(img.shape[1])
+            return self.model.track(img, **kw)
+
+        def __call__(self, *a, **kw):
+            return self.model(*a, **kw)
+
+    monkeypatch.setattr(faces, "YOLO", Counting)
+    t1 = get_image("t1")
+    posts = run_video(tmp_path, monkeypatch, [t1] * 5)  # the same bytes five times: a still window
+    assert len(widths) == 1  # YOLO ran once; the other four frames reused its boxes
+    assert sum("facePrint" in b for p, b in posts if p == "/faces") == 6 and sum(p == "/faces" for p, _ in posts) == 30  # cards kept moving
+    lines = [l for l in capsys.readouterr().out.splitlines() if l.startswith("capture: ")]
+    assert len(lines) == 5 and all(re.fullmatch(r"capture: [\d.]+ fps, YOLO \d+ ms, InsightFace \d+ ms, cpu \d+%", l) for l in lines)
