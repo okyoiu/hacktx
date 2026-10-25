@@ -58,14 +58,15 @@ class FakeScreen:  # stands in for mss.MSS, which needs a display
         return np.zeros((box["height"], box["width"], 4), np.uint8)
 
 
-def test_screen_frames_follows_the_window_and_keeps_its_last_spot(monkeypatch):
+def test_screen_frames_follows_the_window_and_yields_nothing_while_it_is_gone(monkeypatch):
     monkeypatch.setattr(faces.mss, "MSS", FakeScreen)
-    spots = iter([("zoom.us", (50, 60, 30, 20)), None])  # moved, then closed
+    spots = iter([("zoom.us", (50, 60, 30, 20)), None, ("zoom.us", (5, 6, 30, 20))])  # moved, closed, back
     monkeypatch.setattr(faces, "FOLLOW_EVERY", -1)
     monkeypatch.setattr(faces, "call_window", lambda apps: next(spots))
-    frames = faces.screen_frames((0, 0, 30, 20), follow="zoom.us")
+    frames = faces.screen_frames((0, 0, 30, 20), follow=["zoom.us"])
     assert next(frames)[1] == (50, 60, 30)
-    assert next(frames)[1] == (50, 60, 30)
+    assert next(frames)[0] is None
+    assert next(frames)[1] == (5, 6, 30)
 
 
 def test_assign_gives_overlapping_people_their_own_face():
@@ -97,3 +98,27 @@ def test_embed_image_refuses_a_huge_image_instead_of_decoding_it():
     root = Path(__file__).resolve().parent.parent
     out = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True, text=True, timeout=60)
     assert out.stdout.strip() == "None", out.stderr
+
+
+def test_screen_frames_started_before_any_call_waits_quietly_then_follows(monkeypatch, capsys):
+    monkeypatch.setattr(faces.mss, "MSS", FakeScreen)
+    monkeypatch.setattr(faces, "FOLLOW_EVERY", -1)
+    seen = []
+
+    def lookup(apps):
+        seen.append(list(apps))
+        look = next(looks)
+        if look == "unreadable":
+            raise SystemExit("couldn't list windows: no permission")
+        return look
+
+    looks = iter([None, None, "unreadable", ("Google Chrome", (1, 2, 30, 20)), ("Google Chrome", (1, 2, 30, 20)), None])
+    monkeypatch.setattr(faces, "call_window", lookup)
+    frames = faces.screen_frames(None, follow=["zoom.us", "Google Chrome"])
+    got = [next(frames) for _ in range(6)]
+    assert [f is None for f, _ in got] == [True, True, True, False, False, True]
+    assert seen[3] == ["zoom.us", "Google Chrome"] and seen[4] == ["Google Chrome"]  # sticks to the app it found...
+    assert seen[5] == ["Google Chrome"]  # ...until that window is gone, then looks at every call app again
+    assert capsys.readouterr().out.splitlines() == [  # one line per change, not per frame
+        "waiting for a call window", "couldn't list windows: no permission", "following the Google Chrome window",
+        "waiting for a call window"]
