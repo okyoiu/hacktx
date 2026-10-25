@@ -23,7 +23,7 @@ const ENROLL_URL = process.env.ENROLL_URL || 'http://localhost:8000/enroll'
 const PEOPLE_SIZE = { width: 760, height: 540 }
 const PANEL = { width: 448, gap: 12, margin: 24 }
 const BAR_HEIGHT = 56
-const BAR_WIDTH = 580 // room for People and a launch warning
+const BAR_WIDTH = 690 // room for People and a launch warning
 const IDLE_OPACITY = 0.3
 
 const windows = {}
@@ -211,6 +211,8 @@ function demoPeopleApi(route, body, method) {
 }
 
 function demoApi(route, body, method) {
+  if (route === '/calls/end') return { note: 'demo' }
+  if (route === '/health') return { problems: [] }
   if (route.startsWith('/people')) return demoPeopleApi(route, body, method)
   const remember = route.match(/^\/faces\/(\d+)\/remember$/)
   if (remember) {

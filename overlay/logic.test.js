@@ -1,7 +1,7 @@
 // node --test (npm test in overlay/)
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { ROUTES, elapsed, takesOver, cleanName, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS } = require('./logic')
+const { ROUTES, elapsed, takesOver, cleanName, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS } = require('./logic')
 
 test('main only forwards the memory API calls the overlay makes', () => {
   for (const route of ['/listening', '/ask', '/actions/x1', '/actions/act_2-b']) assert.ok(ROUTES.test(route), route)
@@ -71,7 +71,7 @@ test('the bar shows offline, live or paused, and the timer follows', () => {
   const start = '2026-10-24T21:40:00Z'
   const now = Date.parse(start) + 65_000
   assert.equal(timerText({ connected: true, startedAt: start, now }), '01:05')
-  assert.equal(timerText({ connected: true, notSent: true, startedAt: start, now }), 'Not sent')
+  assert.equal(timerText({ connected: true, flash: 'Not sent', startedAt: start, now }), 'Not sent')
   assert.equal(timerText({ connected: false, startedAt: start, now }), 'Offline')
 })
 
@@ -180,4 +180,26 @@ test('the invite link carries the code only when one is set, URL-encoded', () =>
   assert.equal(inviteLink('http://x.test/enroll', 'a b&c=d'), 'http://x.test/enroll?code=a+b%26c%3Dd')
   assert.equal(inviteLink('http://x.test/enroll?lang=en', 'taco'), 'http://x.test/enroll?lang=en&code=taco')
   assert.equal(inviteLink('not a url', 'taco'), 'not a url')
+})
+
+test('End call is a POST the overlay may make, and /health a GET', () => {
+  assert.ok(validCall('/calls/end'))
+  assert.ok(validCall('/health', undefined, 'GET'))
+  assert.ok(!validCall('/health'), 'health is read-only')
+  assert.ok(!validCall('/calls/end', undefined, 'GET'))
+})
+
+test('the status dot names what is wrong', () => {
+  assert.deepEqual(healthProblems({ problems: [] }), [])
+  assert.deepEqual(healthProblems({ ok: true, checks: { database: true, muse: true } }), [])
+  assert.deepEqual(healthProblems({ database: true, muse: false, serpapi: 'down' }), ['muse is not working', 'serpapi is not working'])
+  assert.deepEqual(healthProblems({ problems: ['No Muse key', 7] }), ['No Muse key'])
+  assert.deepEqual(healthProblems({ error: 'x' }), ['The memory server is not answering'])
+  assert.deepEqual(healthProblems({ problems: [] }, 'Face capture'), ['Face capture stopped'])
+})
+
+test('Live insights says Listening… until the first insight, and Paused when paused', () => {
+  assert.equal(insightsEmptyText(undefined), 'Listening…')
+  assert.equal(insightsEmptyText(true), 'Listening…')
+  assert.match(insightsEmptyText(false), /^Paused/)
 })
