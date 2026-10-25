@@ -56,6 +56,17 @@ def enroll(db):
     db.execute("delete from people where id = any(%s)", (pids,))
 
 
+@pytest.fixture(autouse=True)
+def forget_calls(monkeypatch):
+    """Every recap row a test stores (directly or through /calls/end) is deleted afterwards, and only those rows."""
+    made = []
+    real = store.add_call
+    monkeypatch.setattr(store, "add_call", lambda *args: made.append(real(*args)) or made[-1])
+    yield
+    if made:
+        store.conn().execute("delete from calls where id = any(%s)", (made,))
+
+
 def count(db, table: str, pid: str) -> int:
     col = "id" if table == "people" else "person_id"
     return db.execute(f"select count(*) from {table} where {col} = %s", (pid,)).fetchone()[0]

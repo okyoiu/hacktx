@@ -96,10 +96,10 @@ def enroll(name: str, face_print: np.ndarray, selfie: bytes | None, role: str = 
     return pid, token
 
 
-def add_call(app: str | None, topic: str, points: list[str], actions: list[str], people: list[dict]) -> None:
-    """A finished call's recap: topic, points, action labels and the people who were there."""
-    conn().execute("insert into calls (app, topic, points, actions, people) values (%s, %s, %s, %s, %s)",
-                   (app, topic, points, actions, Jsonb(people)))
+def add_call(app: str | None, topic: str, points: list[str], actions: list[str], people: list[dict]) -> int:
+    """A finished call's recap: topic, points, action labels and the people who were there. Returns its row id."""
+    return conn().execute("insert into calls (app, topic, points, actions, people) values (%s, %s, %s, %s, %s) returning id",
+                          (app, topic, points, actions, Jsonb(people))).fetchone()[0]
 
 
 def calls(limit: int, only_scope: str | None = None) -> list[dict]:
