@@ -12,13 +12,16 @@ import asyncio
 import json
 import os
 
+import threading
+from collections import deque
+
 import httpx
 import numpy as np
 import sounddevice as sd
 import soxr
 import websockets
 
-from capture.speakers import UNLABELED
+from capture.speakers import UNLABELED, listen
 
 URL = "wss://api.meta.ai/v1/asr/realtime"
 RATE = 24_000  # Muse PCM_24KHZ: 16-bit mono little-endian
@@ -28,6 +31,22 @@ RETRY_MIN, RETRY_MAX = 2, 60  # seconds to wait before trying again; doubles aft
 
 class Rejected(Exception):
     pass
+
+
+class MicGate:
+    """Honours the pill's mute (the `mute` event on /ws, kept in state["muted"] by speakers.listen): while muted, Muse gets
+    silence of the same length, so the session and its 60-minute clock stay as they are and no captions come. One log line
+    marks each change."""
+
+    def __init__(self, state: dict | None):
+        self.state, self.muted = state if state is not None else {}, False
+
+    def __call__(self, pcm: bytes) -> bytes:
+        muted = bool(self.state.get("muted"))
+        if muted != self.muted:
+            self.muted = muted
+            print("muted: Muse hears silence until unmute" if muted else "unmuted: Muse hears the mic again")
+        return bytes(len(pcm)) if muted else pcm
 
 
 def resampler(input_rate: int):
@@ -42,11 +61,11 @@ def show(speaker: str, text: str) -> None:
     print(f"[{speaker}] {text}")
 
 
-async def run(device: int | str | None, verbose: bool = False) -> None:
+async def run(device: int | str | None, verbose: bool = False, state: dict | None = None) -> None:
     loop = asyncio.get_running_loop()
     audio: asyncio.Queue[bytes] = asyncio.Queue()
     input_rate = int(sd.query_devices(device, "input")["default_samplerate"])
-    to_muse = resampler(input_rate)
+    to_muse, gate = resampler(input_rate), MicGate(state)
 
     def on_audio(indata, frames, when, status):
         # keep the real-time audio callback light: resampling happens in send_audio
@@ -72,7 +91,7 @@ async def run(device: int | str | None, verbose: bool = False) -> None:
 
         async def send_audio():
             while True:
-                pcm = to_muse(await audio.get())
+                pcm = gate(to_muse(await audio.get()))
                 if pcm:  # the resampler holds back a few ms at the start
                     await ws.send(pcm)
 
@@ -108,12 +127,12 @@ async def run(device: int | str | None, verbose: bool = False) -> None:
                 await ws.send(json.dumps({"type": "endStream"}))
 
 
-async def keep_listening(device: int | str | None, verbose: bool = False) -> None:
+async def keep_listening(device: int | str | None, verbose: bool = False, state: dict | None = None) -> None:
     """Run sessions forever. shortcut: a session that dies with an error (not a clean end) doesn't reset the wait."""
     wait = RETRY_MIN
     while True:
         try:
-            await run(device, verbose)
+            await run(device, verbose, state)
             print("Muse session ended (they last up to 60 minutes); starting a new one")
             wait = RETRY_MIN
         except (Rejected, OSError, ValueError, sd.PortAudioError, websockets.WebSocketException) as e:
@@ -142,7 +161,10 @@ def main() -> None:
         print(sd.query_devices())
         return
     device = int(args.device) if args.device and args.device.isdigit() else args.device
-    asyncio.run(keep_listening(device, args.verbose))
+    state = {"muted": False}  # the pill's mute, kept by listen(); captions themselves aren't needed here (maxlen 0 drops them)
+    ws_url = os.getenv("MEMORY_URL", "http://localhost:8000").replace("http", "ws", 1) + "/ws"
+    threading.Thread(target=listen, args=(ws_url, deque(maxlen=0), state), daemon=True).start()
+    asyncio.run(keep_listening(device, args.verbose, state))
 
 
 if __name__ == "__main__":

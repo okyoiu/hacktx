@@ -268,3 +268,14 @@ def test_is_me_reads_the_roles_people_give_their_own_face():
     assert all(faces.is_me({"role": r}) for r in ("Me", "me!", " MYSELF ", "myself"))
     assert faces.is_me({"role": "", "self": True}) and not faces.is_me({"role": None}) and not faces.is_me({})
     assert not faces.is_me({"role": "Your team lead"}) and not faces.is_me({"role": "Met me at HackTX"})
+
+
+def test_a_dark_frame_is_lifted_so_the_same_people_are_found_with_nearly_the_same_prints():
+    t1 = get_image("t1")
+    bright = sorted(faces_in(t1), key=lambda f: f.bbox[0])
+    dark = (t1 * 0.25).astype(np.uint8)  # a dark room
+    assert not faces.is_dark(t1) and faces.is_dark(dark) and faces.is_dark(dark[219:648, 337:735])
+    lifted = sorted(faces_in(faces.brighten(dark)), key=lambda f: f.bbox[0])
+    assert len(lifted) == 6
+    distances = [1 - float(a.normed_embedding @ b.normed_embedding) for a, b in zip(bright, lifted)]
+    assert max(distances) < 0.1, distances  # the task's bar at 25 % brightness (measured 0.017-0.054)

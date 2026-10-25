@@ -96,7 +96,7 @@ def test_only_lips_inside_the_lines_window_and_on_big_enough_faces_count():
 def test_listen_keeps_captions_and_the_pause_state_from_the_socket(monkeypatch):
     events = [{"type": "listening", "on": True, "startedAt": "2026-10-24T21:40:00Z"},
               {"type": "caption", "speaker": "A", "text": "hi", "final": False},
-              {"type": "listening", "on": False}, {"type": "insights", "topic": "ignored"},
+              {"type": "listening", "on": False}, {"type": "insights", "topic": "ignored"}, {"type": "mute", "on": True},
               {"type": "caption", "speaker": "A", "text": "hi there", "final": True}]
 
     class Socket:  # what memory pushes on /ws
@@ -114,4 +114,4 @@ def test_listen_keeps_captions_and_the_pause_state_from_the_socket(monkeypatch):
     captions, listening = deque(), {"on": True}
     with pytest.raises(RuntimeError):
         speakers.listen("ws://memory/ws", captions, listening)
-    assert [(s, f) for _, s, f in captions] == [("A", False), ("A", True)] and listening == {"on": False}
+    assert [(s, f) for _, s, f in captions] == [("A", False), ("A", True)] and listening == {"on": False, "muted": True}
