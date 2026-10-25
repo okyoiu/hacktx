@@ -455,3 +455,17 @@ def test_a_hanging_muse_or_serpapi_ends_as_an_error_and_insights_recover(http, e
     monkeypatch.setattr(picks, "chat", FakeMuse({"topic": "Back", "points": ["Fine"], "actions": []}))
     http.post("/transcript", json=line("speaker_0", "Are you back?"))
     wait_for(lambda: server.latest_insights is not None)
+
+
+def test_call_ends_by_itself_when_no_face_has_been_seen_for_the_idle_time(http, events, monkeypatch):
+    monkeypatch.setattr(server, "CALL_IDLE_SECONDS", 0.3)
+    monkeypatch.setattr(picks, "chat", FakeMuse())
+    http.post("/faces", json={"trackId": 1, "screenBox": [0, 0, 10, 10], "facePrint": [0.1] * 512})
+    http.post("/transcript", json=line("speaker_0", "Hello"))
+    assert server.call is not None and 1 in server.unknown
+    time.sleep(0.15)
+    http.post("/faces", json={"trackId": 1, "screenBox": [1, 1, 10, 10]})  # still on screen: the countdown restarts
+    time.sleep(0.2)
+    assert server.call is not None
+    wait_for(lambda: server.call is None)
+    assert server.unknown == {} and server.fresh == [] and server.latest_insights is None
