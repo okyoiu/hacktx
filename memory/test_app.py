@@ -1,4 +1,5 @@
 """Insights, pause and AI responses through the real endpoints, with fake Muse Spark and SerpApi: no keys or database."""
+import asyncio
 import json
 import threading
 import time
@@ -184,7 +185,7 @@ def test_remember_saves_the_face_on_screen_only_with_consent(http, events, monke
     assert saved.json() == {"id": "p_new", "deleteToken": "token123"}
     assert enrolled == [("Kai Park", face, None, "Your team lead")]  # the print from the call, no selfie
     assert events[-1] == {"type": "face", "trackId": 7, "screenBox": box,
-                          "person": {"id": "p_new", "name": "Kai Park", "role": "Your team lead", "line": "", "met": "Met Oct 24",
+                          "person": {"id": "p_new", "name": "Kai Park", "role": "Your team lead", "self": False, "line": "", "met": "Met Oct 24",
                                      "bullets": [], **NEVER}}
     assert "p_new" in server.call.people  # counted in this call from now on
     assert http.post("/faces/7/remember", json={"name": "Kai Park", "consent": True}).status_code == 409  # already saved
@@ -498,7 +499,8 @@ def test_health_reports_database_keys_pause_and_last_line_for_this_laptop_only(h
     monkeypatch.setenv("MODEL_API_KEY", "secret-muse")
     monkeypatch.delenv("SERPAPI_KEY", raising=False)
     body = http.get("/health").json()
-    assert body == {"db": "ok", "muse": True, "serpapi": False, "listening": True, "lastTranscriptAt": None}
+    assert body == {"db": "ok", "muse": True, "museError": None, "serpapi": False, "serpapiError": None, "listening": True,
+                    "lastTranscriptAt": None}
     assert "secret-muse" not in http.get("/health").text  # key presence only, never the key
 
     http.post("/transcript", json=line("speaker_0", "Hello"))
@@ -775,3 +777,63 @@ def test_the_call_remembers_the_followed_app_and_its_last_topic_for_how_we_met(h
     http.post("/calls/end")
     wait_for(lambda: seen)
     assert seen == [("zoom.us", "A HackTX demo")]
+
+
+def test_a_muse_outage_is_said_once_health_shows_it_and_the_stream_goes_on(http, events, monkeypatch):
+    import openai
+
+    monkeypatch.setenv("MODEL_API_KEY", "k")
+    monkeypatch.setattr(picks.status, "error", None)
+    monkeypatch.setattr(store, "conn", lambda: type("Db", (), {"execute": lambda self, sql: self})())
+    down = httpx.Request("POST", "https://api.meta.ai/v1")
+
+    class Completions:
+        def create(self, **kwargs):
+            raise openai.APITimeoutError(request=down)
+
+    fake = type("C", (), {"chat": type("Chat", (), {"completions": Completions()})(), "with_options": lambda self, **o: self})()
+    monkeypatch.setattr(picks, "client", lambda: fake)
+    monkeypatch.setattr(server, "INSIGHTS_SECONDS", 0.05)
+    for text in ("First sentence here.", "Second sentence here."):
+        http.post("/transcript", json=line("speaker_0", text))
+        time.sleep(0.3)
+    says = [e for e in events if e["type"] == "insights"]
+    assert says == [{"type": "insights", "topic": "Muse is unreachable; still listening", "points": [], "actions": []}]  # once
+    assert "Traceback" not in json.dumps(events) and server.latest_insights is None
+    health = http.get("/health").json()
+    assert health["muse"] is False and health["museError"] == "APITimeoutError"
+    assert [e["text"] for e in events if e["type"] == "caption"] == ["First sentence here.", "Second sentence here."]
+
+    rid = http.post("/ask", json={"question": "Hi?"}).json()["id"]
+    answer = next(e for e in events if e.get("id") == rid and e["status"] == "error")
+    assert answer["text"] == "Muse Spark could not be reached or timed out; try again"  # honest, no stack trace
+
+    monkeypatch.setattr(picks, "chat", FakeMuse({"topic": "Back", "points": ["Ok"], "actions": []}))
+    picks.status.error = None
+    http.post("/transcript", json=line("speaker_0", "Third sentence here."))
+    wait_for(lambda: server.latest_insights is not None)
+    assert http.get("/health").json()["muse"] is True
+
+
+def test_startup_logs_one_line_per_dependency_and_keeps_going_without_any_of_them(monkeypatch, tmp_path, capsys):
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    monkeypatch.delenv("SERPAPI_KEY", raising=False)
+    monkeypatch.setattr(notes, "NOTES", tmp_path / "blocked" / "notes")
+    (tmp_path / "blocked").write_text("a file where the folder should go")  # notes can't be created
+    monkeypatch.setattr(store, "conn", lambda: (_ for _ in ()).throw(psycopg.OperationalError("no database")))
+    with TestClient(server.app, client=LAPTOP) as client:  # the server still starts
+        assert client.post("/transcript", json=line("speaker_0", "Still works.")).status_code == 200
+        assert client.get("/health").json()["db"] == "error"
+    out = capsys.readouterr().out.splitlines()
+    assert [l.split(":")[0] for l in out if ":" in l][:4] == ["database", "Muse key", "SerpApi key", "notes folder"]
+    assert "NOT reachable (OperationalError)" in out[0] and "MISSING" in out[1] and "MISSING" in out[2] and "NOT writable" in out[3]
+
+
+def test_startup_lines_say_ok_when_everything_is_there(monkeypatch, tmp_path):
+    monkeypatch.setenv("MODEL_API_KEY", "k")
+    monkeypatch.setenv("SERPAPI_KEY", "k")
+    monkeypatch.setattr(notes, "NOTES", tmp_path / "notes")
+    monkeypatch.setattr(store, "conn", lambda: type("Db", (), {"execute": lambda self, sql: self})())
+    lines = asyncio.run(server.startup_checks())
+    assert lines == ["database: reachable", "Muse key: set", "SerpApi key: set", "notes folder: writable"]
+    assert not (tmp_path / "notes" / ".write-test").exists()

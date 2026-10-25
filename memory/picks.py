@@ -131,6 +131,14 @@ SUMMARY_LINES = 500
 TOGETHER = "You were on a call together."  # lastTime for anyone Muse leaves out, so their card still says something
 
 
+class Status:
+    """Class name of the last Muse failure, None while calls succeed; GET /health shows it."""
+    error: str | None = None
+
+
+status = Status()
+
+
 class MuseError(RuntimeError):
     """Safe to show the user: never includes the API key."""
 
@@ -146,8 +154,8 @@ def client() -> OpenAI:
     return OpenAI(
         base_url="https://api.meta.ai/v1",
         api_key=key,
-        timeout=30,  # a live overlay can't wait out the SDK's 10-minute default
-        max_retries=1,  # the SDK's default of 2 would triple that
+        timeout=20,  # a live overlay can't wait out the SDK's 10-minute default
+        max_retries=1,  # one retry; the SDK's default of 2 would triple the wait
     )
 
 
@@ -161,11 +169,14 @@ def chat(prompt: str, seconds: float | None = None) -> str:
             temperature=0.2,
         )
     except openai.APIStatusError as exc:
+        status.error = type(exc).__name__
         raise MuseError(
             f"Muse Spark returned HTTP {exc.status_code}; check MODEL_API_KEY and MUSE_SPARK_MODEL"
         ) from None
-    except openai.APIConnectionError:
+    except openai.APIConnectionError as exc:
+        status.error = type(exc).__name__
         raise MuseError("Muse Spark could not be reached or timed out; try again") from None
+    status.error = None
     return reply.choices[0].message.content or ""
 
 

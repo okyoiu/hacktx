@@ -17,6 +17,7 @@ class FakeMemory(HTTPServer):
     def __init__(self):
         super().__init__(("127.0.0.1", 0), Handler)
         self.posts = []
+        self.reply = lambda path, body: {}  # tests can answer like memory would
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -26,13 +27,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(b"{}")
+        self.wfile.write(json.dumps(self.server.reply(self.path, body)).encode())
 
     def log_message(self, *args):
         pass
 
 
-def run_video(tmp_path, monkeypatch, frames: list[np.ndarray], still_after=1e9) -> list:
+def run_video(tmp_path, monkeypatch, frames: list[np.ndarray], still_after=1e9, reply=None) -> list:
     monkeypatch.setattr(faces, "STILL_AFTER", still_after)  # identical test frames would otherwise count as pictures
     path = str(tmp_path / "call.avi")
     # FFV1 is lossless and deterministic; MJPG's first frames of an identical sequence come out slightly different
@@ -41,6 +42,8 @@ def run_video(tmp_path, monkeypatch, frames: list[np.ndarray], still_after=1e9) 
         out.write(frame)
     out.release()
     server = FakeMemory()
+    if reply:
+        server.reply = reply
     threading.Thread(target=server.serve_forever, daemon=True).start()
     monkeypatch.setenv("MEMORY_URL", f"http://127.0.0.1:{server.server_port}")
     monkeypatch.setattr("sys.argv", ["faces", "--video", path, "--fps", "30"])
@@ -57,7 +60,7 @@ def test_video_posts_each_face_once_with_a_print_then_face_gone(tmp_path, monkey
     monkeypatch.setattr(faces, "QUIET_AFTER", 0)  # say so on every frame without a person, instead of every 30 s
     t1 = get_image("t1")  # six people around a table
     posts = run_video(tmp_path, monkeypatch, [t1] * 8 + [np.zeros_like(t1)] * 4)
-    assert capsys.readouterr().out.count("following the region, no person seen for 0 s") == 4  # the blank frames
+    assert capsys.readouterr().out.count("following the region, no person seen for") == 4  # once per blank frame
     seen = [body for path, body in posts if path == "/faces"]
     printed = [b for b in seen if "facePrint" in b]
     tracks = {b["trackId"] for b in printed}
@@ -164,3 +167,59 @@ def test_yolo_is_skipped_while_the_grab_is_unchanged_and_the_minute_line_sums_up
     assert sum("facePrint" in b for p, b in posts if p == "/faces") == 6 and sum(p == "/faces" for p, _ in posts) == 30  # cards kept moving
     lines = [l for l in capsys.readouterr().out.splitlines() if l.startswith("capture: ")]
     assert len(lines) == 5 and all(re.fullmatch(r"capture: [\d.]+ fps, YOLO \d+ ms, InsightFace \d+ ms, cpu \d+%", l) for l in lines)
+
+
+def test_your_own_tile_is_told_gone_once_and_then_left_alone(tmp_path, monkeypatch, capsys):
+    me = []
+
+    def reply(path, body):  # memory recognizes the first face printed as the user themself
+        if path == "/faces" and "facePrint" in body and not me:
+            me.append(body["trackId"])
+            return {"person": {"id": "p_me", "name": "Cesar", "role": "Me!"}}
+        return {}
+
+    posts = run_video(tmp_path, monkeypatch, [get_image("t1")] * 5, reply=reply)
+    about_me = [(p, b) for p, b in posts if b.get("trackId") == me[0]]
+    assert [p for p, _ in about_me] == ["/faces", "/faces/gone"]  # the print, gone once, nothing more
+    others = [b["trackId"] for p, b in posts if p == "/faces" and b["trackId"] != me[0]]
+    assert len(set(others)) == 5 and len(others) > 5  # the other five kept their cards and kept moving
+    assert capsys.readouterr().out.count("that's you, skipping") == 1
+
+
+def test_an_error_in_one_frame_is_logged_and_the_loop_goes_on(tmp_path, monkeypatch, capsys):
+    calls = []
+    real = faces.YOLO
+
+    class Flaky:
+        def __init__(self, weights):
+            self.model = real(weights)
+
+        def track(self, img, **kw):
+            calls.append(1)
+            if len(calls) == 2:
+                raise RuntimeError("CUDA fell over")
+            return self.model.track(img, **kw)
+
+        def __call__(self, *a, **kw):
+            return self.model(*a, **kw)
+
+    monkeypatch.setattr(faces, "YOLO", Flaky)
+    rng = np.random.default_rng(0)
+    t1 = get_image("t1")
+    frames = [np.clip(t1 + rng.normal(0, 2, t1.shape), 0, 255).astype(np.uint8) for _ in range(4)]  # all different: YOLO runs each
+    posts = run_video(tmp_path, monkeypatch, frames)
+    assert len(calls) == 4 and sum(p == "/faces" for p, _ in posts) >= 3 * 6  # frames 1, 3 and 4 posted; frame 2 was skipped
+    out = capsys.readouterr().out
+    assert out.count("skipped a frame after an error") == 1 and "CUDA fell over" in out
+
+
+def test_a_face_that_just_left_comes_back_as_the_same_person():
+    rng = np.random.default_rng(0)
+    unit = lambda v: (v / np.linalg.norm(v)).astype(np.float32)
+    maya, jordan = unit(rng.normal(size=512)), unit(rng.normal(size=512))
+    recent = faces.Recent()
+    recent.add(maya.tolist(), {"id": "p_maya", "name": "Maya Chen"}, now=0.0)
+    again = unit(maya + rng.normal(0, 0.01, 512))  # the same face, printed from a new frame
+    assert recent.find(again, now=5.0)["id"] == "p_maya"
+    assert recent.find(jordan, now=5.0) is None  # someone else
+    assert recent.find(again, now=31.0) is None  # too long ago
