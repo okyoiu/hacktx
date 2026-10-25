@@ -13,6 +13,7 @@ const $ = (id) => document.getElementById(id)
 document.body.dataset.view = view
 $('bar').hidden = !shows('bar')
 $('insights').hidden = !shows('insights')
+$('people').hidden = view !== 'people' // the dashboard has its own window
 if (!/Mac/.test(navigator.platform)) for (const key of document.querySelectorAll('kbd.mod')) key.textContent = 'Ctrl'
 
 function el(tag, className, text) {
@@ -23,12 +24,13 @@ function el(tag, className, text) {
 }
 
 // resolves to the service's answer, or to { error } with a sentence to show (see main.js)
-const api = (route, body) => (window.overlay ? window.overlay.api(route, body) : Promise.resolve({ error: 'Open the overlay app to send this.' }))
+const api = (route, body, method) => (window.overlay ? window.overlay.api(route, body, method) : Promise.resolve({ error: 'Open the overlay app to send this.' }))
 
 function handle(e) {
   if (shows('cards')) {
     if (e.type === 'face') placeCard(e)
     if (e.type === 'face_gone') removeCard(e.trackId)
+    if (e.type === 'caption') heard(e.speaker)
   }
   if (shows('bar')) {
     if (e.type === 'listening') setListening(e)
@@ -49,21 +51,64 @@ function handle(e) {
 function placeCard({ trackId, screenBox: [x, y, w], person }) {
   const id = 't' + trackId
   let card = $(id)
-  const known = person ? person.id : 'unknown'
+  const known = person ? [person.id, ...bulletsOf(person), person.met].join('\n') : 'unknown'
   if (!card) {
     card = el('div')
     card.id = id
     card.dataset.track = trackId
-    card.addEventListener('mouseenter', syncMouse)
-    card.addEventListener('mouseleave', syncMouse)
+    card.addEventListener('mouseenter', () => {
+      card.dataset.hover = 'true'
+      syncMouse()
+      syncOpen(card)
+    })
+    card.addEventListener('mouseleave', () => {
+      delete card.dataset.hover
+      syncMouse()
+      syncOpen(card)
+    })
     fillCard(card, person)
     $('cards').append(card)
-  } else if (card.dataset.person !== known) morph(card, () => fillCard(card, person))
+    card.dataset.active = Date.now()
+  } else if (card.dataset.person !== known) {
+    morph(card, () => fillCard(card, person))
+    card.dataset.active = Date.now()
+  }
+  if (person && card.dataset.pid !== person.id) {
+    card.dataset.pid = person.id
+    if (shouldPop(popped, person.id)) {
+      popped.add(person.id)
+      card.dataset.popUntil = Date.now() + POP_MS
+      setTimeout(() => syncOpen(card), POP_MS)
+    }
+  }
   card.dataset.person = known
+  syncOpen(card)
   // beside the face, flipping to the left side near the screen edge
   let left = x - origin.x + w + CARD.gap
   if (left + CARD.width > innerWidth) left = x - origin.x - CARD.width - CARD.gap
   card.style.transform = `translate(${Math.max(8, left)}px, ${Math.max(8, y - origin.y)}px)`
+}
+
+// Speaking brings a quiet card back. Face events repeat while a face is on screen, so only arrivals and
+// changes count as being seen; in a big call a face that just sits there fades out.
+function heard(speaker) {
+  for (const card of document.querySelectorAll('#cards .card')) {
+    if (card.querySelector('.name')?.textContent === speaker) card.dataset.active = Date.now()
+  }
+}
+
+setInterval(() => {
+  const cards = [...document.querySelectorAll('#cards .card')]
+  for (const card of cards) {
+    const stays = card.matches('.thinking, .remembering, .leaving')
+    card.classList.toggle('quiet', !stays && isQuiet(cards.length, +card.dataset.active, Date.now()))
+  }
+}, 5000)
+
+// The memory pop-up: a known card shows its bullets while it's new or hovered, else just the name tag.
+const popped = new Set() // person ids already popped in this call; emptied when the last card leaves
+function syncOpen(card) {
+  card.classList.toggle('open', isOpen(+card.dataset.popUntil || 0, !!card.dataset.hover, Date.now()))
 }
 
 function fillCard(card, person) {
@@ -77,12 +122,17 @@ function fillCard(card, person) {
     remember.addEventListener('click', () => morph(card, () => openRemember(card)))
     card.replaceChildren(icon('sparkle', 'mark'), verb('Recalling,Thinking,Remembering,Looking'), remember)
   } else {
-    card.className = 'card glass'
+    card.className = 'card glass known'
     const row = el('div', 'row')
     row.append(el('span', 'dot'), el('span', 'name', person.name))
-    card.replaceChildren(row)
-    if (person.line) card.append(el('div', 'line', person.line))
-    card.append(el('div', 'met', person.met))
+    const bullets = el('ul', 'bullets')
+    bullets.append(...bulletsOf(person).map((b) => el('li', null, b)))
+    const inner = el('div')
+    inner.append(bullets, el('div', 'met', person.met))
+    const more = el('div', 'more')
+    more.append(inner)
+    card.replaceChildren(row, more)
+    syncOpen(card)
   }
   if (hadForm) release()
   else syncMouse() // a hovered pill that just became a name card must stop taking the mouse
@@ -94,6 +144,9 @@ function openRemember(card) {
   const name = el('input', 'name-field')
   Object.assign(name, { type: 'text', maxLength: 80, placeholder: 'Their name', autocomplete: 'off', spellcheck: false })
   name.setAttribute('aria-label', 'Their name')
+  const role = el('input', 'name-field')
+  Object.assign(role, { type: 'text', maxLength: 60, placeholder: 'Who are they to you? (optional)', autocomplete: 'off', spellcheck: false })
+  role.setAttribute('aria-label', 'Who are they to you?')
   const consent = el('input')
   consent.type = 'checkbox'
   const yes = el('label', 'yes')
@@ -114,10 +167,10 @@ function openRemember(card) {
   const note = el('p', 'note')
   note.setAttribute('role', 'status')
   const form = el('form', 'remember-form')
-  form.append(name, yes, actions, note)
+  form.append(name, role, yes, actions, note)
   card.replaceChildren(head, form)
 
-  const ready = () => (save.disabled = !(cleanName(name.value) && consent.checked))
+  const ready = () => (save.disabled = !canSave(name.value, consent.checked))
   name.addEventListener('input', ready)
   consent.addEventListener('change', ready)
   close.addEventListener('click', () => closeRemember(card))
@@ -128,19 +181,19 @@ function openRemember(card) {
   form.addEventListener('submit', async (e) => {
     e.preventDefault()
     if (save.disabled) return
-    for (const control of [name, consent, save]) control.disabled = true
+    for (const control of [name, role, consent, save]) control.disabled = true
     save.textContent = 'Saving…'
     note.textContent = ''
     card.dataset.saving = 'true'
-    const { error, status } = await api(`/faces/${Number(card.dataset.track)}/remember`, { name: cleanName(name.value), consent: true })
+    const { error, status } = await api(`/faces/${Number(card.dataset.track)}/remember`, rememberBody(name.value, role.value))
     delete card.dataset.saving
     if (!card.classList.contains('remembering')) return // already their name card
-    if (status === 409) return leftCall(card)
-    if (card.dataset.gone) return leftCall(card, error ? undefined : 'Saved. They have left the call.') // left while saving
-    if (error) {
-      note.textContent = error
+    const result = rememberResult({ error, status }, card.dataset.gone)
+    if (result.kind === 'left') return leftCall(card, result.text)
+    if (result.kind === 'error') {
+      note.textContent = result.text
       save.textContent = 'Save'
-      name.disabled = consent.disabled = false
+      name.disabled = role.disabled = consent.disabled = false
       return ready()
     }
     // the server now pushes this face's updated `face` event, which morphs the form into their name card
@@ -165,7 +218,7 @@ function leftCall(card, text = 'They left the call before saving.') {
 }
 
 // The cards window takes the mouse only while the pointer is over a thinking pill or its form.
-const syncMouse = () => window.overlay?.setClickThrough(!document.querySelector('#cards :is(.thinking, .remembering):hover'))
+const syncMouse = () => window.overlay?.setClickThrough(!document.querySelector('#cards :is(.thinking, .remembering, .known):hover'))
 
 // Hands the keyboard back to the call app, and the mouse unless the pointer is still over a pill.
 function release() {
@@ -196,6 +249,7 @@ function removeCard(trackId) {
   card.classList.add('leaving')
   setTimeout(() => {
     card.remove()
+    if (!document.querySelector('#cards .card')) popped.clear() // the call is empty; the next hello pops again
     syncMouse() // in case the pointer was over it
   }, 250)
 }
@@ -203,7 +257,11 @@ function removeCard(trackId) {
 if (shows('cards')) {
   document.addEventListener('keydown', (e) => {
     const open = document.querySelector('.card.remembering')
-    if (e.key === 'Escape' && open) closeRemember(open)
+    if (!open) return
+    const act = rememberKey(e.key, !open.querySelector('.save').disabled)
+    if (act) e.preventDefault() // Enter must not also submit natively
+    if (act === 'cancel') closeRemember(open)
+    if (act === 'save') open.querySelector('form').requestSubmit()
   })
 }
 
@@ -249,9 +307,17 @@ function setListening({ on, startedAt }) {
   renderBar()
 }
 
+// One launch: the launcher says which parts it couldn't keep running.
+window.overlay?.onLaunch((statuses) => {
+  const down = launchWarning(statuses)
+  $('warn').hidden = !down
+  $('warn').textContent = down && '⚠ ' + down
+  $('warn').title = down && down + ' stopped. See the logs folder.'
+})
+
 function renderBar() {
   const live = connected && listening.on
-  $('bar').dataset.state = !connected ? 'offline' : live ? 'live' : 'paused'
+  $('bar').dataset.state = barState(connected, listening.on)
   $('pause').disabled = !connected
   $('pause').setAttribute('aria-label', listening.on ? 'Pause listening' : 'Resume listening')
   tick()
@@ -262,7 +328,7 @@ function renderBar() {
 let notSentUntil = 0 // a failed pause shows "Not sent" in the timer's place for a few seconds
 
 function tick() {
-  $('timer').textContent = Date.now() < notSentUntil ? 'Not sent' : connected ? elapsed(listening.startedAt, Date.now()) : 'Offline'
+  $('timer').textContent = timerText({ connected, notSent: Date.now() < notSentUntil, startedAt: listening.startedAt, now: Date.now() })
 }
 
 const BARS = [...$('wave').children]
@@ -308,6 +374,7 @@ if (shows('bar')) {
     tick()
   })
   $('askBtn').addEventListener('click', () => window.overlay?.ask())
+  $('peopleBtn').addEventListener('click', () => window.overlay?.togglePeople())
   $('hideBtn').addEventListener('click', () => window.overlay?.toggleAll())
 }
 
@@ -324,10 +391,10 @@ function showInsights(next) {
   if (next.topic !== prev?.topic) fresh($('topic'))
   $('topic').textContent = next.topic
   const seen = new Set(prev?.points)
-  $('points').replaceChildren(...next.points.slice(0, 3).map((p) => fresh(el('li', null, p), seen.has(p))))
+  $('points').replaceChildren(...shownPoints(next.points).map((p) => fresh(el('li', null, p), seen.has(p))))
   const had = new Set(prev?.actions.map((a) => a.id))
   $('actionsTitle').hidden = !next.actions.length
-  $('actions').replaceChildren(...next.actions.slice(0, 4).map((a) => fresh(actionRow(a), had.has(a.id))))
+  $('actions').replaceChildren(...shownActions(next.actions).map((a) => fresh(actionRow(a), had.has(a.id))))
 }
 
 // new lines blur in; lines that were already there stay still
@@ -385,11 +452,11 @@ for (const button of document.querySelectorAll('.copy-btn')) button.dataset.labe
 
 if (shows('insights')) {
   $('transcriptBtn').addEventListener('click', () => {
-    const open = $('transcript').hidden
+    const { open, label } = transcriptToggle($('transcript').hidden)
     $('transcript').hidden = !open
     $('insightsBody').hidden = open
     $('transcriptBtn').setAttribute('aria-pressed', open)
-    $('transcriptBtn').lastElementChild.textContent = open ? 'Hide transcript' : 'Show transcript'
+    $('transcriptBtn').lastElementChild.textContent = label
     if (open) $('transcript').scrollTop = $('transcript').scrollHeight
   })
   $('copyInsights').addEventListener('click', (e) => {
@@ -428,10 +495,7 @@ function renderResponse() {
   $('copyAnswer').hidden = state === 'ask'
   $('copyAnswer').disabled = state !== 'done'
   $('thinking').hidden = state !== 'thinking'
-  const lines = state === 'done' ? text.split('\n').filter((l) => l.trim())
-    : state === 'error' ? ["Couldn't get an answer.", (text ? text + ' ' : '') + 'Try again in a moment.']
-    : []
-  $('answer').replaceChildren(...lines.map((line, i) => {
+  $('answer').replaceChildren(...answerLines(state, text).map((line, i) => {
     const p = el('p', null, line)
     p.style.animationDelay = i * 70 + 'ms'
     return p
@@ -518,3 +582,135 @@ for (const part of ['insights', 'response']) {
 
 window.overlay?.onEvent(handle)
 if (shows('insights')) wakePanel()
+
+// ---------- People dashboard ----------
+
+let everyone = []
+let current = null // the person on the right: { id, step }
+
+function personRow(p) {
+  const item = el('li')
+  const button = el('button', 'person-row')
+  button.type = 'button'
+  button.setAttribute('aria-current', String(current?.id === p.id))
+  const sub = [p.role, shortDate(p.lastMet) && 'Met ' + shortDate(p.lastMet)].filter(Boolean).join(' · ')
+  button.append(el('span', 'who', p.name), el('span', 'sub', sub))
+  button.addEventListener('click', () => openPerson(p.id))
+  item.append(button)
+  return item
+}
+
+function renderPeople() {
+  const found = filterPeople(everyone, $('peopleSearch').value)
+  $('peopleList').replaceChildren(...found.map(personRow))
+  $('peopleEmpty').textContent = found.length ? '' : everyone.length ? 'Nobody matches that.' : "Nobody yet. Use Remember them on a call."
+}
+
+async function loadPeople() {
+  const got = await api('/people', undefined, 'GET')
+  if (got.error) $('peopleEmpty').textContent = got.error
+  else {
+    everyone = got
+    renderPeople()
+  }
+  if (current) openPerson(current.id)
+}
+
+function showPersonNote(text) {
+  const note = $('person').querySelector('.note')
+  if (note) note.textContent = text
+}
+
+async function openPerson(id) {
+  if (current?.id !== id) current = { id, step: 'idle' }
+  const p = await api('/people/' + encodeURIComponent(id), undefined, 'GET')
+  if (current?.id !== id) return // they picked someone else while this loaded
+  if (p.error) {
+    $('person').replaceChildren(el('p', 'note', p.error))
+    return
+  }
+  renderPerson(p)
+  renderPeople()
+}
+
+function renderPerson(p) {
+  const role = el('input', 'role-field')
+  Object.assign(role, { type: 'text', maxLength: 60, value: p.role || '', placeholder: 'Who are they to you?', autocomplete: 'off', spellcheck: false })
+  role.setAttribute('aria-label', 'Who are they to you?')
+  const saveRole = el('button', 'pill-btn', 'Save')
+  saveRole.type = 'button'
+  const note = el('p', 'note')
+  note.setAttribute('role', 'status')
+  const doSave = async () => {
+    const { error } = await api('/people/' + encodeURIComponent(p.id), { role: cleanRole(role.value) }, 'PATCH')
+    note.textContent = error || 'Saved.'
+    if (!error) loadPeople()
+  }
+  saveRole.addEventListener('click', doSave)
+  role.addEventListener('keydown', (e) => e.key === 'Enter' && doSave())
+  const roleRow = el('div', 'role-row')
+  roleRow.append(role, saveRole)
+
+  const last = p.encounters?.[0]?.lastTime
+  const talks = (p.encounters || []).map((e) => {
+    const item = el('li', null, e.lastTime || '')
+    const when = [shortDate(e.date), e.about].filter(Boolean).join(' · ')
+    if (when) item.append(el('span', 'about', when))
+    return item
+  })
+  const notes = (p.notes || []).map((n) => el('li', null, n.text))
+  const sections = [el('h2', null, p.name), el('div', 'met', shortDate(p.firstMet) && 'First met ' + shortDate(p.firstMet)), roleRow, note]
+  if (last) sections.push(el('h3', null, 'Last time'), el('p', null, last))
+  if (talks.length) sections.push(el('h3', null, 'Every conversation'), listOf(talks))
+  if (notes.length) sections.push(el('h3', null, 'Notes'), listOf(notes))
+  sections.push(deleteRow(p))
+  $('person').replaceChildren(...sections)
+}
+
+function listOf(items) {
+  const ul = el('ul')
+  ul.append(...items)
+  return ul
+}
+
+// Delete, then a confirm step inside this window; Cancel or Escape backs out.
+function deleteRow(p) {
+  const row = el('div', 'delete-row')
+  const button = (text, className, event) => {
+    const b = el('button', 'pill-btn ' + className, text)
+    b.type = 'button'
+    b.addEventListener('click', () => stepDelete(p, event))
+    return b
+  }
+  if (current.step === 'idle') row.append(button('Delete…', '', 'delete'))
+  else row.append(el('span', null, `Forget ${p.name}? This can't be undone.`), button('Delete', 'danger', 'confirm'), button('Cancel', '', 'cancel'))
+  return row
+}
+
+async function stepDelete(p, event) {
+  current.step = deleteStep(current.step, event)
+  if (current.step !== 'deleting') return renderPerson(p)
+  const { error } = await api('/people/' + encodeURIComponent(p.id), undefined, 'DELETE')
+  if (error) {
+    current.step = deleteStep('deleting', 'cancel')
+    renderPerson(p)
+    return showPersonNote(error)
+  }
+  current = null
+  $('person').replaceChildren(el('p', 'empty', `${p.name} is forgotten.`))
+  loadPeople()
+}
+
+if (view === 'people') {
+  $('peopleSearch').addEventListener('input', renderPeople)
+  $('closePeople').addEventListener('click', () => window.overlay?.togglePeople())
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return
+    if (current?.step === 'confirm') {
+      current.step = deleteStep('confirm', 'escape')
+      openPerson(current.id)
+    } else window.overlay?.togglePeople()
+  })
+  window.overlay?.onPeople(loadPeople)
+  loadPeople()
+}

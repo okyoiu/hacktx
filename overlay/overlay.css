@@ -94,6 +94,9 @@ kbd {
   font-family: inherit; font-size: 13px; font-weight: 500; line-height: 1; color: var(--ink-2);
 }
 
+.warn { font-size: 13px; font-weight: 650; white-space: nowrap; color: #FFD27A; }
+body[data-view="all"] .bar { width: auto; }
+
 /* ---------- panels ---------- */
 .panel { padding: 16px 20px 18px; }
 .panel-head {
@@ -199,6 +202,44 @@ kbd {
 a.source:hover { background: var(--hover); color: var(--ink); }
 .source svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 
+/* ---------- People dashboard ---------- */
+body[data-view="people"] .people { height: 100%; display: flex; flex-direction: column; }
+body[data-view="all"] .people { display: none; }
+.people-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 220px 1fr; gap: 20px; }
+.people-side { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.people input[type="search"], .people .role-field {
+  height: 34px; padding: 0 10px; box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 10px; background: var(--fill);
+  color: var(--ink); caret-color: var(--ink); font: inherit; font-size: 14px; outline: none;
+}
+.people input:focus { border-color: rgba(255, 255, 255, 0.45); }
+.people input::placeholder { color: var(--ink-2); }
+.people-list { flex: 1; min-height: 0; margin: 0; padding: 0; list-style: none; overflow-y: auto; }
+.person-row {
+  display: block; width: 100%; padding: 8px 10px; border: 0; border-radius: 10px; background: none; text-align: left;
+  transition: background-color 0.15s ease;
+}
+.person-row:hover { background: var(--hover); }
+.person-row[aria-current="true"] { background: var(--fill); }
+.person-row .who { display: block; font-size: 14px; font-weight: 650; }
+.person-row .sub { display: block; color: var(--ink-2); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.person { min-height: 0; overflow-y: auto; padding-right: 4px; }
+.person h2 { font-size: 20px; font-weight: 650; letter-spacing: -0.015em; }
+.person h3 { margin: 16px 0 6px; font-size: 13px; font-weight: 650; color: var(--ink-2); }
+.person .met { margin-top: 2px; color: var(--ink-2); font-size: 13px; }
+.person ul { margin: 0; padding: 0; list-style: none; }
+.person li { margin-top: 8px; font-size: 14px; text-wrap: pretty; }
+.person li .about { display: block; color: var(--ink-2); font-size: 12.5px; }
+.role-row { display: flex; gap: 8px; margin-top: 10px; }
+.role-field { flex: 1; }
+.person .pill-btn {
+  height: 34px; padding: 0 14px; border: 0; border-radius: 999px; background: var(--fill); font-size: 13px; font-weight: 650;
+  transition: background-color 0.15s ease;
+}
+.person .pill-btn:hover:not(:disabled) { background: var(--hover); }
+.person .pill-btn.danger { background: rgba(255, 120, 110, 0.22); }
+.delete-row { display: flex; align-items: center; gap: 8px; margin-top: 22px; }
+
 /* ---------- name cards beside faces (click-through) ---------- */
 #cards { position: fixed; inset: 0; pointer-events: none; }
 .card {
@@ -211,13 +252,18 @@ a.source:hover { background: var(--hover); color: var(--ink); }
 .card .row { display: flex; align-items: center; gap: 7px; }
 .card .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--known); flex: none; }
 .card .name { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
-.card .line { margin-top: 3px; color: var(--ink-2); font-size: 13px; text-wrap: pretty; }
+.card .more { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 0.4s var(--ease), opacity 0.3s ease; }
+.card .more > div { min-height: 0; overflow: hidden; }
+.card.open .more { grid-template-rows: 1fr; opacity: 1; }
+.card .bullets { margin: 6px 0 0; padding: 0; list-style: none; color: var(--ink-2); font-size: 13px; text-wrap: pretty; }
+.card .bullets li { margin-top: 3px; }
+.card .bullets li:first-child { margin-top: 0; color: var(--ink); }
 .card .met { margin-top: 2px; color: var(--ink-2); font-size: 12px; font-variant-numeric: tabular-nums; }
 .card.thinking { width: auto; display: grid; grid-template-columns: 16px auto; align-items: center; gap: 8px; padding: 8px 14px 8px 10px; border-radius: 999px; }
 .card .mark { width: 16px; height: 16px; }
 
 /* Thinking pills are the one card that takes the mouse: a ring and a pointer on hover reveal "Remember them". */
-.card:is(.thinking, .remembering) { pointer-events: auto; }
+.card:is(.thinking, .remembering, .known) { pointer-events: auto; } /* a known card opens on hover */
 .card.thinking { cursor: pointer; transition: transform 0.35s var(--ease), box-shadow 0.2s ease; }
 .card.thinking:is(:hover, :focus-within) {
   border-radius: 14px;
@@ -262,6 +308,7 @@ a.source:hover { background: var(--hover); color: var(--ink); }
 }
 .invite:hover { color: var(--ink); text-decoration-color: currentColor; }
 .card .note { margin-top: 0; font-size: 12.5px; }
+.card.quiet { opacity: 0; transition: opacity 0.6s ease; }
 .card.leaving { animation: card-out 0.25s ease-in both; }
 
 /* ---------- motion ---------- */

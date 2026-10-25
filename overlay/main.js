@@ -9,13 +9,21 @@
 const { app, BrowserWindow, clipboard, globalShortcut, ipcMain, screen, shell, systemPreferences } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
-const { ROUTES } = require('./logic')
+const { inviteLink, validCall, webUrl } = require('./logic')
+const { createLauncher } = require('./launcher')
+
+// The repo's .env supplies ENROLL_CODE, ENROLL_URL and MEMORY_URL; variables already set win.
+try {
+  process.loadEnvFile(path.join(__dirname, '..', '.env'))
+} catch {}
 
 const MOCK = process.argv.includes('--mock')
 const MEMORY_URL = process.env.MEMORY_URL || 'http://localhost:8000'
 const ENROLL_URL = process.env.ENROLL_URL || 'http://localhost:8000/enroll'
+const PEOPLE_SIZE = { width: 760, height: 540 }
 const PANEL = { width: 448, gap: 12, margin: 24 }
 const BAR_HEIGHT = 56
+const BAR_WIDTH = 580 // room for People and a launch warning
 const IDLE_OPACITY = 0.3
 
 const windows = {}
@@ -33,7 +41,13 @@ function overlayWindow(query, opts) {
     resizable: false,
     skipTaskbar: true,
     show: false,
-    webPreferences: { preload: path.join(__dirname, 'preload.js') },
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webviewTag: false,
+    },
     ...opts,
   })
   win.setAlwaysOnTop(true, 'screen-saver')
@@ -42,10 +56,13 @@ function overlayWindow(query, opts) {
   win.setContentProtection(true)
   // Source links open in the browser; nothing navigates the overlay itself.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:\/\//.test(url)) shell.openExternal(url)
+    if (webUrl(url)) shell.openExternal(url)
     return { action: 'deny' }
   })
   win.webContents.on('will-navigate', (e) => e.preventDefault())
+  win.webContents.on('will-attach-webview', (e) => e.preventDefault())
+  // The overlay needs no camera, microphone or other permission of its own.
+  win.webContents.session.setPermissionRequestHandler((_wc, _permission, deny) => deny(false))
   win.loadFile('index.html', { query: { ...query, mock: MOCK ? '1' : '' } })
   return win
 }
@@ -111,6 +128,17 @@ function toggleAll() {
   }
 }
 
+// The People dashboard: its own window, centred, opened by the control bar or ⌘⇧P, works without a call.
+function togglePeople() {
+  const win = windows.people
+  if (win.isVisible() && !closing.has(win)) return conceal(win)
+  if (allHidden) toggleAll()
+  reveal(win)
+  if (process.platform === 'darwin') app.focus({ steal: true })
+  win.focus()
+  win.webContents.send('people-open')
+}
+
 function openAsk() {
   if (allHidden) toggleAll()
   closedResponse = null
@@ -167,7 +195,23 @@ function replay() {
 // The demo answers locally, so clicking around in `npm run mock` never posts to a real memory service.
 let demoAnswers = 0
 const demoFaces = new Map()
-function demoApi(route, body) {
+const demoPeople = [
+  { id: 'p_jordan', name: 'Jordan Lee', role: 'Your team lead', firstMet: '2026-09-24T18:00:00Z', lastMet: '2026-10-24T18:00:00Z', lastTime: 'Talked about the move to Austin.' },
+  { id: 'p_maya', name: 'Maya Chen', role: '', firstMet: '2026-10-01T18:00:00Z', lastMet: '2026-10-20T18:00:00Z', lastTime: 'Asked about climbing gyms.' },
+]
+function demoPeopleApi(route, body, method) {
+  const id = route.split('/')[2]
+  const person = demoPeople.find((p) => p.id === id)
+  if (!id) return demoPeople
+  if (!person) return { error: 'Nobody with that id.', status: 404 }
+  if (method === 'DELETE') demoPeople.splice(demoPeople.indexOf(person), 1)
+  if (method === 'PATCH') person.role = body.role ?? person.role
+  if (method !== 'GET') return method === 'PATCH' ? person : { deleted: id }
+  return { ...person, encounters: [{ about: 'Sample', lastTime: person.lastTime, date: person.lastMet }], notes: [{ text: 'A sample note from the demo.' }] }
+}
+
+function demoApi(route, body, method) {
+  if (route.startsWith('/people')) return demoPeopleApi(route, body, method)
   const remember = route.match(/^\/faces\/(\d+)\/remember$/)
   if (remember) {
     const face = demoFaces.get(+remember[1])
@@ -191,12 +235,12 @@ function demoApi(route, body) {
 // ---------- calls from the panels ----------
 
 // Resolves to the service's JSON, or to { error } with a sentence the panel can show as is.
-ipcMain.handle('api', async (_e, route, body) => {
-  if (!ROUTES.test(route)) return { error: 'The overlay never makes that call.' }
-  if (MOCK) return demoApi(route, body)
+ipcMain.handle('api', async (e, route, body, method = 'POST') => {
+  if (!ours(e) || !validCall(route, body, method)) return { error: 'The overlay never makes that call.' }
+  if (MOCK) return demoApi(route, body, method)
   try {
     const res = await fetch(MEMORY_URL + route, {
-      method: 'POST',
+      method,
       headers: body ? { 'content-type': 'application/json' } : {},
       body: body ? JSON.stringify(body) : undefined,
     })
@@ -209,8 +253,12 @@ ipcMain.handle('api', async (_e, route, body) => {
   }
 })
 
+// Only our own pages (local files) may use the channels below.
+const ours = (e) => e.senderFrame?.url.startsWith('file://')
+const on = (channel, handler) => ipcMain.on(channel, (e, ...args) => ours(e) && handler(e, ...args))
+
 // Panels grow and shrink with their content, so the blur never shows past the glass, and stop at the screen's edge.
-ipcMain.on('fit', (e, height) => {
+on('fit', (e, height) => {
   const win = BrowserWindow.fromWebContents(e.sender)
   const bounds = win?.getBounds()
   if (!bounds || !(height > 0)) return
@@ -219,15 +267,16 @@ ipcMain.on('fit', (e, height) => {
   if (bounds.height !== fitted) win.setBounds({ ...bounds, height: fitted })
 })
 
-ipcMain.on('panel-idle', (e, idle) => {
+on('panel-idle', (e, idle) => {
+  if (typeof idle !== 'boolean') return
   const win = BrowserWindow.fromWebContents(e.sender)
   if (win?.isVisible() && !allHidden && !closing.has(win)) fade(win, idle ? IDLE_OPACITY : 1, idle ? 800 : 200)
 })
 
-ipcMain.on('copy', (_e, text) => clipboard.writeText(String(text)))
+on('copy', (_e, text) => typeof text === 'string' && clipboard.writeText(text.slice(0, 20000)))
 // A thinking pill takes the mouse while the pointer is over it, and the keyboard while its form is open.
-ipcMain.on('click-through', (_e, on) => windows.cards.setIgnoreMouseEvents(Boolean(on), { forward: true }))
-ipcMain.on('cards-focus', (_e, on) => {
+on('click-through', (_e, on) => windows.cards.setIgnoreMouseEvents(Boolean(on), { forward: true }))
+on('cards-focus', (_e, on) => {
   if (on) {
     windows.cards.setFocusable(true)
     windows.cards.focus()
@@ -236,10 +285,12 @@ ipcMain.on('cards-focus', (_e, on) => {
     windows.cards.setFocusable(false)
   }
 })
-ipcMain.on('copy-invite', () => clipboard.writeText(ENROLL_URL))
-ipcMain.on('ask', openAsk)
-ipcMain.on('toggle-all', toggleAll)
-ipcMain.on('close-response', (_e, id) => {
+on('copy-invite', () => clipboard.writeText(inviteLink(ENROLL_URL, process.env.ENROLL_CODE)))
+on('ask', openAsk)
+on('people-toggle', togglePeople)
+on('toggle-all', toggleAll)
+on('close-response', (_e, id) => {
+  if (typeof id !== 'string') return
   closedResponse = id
   conceal(windows.response)
 })
@@ -257,7 +308,7 @@ app.whenReady().then(async () => {
   const panel = process.platform === 'darwin' ? { type: 'panel' } : {}
   windows.cards = overlayWindow({ view: 'cards', ox: bounds.x, oy: bounds.y }, { ...bounds, ...panel, focusable: false, acceptFirstMouse: true })
   windows.cards.setIgnoreMouseEvents(true, { forward: true }) // click-through, but hover still reaches thinking pills
-  windows.bar = panelWindow('bar', { width: PANEL.width, height: BAR_HEIGHT, x: right - PANEL.width, y: top })
+  windows.bar = panelWindow('bar', { width: BAR_WIDTH, height: BAR_HEIGHT, x: right - BAR_WIDTH, y: top })
   windows.response = panelWindow('response', { width: PANEL.width, height: 160, x: right - PANEL.width, y: below })
   windows.insights = panelWindow('insights', {
     width: PANEL.width,
@@ -266,12 +317,19 @@ app.whenReady().then(async () => {
     y: below,
   })
 
+  const { workArea: area } = screen.getPrimaryDisplay()
+  windows.people = panelWindow('people', {
+    ...PEOPLE_SIZE,
+    x: Math.round(area.x + (area.width - PEOPLE_SIZE.width) / 2),
+    y: Math.round(area.y + (area.height - PEOPLE_SIZE.height) / 2),
+  })
+
   await Promise.all(Object.values(windows).map((win) => new Promise((r) => win.webContents.once('did-finish-load', r))))
   windows.cards.showInactive()
   reveal(windows.bar)
   reveal(windows.insights)
 
-  const shortcuts = { 'CommandOrControl+Return': openAsk, 'CommandOrControl+\\': toggleAll }
+  const shortcuts = { 'CommandOrControl+Return': openAsk, 'CommandOrControl+Shift+P': togglePeople, 'CommandOrControl+\\': toggleAll }
   for (const [keys, run] of Object.entries(shortcuts)) {
     if (!globalShortcut.register(keys, run)) console.warn(`${keys} is taken by another app; use the control bar instead`)
   }
@@ -279,10 +337,30 @@ app.whenReady().then(async () => {
   if (MOCK) {
     status('demo')
     replay()
-  } else connect()
+  } else {
+    connect()
+    startEverything()
+  }
 })
+
+// One launch: start what isn't running (database, memory server, capture), stop what we started on quit.
+let launcher
+const launched = {}
+function startEverything() {
+  launcher = createLauncher({
+    root: path.join(__dirname, '..'),
+    onStatus: (name, state) => {
+      launched[name] = state
+      for (const win of Object.values(windows)) win.webContents.send('launch', { ...launched })
+    },
+  })
+  launcher.start().catch((err) => console.error('Launch failed:', err.message))
+}
 
 // Clicking the Dock icon brings a hidden overlay back, in case another app owns ⌘\.
 app.on('activate', () => allHidden && toggleAll())
-app.on('will-quit', () => globalShortcut.unregisterAll())
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll()
+  launcher?.stop()
+})
 app.on('window-all-closed', () => app.quit())
