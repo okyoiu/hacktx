@@ -222,7 +222,6 @@ def test_the_launcher_never_uses_a_shell():
     assert "shell: true" not in src and not re.search(r"\bexec\(|execSync|spawnSync", src)
 
 
-@pytest.mark.xfail(strict=True, reason="R4-2: call notes are created with the default mode, readable by other accounts")
 def test_a_call_note_is_readable_only_by_you(monkeypatch, tmp_path):
     from datetime import datetime
 
@@ -238,12 +237,26 @@ def test_a_call_note_is_readable_only_by_you(monkeypatch, tmp_path):
     assert path.stat().st_mode & 0o077 == 0
 
 
-@pytest.mark.xfail(strict=True, reason="R4-1: launcher logs are created world-readable and keep everything forever")
 def test_launcher_logs_are_private():
     assert re.search(r"openSync\([^)]*0o600", (ROOT / "overlay/launcher.js").read_text())
 
 
-@pytest.mark.xfail(strict=True, reason="R4-1: capture.transcribe prints every sentence, and the launcher saves its output in logs/")
 def test_transcription_does_not_print_what_people_say():
     printed = [l for l in (ROOT / "capture/transcribe.py").read_text().splitlines() if "print(" in l]
     assert not any("transcript" in l for l in printed)
+
+
+def test_the_notes_folders_are_private(monkeypatch, tmp_path):
+    from datetime import datetime
+
+    from memory import notes
+
+    monkeypatch.setattr(notes, "NOTES", tmp_path / "notes")
+    monkeypatch.setattr(store, "person", lambda pid: {
+        "id": pid, "name": "Zed", "role": "", "firstMet": datetime(2026, 10, 1), "encounters": [], "notes": []})
+    old = os.umask(0o022)
+    try:
+        notes.write_person("p_zed")
+    finally:
+        os.umask(old)
+    assert all((tmp_path / "notes" / d).stat().st_mode & 0o077 == 0 for d in ("", "people"))

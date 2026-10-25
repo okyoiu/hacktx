@@ -57,6 +57,7 @@ wake: asyncio.Event | None = None  # set when fresh lines wait for Muse Spark; m
 async def lifespan(_: FastAPI):
     global wake
     wake = asyncio.Event()
+    notes.tighten()
     worker = asyncio.create_task(insights_worker())
     yield
     worker.cancel()

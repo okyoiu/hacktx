@@ -33,6 +33,21 @@ const systemIsRunning = async (name) =>
   : name === 'server' ? portOpen(8000)
   : !!(await out('pgrep', ['-f', `capture.${name}`]))
 
+// Keeps each log's last MAX_LOG bytes, so logs/ can't grow without bound.
+const MAX_LOG = 1024 * 1024
+function trimLogs(dir) {
+  for (const name of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
+    const file = path.join(dir, name)
+    const { size } = fs.statSync(file)
+    if (!name.endsWith('.log') || size <= MAX_LOG) continue
+    const fd = fs.openSync(file, 'r')
+    const tail = Buffer.alloc(MAX_LOG)
+    fs.readSync(fd, tail, 0, MAX_LOG, size - MAX_LOG)
+    fs.closeSync(fd)
+    fs.writeFileSync(file, tail, { mode: 0o600 })
+  }
+}
+
 // Everything is injectable so the tests can fake it.
 function createLauncher({ root, spawn = realSpawn, isRunning = systemIsRunning, wait = waitForPort, onStatus = () => {} }) {
   const mine = new Map() // name -> child we started
@@ -40,8 +55,11 @@ function createLauncher({ root, spawn = realSpawn, isRunning = systemIsRunning, 
   let stopping = false
 
   const logFile = (name) => {
-    fs.mkdirSync(path.join(root, 'logs'), { recursive: true })
-    return fs.openSync(path.join(root, 'logs', name + '.log'), 'a')
+    const file = path.join(root, 'logs', name + '.log')
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    const fd = fs.openSync(file, 'a', 0o600)
+    fs.fchmodSync(fd, 0o600) // a log from an older version may have been created with looser rights
+    return fd
   }
   const run = (cmd, args, log) => spawn(cmd, args, { cwd: root, stdio: ['ignore', log, log] })
   const exitCode = (child) => new Promise((resolve) => (child.once('exit', resolve), child.once('error', () => resolve(1))))
@@ -77,6 +95,7 @@ function createLauncher({ root, spawn = realSpawn, isRunning = systemIsRunning, 
 
   return {
     async start() {
+      trimLogs(path.join(root, 'logs'))
       await startDb()
       for (const p of PROCESSES) {
         if (await isRunning(p.name)) onStatus(p.name, 'ok')
@@ -95,4 +114,4 @@ function createLauncher({ root, spawn = realSpawn, isRunning = systemIsRunning, 
   }
 }
 
-module.exports = { createLauncher, PROCESSES }
+module.exports = { createLauncher, trimLogs, MAX_LOG, PROCESSES }
