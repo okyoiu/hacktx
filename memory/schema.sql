@@ -33,3 +33,10 @@ create table if not exists encounters (
   about text not null,
   last_time text not null
 );
+
+-- who they are to the user ("Your team lead"); a role the user typed is never replaced by Muse's suggestion
+alter table people add column if not exists role text not null default '';
+alter table people add column if not exists role_source text not null default 'muse';
+
+-- delete tokens are stored as sha256 hex; this upgrades older plain tokens (22 characters) once and does nothing after
+update people set delete_token = encode(sha256(convert_to(delete_token, 'UTF8')), 'hex') where length(delete_token) <> 64;

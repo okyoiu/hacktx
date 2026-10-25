@@ -4,6 +4,9 @@ Run: uv run --env-file .env uvicorn memory.app:app --reload
 Keep it on localhost or your LAN; nothing here is authenticated except deleting a person.
 """
 import asyncio
+import os
+import secrets
+import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -25,6 +28,10 @@ MAX_SELFIE_BYTES = 8_000_000
 CALL_IDLE_SECONDS = 60  # a call ends this long after the last face was seen
 INSIGHTS_SECONDS = 8  # Muse Spark refreshes the insights at most this often
 MAX_ACTIONS_KEPT = 100  # actions from older insights stay clickable until this many newer ones exist
+ENROLLS_PER_MINUTE = 5  # POST /enroll attempts per IP address; each one runs the face model
+# Hard stop for one Muse Spark or SerpApi job: the clients time out per request and retry, so a slow service could
+# otherwise hold a response on "thinking" or stall Live insights for minutes. The abandoned thread finishes on its own.
+OUTBOUND_SECONDS = 45
 NOTE_POINTS = 10  # Muse rephrases points every refresh, so the call note keeps only the latest few
 
 
@@ -118,11 +125,19 @@ def remember_encounters(ended: Call) -> None:
         people = {p["id"]: {"name": p["name"], "notes": [n["text"] for n in p["notes"][:5]]}
                   for p in map(store.person, ended.people) if p}
         if not people or not ended.lines:
-            return
+            return  # the finally below still refreshes their files
         for s in picks.summarise(people, ended.lines):
             store.add_encounter(s["personId"], ended.started.astimezone(), s["about"], s["lastTime"])
+            if s["role"]:
+                store.set_role(s["personId"], s["role"], "muse")  # never replaces a role the user typed
     except Exception as e:  # e.g. no MODEL_API_KEY: the call still ends and its note is still written
         print(f"encounter summaries skipped: {e}")
+    finally:
+        for pid in ended.people:
+            try:
+                notes.write_person(pid)
+            except Exception as e:
+                print(f"person file skipped: {e}")
 
 
 def saw_face(card: dict | None) -> None:
@@ -174,15 +189,21 @@ class Gone(BaseModel):
 
 def card_for(face_print: list[float]) -> dict | None:
     person = store.match(np.asarray(face_print, dtype=np.float32))
-    if person is None:
-        return None
+    return card(person) if person else None
+
+
+def card(person: dict) -> dict:
+    """The face-event card for a store.match or store.person result."""
     met = person["firstMet"]
     last = store.last_time(person["id"])
+    fact = store.key_fact(person["id"])
     return {
         "id": person["id"],
         "name": person["name"],
+        "role": person["role"],
         "line": f"Last time: {last}" if last else store.latest_note(person["id"]) or "",
         "met": f"Met {met:%b} {met.day}",
+        "bullets": [b for b in (person["role"], f"Last time: {last}" if last else "", fact) if b],
     }
 
 
@@ -213,6 +234,7 @@ async def face_gone(g: Gone):
 class Remember(BaseModel):
     name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
     consent: bool
+    role: Annotated[str, StringConstraints(strip_whitespace=True, max_length=picks.ROLE_CHARS)] = ""
 
 
 @app.post("/faces/{track_id}/remember")
@@ -223,7 +245,7 @@ async def remember(track_id: int, body: Remember):
     face = unknown.pop(track_id, None)  # popped first, so a double click can't enroll them twice
     if face is None:
         raise HTTPException(409, "That face has left the call")
-    pid, token = await asyncio.to_thread(store.enroll, body.name, np.asarray(face["print"], dtype=np.float32), None)
+    pid, token = await asyncio.to_thread(store.enroll, body.name, np.asarray(face["print"], dtype=np.float32), None, body.role)
     tracks[track_id] = await asyncio.to_thread(card_for, face["print"])
     saw_face(tracks[track_id])
     await push({"type": "face", "trackId": track_id, "screenBox": face["box"], "person": tracks[track_id]})
@@ -299,13 +321,15 @@ async def refresh_insights() -> None:
     try:
         known = await asyncio.to_thread(store.notes_for, list(present))
         people = {pid: {"name": p["name"], "notes": known.get(pid, [])} for pid, p in present.items()}
-        out = await asyncio.to_thread(picks.extract, people, history[-12:], new)
+        out = await asyncio.wait_for(asyncio.to_thread(picks.extract, people, history[-12:], new), OUTBOUND_SECONDS)
     finally:
         if call is owner:  # a call that ended meanwhile took its transcript with it
             history.extend(new)
             del history[:-20]
 
     for note in out["notes"]:
+        if len(owner.people.get(note["personId"], [])) >= picks.MAX_NOTES_PER_CALL:
+            continue
         try:
             await asyncio.to_thread(store.add_note, note["personId"], note["text"])
         except psycopg.errors.ForeignKeyViolation:
@@ -363,12 +387,14 @@ async def respond(tasks: BackgroundTasks, query: str, kind: str, arg: str | None
 
 async def finish(event: dict, kind: str, arg: str | None, present: dict[str, str], lines: list[str]) -> None:
     try:
-        text, sources = await asyncio.to_thread(answer, kind, arg, present, lines)
+        text, sources = await asyncio.wait_for(asyncio.to_thread(answer, kind, arg, present, lines), OUTBOUND_SECONDS)
         event = event | {"status": "done", "text": text, "sources": sources}
         if call and kind != "recall":  # recall only repeats the database, about someone who may delete themselves
             call.responses.append(event)
     except (NoAnswer, picks.MuseError, pipeline.SerpApiError) as e:
         event = event | {"status": "error", "text": str(e)}
+    except TimeoutError:
+        event = event | {"status": "error", "text": "That took too long to answer. Try again."}
     except Exception as e:  # never leave the panel stuck on "thinking"
         print(f"response failed: {e!r}")
         event = event | {"status": "error", "text": "Something went wrong answering that. Try again."}
@@ -413,14 +439,37 @@ def enroll_page():
     return FileResponse(WEB / "enroll.html")
 
 
+enroll_hits: dict[str, list[float]] = {}  # IP address -> times of its recent POST /enroll attempts
+
+
+def rate_limited(ip: str) -> bool:
+    """Count this attempt; True once the IP has used up its enrollments for the last minute."""
+    now = time.monotonic()
+    for other in [k for k, v in enroll_hits.items() if v[-1] < now - 60]:
+        del enroll_hits[other]  # keeps the table from growing with every phone that ever visited
+    hits = [t for t in enroll_hits.get(ip, []) if t > now - 60]
+    enroll_hits[ip] = hits + [now]
+    return len(hits) >= ENROLLS_PER_MINUTE
+
+
 @app.post("/enroll")
 async def enroll(
+    request: Request,
     name: str = Form(min_length=1, max_length=80),
     consent: bool = Form(),
+    role: str = Form("", max_length=picks.ROLE_CHARS),
+    code: str = Form("", max_length=200),
     selfie: UploadFile = File(),
 ):
+    if rate_limited(request.client.host if request.client else ""):
+        raise HTTPException(429, "Too many tries from this device. Wait a minute and try again.")
+    expected = os.getenv("ENROLL_CODE")  # unset: anyone who can reach the page may enroll
+    if expected and not secrets.compare_digest(code.encode(), expected.encode()):
+        raise HTTPException(403, "That invite link is missing its code or the code is wrong. Ask for a new link.")
     if not consent:
         raise HTTPException(400, "Consent is required to enroll. Nothing was saved.")
+    if not name.strip():
+        raise HTTPException(400, "A name is required to enroll. Nothing was saved.")
     data = await selfie.read(MAX_SELFIE_BYTES + 1)
     if len(data) > MAX_SELFIE_BYTES:
         raise HTTPException(413, "That photo is over 8 MB. Take a new selfie and try again.")
@@ -429,8 +478,13 @@ async def enroll(
     face_print = await asyncio.to_thread(embed_image, data)
     if face_print is None:
         raise HTTPException(422, "No face found in that photo. Try again facing the camera in good light.")
-    pid, token = await asyncio.to_thread(store.enroll, name.strip(), face_print, None)  # the selfie is never kept
+    pid, token = await asyncio.to_thread(store.enroll, name.strip(), face_print, None, role.strip())  # the selfie is never kept
     return {"id": pid, "deleteToken": token}
+
+
+@app.get("/people")
+def list_people():
+    return store.people()
 
 
 @app.get("/people/{pid}")
@@ -441,10 +495,34 @@ def get_person(pid: str):
     return found
 
 
+class PersonEdit(BaseModel):
+    role: Annotated[str, StringConstraints(strip_whitespace=True, max_length=picks.ROLE_CHARS)] | None = None
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)] | None = None
+
+
+@app.patch("/people/{pid}")
+async def edit_person(pid: str, body: PersonEdit):
+    if await asyncio.to_thread(store.person, pid) is None:
+        raise HTTPException(404, "Nobody with that id (or their consent has run out).")
+    if body.name is not None:
+        await asyncio.to_thread(store.rename, pid, body.name)
+    if body.role is not None:  # what you type here is yours: Muse won't replace it
+        await asyncio.to_thread(store.set_role, pid, body.role, "user")
+    updated = await asyncio.to_thread(store.person, pid)
+    await asyncio.to_thread(notes.write_person, pid)
+    for t, shown in tracks.items():  # the next frame of a face on screen carries the new name and role
+        if shown and shown["id"] == pid:
+            tracks[t] = await asyncio.to_thread(card, updated)
+    return updated
+
+
 @app.delete("/people/{pid}")
-def forget(pid: str, x_delete_token: str = Header()):
-    if not store.delete_person(pid, x_delete_token):
+def forget(pid: str, request: Request, x_delete_token: str | None = Header(default=None)):
+    mine = from_this_laptop(request)  # the dashboard needs no token; a phone on the Wi-Fi does
+    if not mine and x_delete_token is None:
         raise HTTPException(403, "That delete link doesn't match. Nothing was deleted.")
+    if not store.delete_person(pid, None if mine else x_delete_token):
+        raise HTTPException(404 if mine else 403, "Nobody with that id." if mine else "That delete link doesn't match. Nothing was deleted.")
     for t, card in tracks.items():  # not named on screen, and not sent to Muse, from now on
         if card and card["id"] == pid:
             tracks[t] = None

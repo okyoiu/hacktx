@@ -1,4 +1,5 @@
 """Postgres (Tiger Data) + pgvector: people, face prints, consent, notes and per-call encounters."""
+import hashlib
 import os
 import secrets
 from datetime import datetime
@@ -30,15 +31,19 @@ def conn() -> psycopg.Connection:
 
 def purge_expired() -> None:
     """Delete everyone whose consent has run out (faces and notes go with them)."""
-    conn().execute(
-        "delete from people where id in (select person_id from consents where expires_at < current_date)"
-    )
+    from memory import notes  # lazy: notes imports store
+
+    rows = conn().execute(
+        "delete from people where id in (select person_id from consents where expires_at < current_date) returning id"
+    ).fetchall()
+    for (pid,) in rows:
+        notes.forget(pid)
 
 
 def match(face_print: np.ndarray) -> dict | None:
     """Closest consenting person, or None when nobody is close enough."""
     row = conn().execute(
-        """select p.id, p.name, p.first_met, 1 - (f.print <=> %s) as score
+        """select p.id, p.name, p.first_met, 1 - (f.print <=> %s) as score, p.role
            from faces f
            join people p on p.id = f.person_id
            join consents c on c.person_id = p.id
@@ -49,16 +54,20 @@ def match(face_print: np.ndarray) -> dict | None:
     ).fetchone()
     if row is None or row[3] < MATCH_MIN:
         return None
-    return {"id": row[0], "name": row[1], "firstMet": row[2], "score": round(float(row[3]), 3)}
+    return {"id": row[0], "name": row[1], "firstMet": row[2], "role": row[4], "score": round(float(row[3]), 3)}
 
 
-def enroll(name: str, face_print: np.ndarray, selfie: bytes | None) -> tuple[str, str]:
+def digest(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def enroll(name: str, face_print: np.ndarray, selfie: bytes | None, role: str = "") -> tuple[str, str]:
     """Save a consenting person; returns (personId, deleteToken)."""
     pid, token = "p_" + secrets.token_hex(4), secrets.token_urlsafe(16)
     with conn().transaction():
         conn().execute(
-            "insert into people (id, name, selfie, delete_token) values (%s, %s, %s, %s)",
-            (pid, name, selfie, token),
+            "insert into people (id, name, selfie, delete_token, role, role_source) values (%s, %s, %s, %s, %s, %s)",
+            (pid, name, selfie, digest(token), role, "user" if role else "muse"),
         )
         conn().execute("insert into faces (person_id, print) values (%s, %s)", (pid, face_print))
         conn().execute(
@@ -68,18 +77,48 @@ def enroll(name: str, face_print: np.ndarray, selfie: bytes | None) -> tuple[str
     return pid, token
 
 
-def delete_person(pid: str, token: str) -> bool:
+def delete_person(pid: str, token: str | None) -> bool:
+    """Delete with their token; token=None skips the check and is only for callers that know the request came
+    from this laptop."""
     row = conn().execute("select delete_token from people where id = %s", (pid,)).fetchone()
-    if row is None or not secrets.compare_digest(row[0], token):
+    if row is None or (token is not None and not secrets.compare_digest(row[0], digest(token))):
         return False
     conn().execute("delete from people where id = %s", (pid,))
+    from memory import notes  # lazy: notes imports store
+
+    notes.forget(pid)
     return True
+
+
+def set_role(pid: str, role: str, source: str) -> None:
+    """A user's role always wins; Muse's suggestion only fills in or replaces an earlier suggestion.
+    A role the user cleared (empty) stays empty: it is theirs, so Muse never suggests one again."""
+    conn().execute(
+        "update people set role = %s, role_source = %s where id = %s and (%s = 'user' or role_source <> 'user')",
+        (role, source, pid, source),
+    )
+
+
+def people() -> list[dict]:
+    """Everyone with valid consent, most recently met first, for the dashboard."""
+    rows = conn().execute(
+        """select p.id, p.name, p.role, p.first_met,
+                  coalesce((select max(met_at) from encounters where person_id = p.id), p.first_met::timestamptz) as last_met,
+                  (select last_time from encounters where person_id = p.id order by met_at desc, id desc limit 1)
+           from people p join consents c on c.person_id = p.id
+           where c.expires_at >= current_date
+           order by last_met desc, p.first_met desc, p.id""").fetchall()
+    return [{"id": i, "name": n, "role": r, "firstMet": f, "lastMet": m, "lastTime": t} for i, n, r, f, m, t in rows]
+
+
+def rename(pid: str, name: str) -> None:
+    conn().execute("update people set name = %s where id = %s", (name, pid))
 
 
 def person(pid: str) -> dict | None:
     """Name, first-met date, every encounter and note, newest first; None if unknown or their consent has run out."""
     row = conn().execute(
-        """select p.name, p.first_met from people p join consents c on c.person_id = p.id
+        """select p.name, p.first_met, p.role from people p join consents c on c.person_id = p.id
            where p.id = %s and c.expires_at >= current_date""",
         (pid,),
     ).fetchone()
@@ -94,6 +133,7 @@ def person(pid: str) -> dict | None:
     return {
         "id": pid,
         "name": row[0],
+        "role": row[2],
         "firstMet": row[1],
         "encounters": [{"metAt": at, "about": about, "lastTime": last} for at, about, last in encounters],
         "notes": [{"text": t, "createdAt": at} for t, at in notes],
@@ -113,6 +153,14 @@ def last_time(pid: str) -> str | None:
         "select last_time from encounters where person_id = %s order by met_at desc, id desc limit 1", (pid,)
     ).fetchone()
     return row[0] if row else None
+
+
+def key_fact(pid: str) -> str | None:
+    """One thing worth remembering about them: what Muse wrote they're about, else their newest note."""
+    row = conn().execute(
+        "select about from encounters where person_id = %s and about <> '' order by met_at desc, id desc limit 1", (pid,)
+    ).fetchone()
+    return row[0] if row else latest_note(pid)
 
 
 def add_note(pid: str, text: str) -> None:
