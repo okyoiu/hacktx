@@ -245,7 +245,7 @@ test('dashboard search also finds the "who they are to you" label', () => {
 })
 
 // ---------- round 5: presets, fixed spots, Ask AI nudge, Recap, debug ----------
-const { presetFor, layoutFor, askPlace, recapFrom, debugLabel, devMode, BAR, PANEL, STRIP, RECAP, MATCH_MIN } = require('./logic')
+const { presetFor, layoutFor, askPlace, cardRect, recapFrom, debugLabel, devMode, shouldMove, BAR, PANEL, STRIP, RECAP, MATCH_MIN } = require('./logic')
 
 const WORK = { x: 0, y: 25, width: 1440, height: 875 } // a 13" Mac under its menu bar
 const inside = (r, area = WORK) => r.x >= area.x && r.y >= area.y && r.x + r.width <= area.x + area.width && r.y + (r.height || 0) <= area.y + area.height
@@ -320,6 +320,33 @@ test('Ask AI stays in its spot when it covers nothing, else moves to a free area
   for (const o of [face, strip, ...bands]) assert.equal(overlap(placed, o), 0, 'covers nothing')
   const under = askPlace({ work: WORK, spot: { x: 400, y: 40 }, faces: [], blocks: [strip], panel })
   assert.equal(overlap({ ...under, ...panel }, strip), 0, 'never under the control strip')
+  const card = cardRect([1000, 150, 200, 250], { x: 0, y: 0, width: 1440, height: 900 })
+  assert.deepEqual(card, { x: 1212, y: 150, width: 208, height: 210 }, 'the card sits to the right of its face')
+  const offCard = askPlace({ work: WORK, spot: { x: 968, y: 100 }, faces: [], blocks: [], cards: [card], panel })
+  assert.equal(overlap({ ...offCard, ...panel }, card), 0, 'name cards are kept clear too')
+})
+
+test('Live insights keeps its rail and only slides along it to get off a face', () => {
+  const panel = { width: PANEL.width, height: 380 }
+  const spot = { x: 24, y: 114 }
+  const face = { x: 180, y: 260, width: 200, height: 260 }
+  const slid = askPlace({ work: WORK, spot, faces: [face], blocks: [], panel, fixedX: true })
+  assert.equal(slid.x, 24, 'same side')
+  assert.ok(slid.y !== spot.y && overlap({ ...slid, ...panel }, face) < 200 * 40, 'slid down past the face as far as the screen allows')
+  assert.deepEqual(askPlace({ work: WORK, spot, faces: [], blocks: [], panel, fixedX: true }), spot)
+  assert.deepEqual(cardRect([1000, 150, 200, 250], { x: 0, y: 0, width: 1440, height: 900 }, false), { x: 1212, y: 150, width: 132, height: 36 }, 'a pill is small')
+})
+
+test('when nothing is free, Ask AI covers a control before a card and a card before a face', () => {
+  const panel = { width: PANEL.width, height: 300 }
+  const work = { x: 0, y: 0, width: 500, height: 700 } // too narrow to dodge anything sideways
+  const face = { x: 0, y: 0, width: 500, height: 320 }
+  const control = { x: 0, y: 320, width: 500, height: 380 }
+  const low = askPlace({ work, spot: { x: 24, y: 6 }, faces: [face], blocks: [control], panel })
+  assert.ok(low.y >= 320 - 50, 'moved off the face onto the control')
+  const card = { x: 0, y: 320, width: 500, height: 380 }
+  const onCard = askPlace({ work, spot: { x: 24, y: 6 }, faces: [face], blocks: [], cards: [card], panel })
+  assert.ok(onCard.y >= 320 - 50, 'and onto a card rather than a face')
 })
 
 test('Ask AI in a full-screen grid of faces with no window rect: on screen, covering as little as possible', () => {
@@ -368,6 +395,16 @@ test('the debug label says the track, the score against the cutoff and the decis
   assert.equal(debugLabel({ trackId: 3, score: 0.62, decision: 'Jordan Lee' }), '#3 · 0.62 ≥ 0.45 · Jordan Lee')
   assert.equal(debugLabel({ trackId: 4, score: 0.31, decision: 'below 0.45' }), '#4 · 0.31 < 0.45 · below 0.45')
   assert.equal(debugLabel({ trackId: 5, score: null, decision: 'no face yet' }), '#5 · no score · no face yet')
+})
+
+test('a card follows its face only when the face really moved, never tracker jitter', () => {
+  const face = [180, 260, 200, 260]
+  assert.ok(shouldMove(null, face), 'a new card is placed')
+  assert.ok(!shouldMove(face, [184, 262, 200, 260]), 'a few pixels is jitter')
+  assert.ok(!shouldMove(face, [160, 240, 240, 300]), 'the box grew but its centre stayed')
+  assert.ok(shouldMove(face, [220, 260, 200, 260]), 'moved 40 px across')
+  assert.ok(shouldMove(face, [180, 300, 200, 260]), 'moved 40 px down')
+  assert.ok(!shouldMove(face, [204, 284, 200, 260]), 'exactly the threshold stays')
 })
 
 test('the transcript strip and Recap have fixed sizes the layout can count on', () => {

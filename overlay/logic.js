@@ -194,6 +194,17 @@ function cardPlace({ face: [x, y, w, h], card, screen, gap = 12, margin = 8 }) {
   return side(clamp(x + w + gap, card.width, screen.width))
 }
 
+// A card moves with its face only when the face's centre has moved more than JITTER points; the tracker's
+// small wobble never moves it. (A card that would leave the screen is re-placed by the renderer on resize.)
+const JITTER = 24
+function shouldMove(prev, next) {
+  if (!prev) return true
+  const centre = ([x, y, w, h]) => [x + w / 2, y + h / 2]
+  const [ax, ay] = centre(prev)
+  const [bx, by] = centre(next)
+  return Math.abs(bx - ax) > JITTER || Math.abs(by - ay) > JITTER
+}
+
 // ---------- fixed spots per call app ----------
 
 // Window sizes the layout counts on, in screen points. Panels grow downwards from their spot (main.js `fit`).
@@ -283,21 +294,33 @@ function layoutFor(app, rect, work, insightsHeight = INSIGHTS_GUESS) {
 
 const area = (a, b) => Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y))
 
-// Where the Ask AI panel goes: its spot when that covers no face and no control (ours or the app's), else the
-// nearest placement that covers nothing, else the one that covers least. Candidates are the work area's
-// corners and each obstacle's edges, so the answer is the same for the same inputs.
-function askPlace({ work, spot, faces, blocks, panel }) {
+// The open name card beside a face, in screen points, for keeping panels off it (the renderer places the
+// real card the same way, so this is where it is).
+const CARD_SIZE = { width: 208, height: 210 }
+const PILL_SIZE = { width: 132, height: 36 } // a "Recalling…" pill
+function cardRect([x, y, w, h], screen, known = true) {
+  const size = known ? CARD_SIZE : PILL_SIZE
+  const { left, top } = cardPlace({ face: [x - screen.x, y - screen.y, w, h], card: size, screen })
+  return { x: left + screen.x, y: top + screen.y, ...size }
+}
+
+// Where a panel goes: its spot when that covers no face, no name card and no control (ours or the app's),
+// else the nearest placement that covers nothing, else the one that covers least, where a face counts most
+// and a card least. Candidates are the work area's corners and each obstacle's edges, so the answer is the
+// same for the same inputs. Ask AI may go anywhere; Live insights keeps its rail (`fixedX`) and only slides.
+function askPlace({ work, spot, faces, blocks, cards = [], panel, fixedX = false }) {
   const { gap, margin } = PANEL
-  const obstacles = [...faces, ...blocks]
-  const covered = (x, y) => obstacles.reduce((sum, o) => sum + area({ x, y, ...panel }, o), 0)
+  const obstacles = [...faces, ...blocks, ...cards]
+  const weight = (o) => (faces.includes(o) ? 4 : blocks.includes(o) ? 2 : 1)
+  const covered = (x, y) => obstacles.reduce((sum, o) => sum + weight(o) * area({ x, y, ...panel }, o), 0)
   const clampX = (x) => clampTo(x, panel.width, work.x + margin, work.x + work.width - margin)
   const clampY = (y) => clampTo(y, panel.height, work.y + margin / 2, work.y + work.height - margin / 2)
   const home = { x: clampX(spot.x), y: clampY(spot.y) }
   if (!covered(home.x, home.y)) return home
-  const xs = new Set([home.x, clampX(work.x), clampX(work.x + work.width)])
+  const xs = new Set(fixedX ? [home.x] : [home.x, clampX(work.x), clampX(work.x + work.width)])
   const ys = new Set([home.y, clampY(work.y), clampY(work.y + work.height)])
   for (const o of obstacles) {
-    xs.add(clampX(o.x + o.width + gap)).add(clampX(o.x - gap - panel.width))
+    if (!fixedX) xs.add(clampX(o.x + o.width + gap)).add(clampX(o.x - gap - panel.width))
     ys.add(clampY(o.y + o.height + gap)).add(clampY(o.y - gap - panel.height))
   }
   let best = null
@@ -332,4 +355,4 @@ function debugLabel({ trackId, score, decision }) {
   return `#${trackId} · ${scored} · ${decision}`
 }
 
-if (typeof module !== 'undefined') module.exports = { presetFor, layoutFor, askPlace, recapFrom, debugLabel, devMode, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
+if (typeof module !== 'undefined') module.exports = { presetFor, layoutFor, askPlace, cardRect, recapFrom, debugLabel, devMode, shouldMove, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }

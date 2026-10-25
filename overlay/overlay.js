@@ -1,11 +1,12 @@
 // Renders memory-service events in one overlay window, picked by ?view=: cards (name cards beside faces),
-// bar (control bar), insights (Live insights) or response (AI response). view=all, a plain browser tab,
-// draws everything for styling. Event shapes: see README "Overlay events".
+// bar (control strip), insights (Live insights), response (Ask AI), transcript (the strip along the bottom),
+// recap (the Recap) or people (the dashboard). view=all, a plain browser tab, draws everything for styling,
+// placed with the same layout rules as the app. Event shapes: see README "Overlay events".
 const q = new URLSearchParams(location.search)
 const view = q.get('view') || 'all'
 const shows = (part) => view === 'all' || view === part
 const origin = { x: +q.get('ox') || 0, y: +q.get('oy') || 0 } // the cards window's top-left in screen points
-const CARD = { width: 208, gap: 12, open: 150 } // open: room for a name and three bullets
+const CARD = { width: 208, gap: 12, open: 210 } // open: room for a name and five bullets
 const KIND_EMOJI = { define: '📘', search: '🌐', places: '📍', events: '📅', recall: '👋', followups: '💬', helpful: '✨' }
 const calm = matchMedia('(prefers-reduced-motion: reduce)')
 const DEBUG = q.get('debug') === '1' // developer mode: only main.js sets this, and only when started with `npm run dev`
@@ -14,6 +15,9 @@ const $ = (id) => document.getElementById(id)
 document.body.dataset.view = view
 $('bar').hidden = !shows('bar')
 $('insights').hidden = !shows('insights')
+$('transcript').hidden = view !== 'transcript' // in the preview it opens with "Show transcript"
+$('response').hidden = view !== 'response' // in the preview it opens with a question or an answer
+$('recap').hidden = view !== 'recap' // in the preview it opens with the recap event
 $('people').hidden = view !== 'people' // the dashboard has its own window
 $('hint').hidden = !shows('cards')
 setTimeout(() => ($('hint').hidden = true), 45_000) // nothing extra on screen for long
@@ -47,17 +51,25 @@ function handle(e) {
   if (shows('insights')) {
     if (e.type === 'listening') setInsightsEmpty(e.on)
     if (e.type === 'insights') showInsights(e)
-    if (e.type === 'caption') addCaption(e)
   }
+  if (shows('transcript') && e.type === 'caption') addCaption(e)
   if (shows('response')) {
     if (e.type === 'insights') actions = e.actions
     if (e.type === 'response') showResponse(e)
+    if (e.type === 'recap') endThread() // the thread ends with the call
+  }
+  if (shows('recap') && e.type === 'recap') showRecap(e)
+  if (view === 'all') {
+    if (e.type === 'window') previewWindow = e
+    if (e.type === 'recap') $('insights').hidden = true // the Recap takes over, like main.js
+    if (e.type === 'insights') $('insights').hidden = false
+    if (['window', 'face', 'face_gone', 'insights', 'response'].includes(e.type)) schedulePreview()
   }
 }
 
 // ---------- name cards (click-through, never show tracking data) ----------
 
-function placeCard({ trackId, screenBox: [x, y, w, h], person }) {
+function placeCard({ trackId, screenBox, person }) {
   const id = 't' + trackId
   let card = $(id)
   const known = person ? [person.id, ...bulletsOf(person), person.met].join('\n') : 'unknown'
@@ -79,23 +91,43 @@ function placeCard({ trackId, screenBox: [x, y, w, h], person }) {
     $('cards').append(card)
     card.dataset.active = Date.now()
   } else if (card.dataset.person !== known) {
-    morph(card, () => fillCard(card, person))
+    const before = card.dataset.person
+    morph(card, () => fillCard(card, person, new Set(before.split('\n'))))
     card.dataset.active = Date.now()
+    // a new "This call: …" line while they talk: the card opens again so you see it rise in
+    if (person && card.dataset.pid === person.id && !dismissed.has(person.id)) pop(card)
   }
   if (person && card.dataset.pid !== person.id) {
     card.dataset.pid = person.id
     if (shouldPop(popped, person.id)) {
       popped.add(person.id)
-      card.dataset.popUntil = Date.now() + POP_MS
-      setTimeout(() => syncOpen(card), POP_MS)
+      pop(card)
     }
   }
   card.dataset.person = known
   syncOpen(card)
-  // a known card is placed for its open size, so opening it never pushes it over the face
-  const size = person ? { width: CARD.width, height: CARD.open } : { width: card.offsetWidth || CARD.width, height: card.offsetHeight || 40 }
+  // anchored to the face: it follows only when the face really moved, with one eased slide, never jitter
+  const prev = card.dataset.face ? JSON.parse(card.dataset.face) : null
+  if (shouldMove(prev, screenBox) || card.dataset.known !== String(!!person)) {
+    card.dataset.face = JSON.stringify(screenBox)
+    card.dataset.known = String(!!person) // a pill that became a name card is placed for its new size
+    position(card)
+  }
+}
+
+// A known card is placed for its open size, so opening it never pushes it over the face.
+function position(card) {
+  const [x, y, w, h] = JSON.parse(card.dataset.face)
+  const known = card.classList.contains('known')
+  const size = known ? { width: CARD.width, height: CARD.open } : { width: card.offsetWidth || CARD.width, height: card.offsetHeight || 40 }
   const { left, top } = cardPlace({ face: [x - origin.x, y - origin.y, w, h], card: size, screen: { width: innerWidth, height: innerHeight }, gap: CARD.gap })
   card.style.transform = `translate(${left}px, ${top}px)`
+}
+window.addEventListener('resize', () => document.querySelectorAll('#cards .card[data-face]').forEach(position))
+
+function pop(card) {
+  card.dataset.popUntil = Date.now() + POP_MS
+  setTimeout(() => syncOpen(card), POP_MS)
 }
 
 // Speaking brings a quiet card back. Face events repeat while a face is on screen, so only arrivals and
@@ -114,13 +146,17 @@ setInterval(() => {
   }
 }, 5000)
 
-// The memory pop-up: a known card shows its bullets while it's new or hovered, else just the name tag.
+// The memory pop-up: a known card shows its bullets while it's new, hovered or pinned open, else just the name
+// tag. ✕ closes it for that person for the rest of the call; clicking the name tag opens or closes it by hand.
 const popped = new Set() // person ids already popped in this call; emptied when the last card leaves
+const dismissed = new Set() // person ids whose card was closed with ✕
 function syncOpen(card) {
-  card.classList.toggle('open', isOpen(+card.dataset.popUntil || 0, !!card.dataset.hover, Date.now()))
+  const pid = card.dataset.pid
+  const open = card.dataset.pinned === 'true' || (!dismissed.has(pid) && isOpen(+card.dataset.popUntil || 0, !!card.dataset.hover, Date.now()))
+  card.classList.toggle('open', open)
 }
 
-function fillCard(card, person) {
+function fillCard(card, person, oldBullets = new Set()) {
   const hadForm = card.classList.contains('remembering')
   if (!person) {
     // A face we can't name yet (still matching, or not enrolled) gets the thinking sparkle, never "unknown".
@@ -132,10 +168,27 @@ function fillCard(card, person) {
     card.replaceChildren(icon('sparkle', 'mark'), verb('Recalling,Thinking,Remembering,Looking'), remember)
   } else {
     card.className = 'card glass known'
+    const tag = el('button', 'tag')
+    tag.type = 'button'
+    tag.append(el('span', 'dot'), el('span', 'name', person.name))
+    tag.addEventListener('click', () => {
+      card.dataset.pinned = String(!card.classList.contains('open'))
+      if (card.dataset.pinned === 'false') dismissed.add(person.id)
+      syncOpen(card)
+    })
+    const close = el('button', 'close')
+    close.type = 'button'
+    close.setAttribute('aria-label', 'Close for this call')
+    close.append(icon('close'))
+    close.addEventListener('click', () => {
+      dismissed.add(person.id)
+      card.dataset.pinned = 'false'
+      syncOpen(card)
+    })
     const row = el('div', 'row')
-    row.append(el('span', 'dot'), el('span', 'name', person.name))
+    row.append(tag, close)
     const bullets = el('ul', 'bullets')
-    bullets.append(...bulletsOf(person).map((b) => el('li', null, b)))
+    bullets.append(...bulletsOf(person).map((b) => fresh(el('li', null, b), oldBullets.has(b))))
     const inner = el('div')
     inner.append(bullets, el('div', 'met', person.met))
     const more = el('div', 'more')
@@ -226,7 +279,7 @@ function leftCall(card, text = 'They left the call before saving.') {
   }, 2500)
 }
 
-// The cards window takes the mouse only while the pointer is over a thinking pill or its form.
+// The cards window takes the mouse only while the pointer is over a pill, a name card or its form.
 const syncMouse = () => window.overlay?.setClickThrough(!document.querySelector('#cards :is(.thinking, .remembering, .known):hover'))
 
 // Hands the keyboard back to the call app, and the mouse unless the pointer is still over a pill.
@@ -258,7 +311,10 @@ function removeCard(trackId) {
   card.classList.add('leaving')
   setTimeout(() => {
     card.remove()
-    if (!document.querySelector('#cards .card')) popped.clear() // the call is empty; the next hello pops again
+    if (!document.querySelector('#cards .card')) {
+      popped.clear() // the call is empty; the next hello pops again
+      dismissed.clear()
+    }
     syncMouse() // in case the pointer was over it
   }, 250)
 }
@@ -448,13 +504,13 @@ if (shows('bar')) {
   })
   $('endBtn').addEventListener('click', async () => {
     $('endBtn').disabled = true
-    const { error } = await api('/calls/end')
+    const { error } = await api('/calls/end') // the Recap follows, from the server or built by main.js
     $('endBtn').disabled = false
     flash = { text: error ? 'Not saved' : 'Saved what you talked about', until: Date.now() + 4000 }
     $('timer').title = error || ''
     tick()
   })
-  $('askBtn').addEventListener('click', () => window.overlay?.ask())
+  $('askBtn').addEventListener('click', () => (window.overlay ? window.overlay.ask() : startAsk()))
   $('peopleBtn').addEventListener('click', () => window.overlay?.togglePeople())
   $('hideBtn').addEventListener('click', () => window.overlay?.toggleAll())
 }
@@ -475,7 +531,7 @@ function showInsights(next) {
   $('points').replaceChildren(...shownPoints(next.points).map((p) => fresh(el('li', null, p), seen.has(p))))
   const had = new Set(prev?.actions.map((a) => a.id))
   $('actionsTitle').hidden = !next.actions.length
-  $('actions').replaceChildren(...shownActions(next.actions).map((a) => fresh(actionRow(a), had.has(a.id))))
+  $('actions').replaceChildren(...shownActions(next.actions).map((a) => fresh(actionRow(a, $('actionsNote')), had.has(a.id))))
 }
 
 function setInsightsEmpty(on) {
@@ -493,7 +549,8 @@ function fresh(node, old = false) {
   return node
 }
 
-function actionRow({ id, kind, label }) {
+// One action row; its answer arrives as `response` events in the Ask AI panel, an error goes in `note`.
+function actionRow({ id, kind, label }, note) {
   const item = el('li')
   const button = el('button', 'action')
   button.type = 'button'
@@ -501,27 +558,23 @@ function actionRow({ id, kind, label }) {
   button.firstChild.setAttribute('aria-hidden', 'true')
   button.addEventListener('click', async () => {
     button.disabled = true
-    const { error } = await api('/actions/' + encodeURIComponent(id)) // the answer arrives as `response` events
-    $('actionsNote').textContent = error || ''
+    const { error } = await api('/actions/' + encodeURIComponent(id))
+    note.textContent = error || ''
     button.disabled = false
   })
   item.append(button)
   return item
 }
 
-const MAX_CAPTIONS = 200
-
-function addCaption({ speaker, text, final }) {
-  wakePanel()
-  const list = $('transcript')
-  const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 24
-  // a speaker's partial line keeps growing in place until its final version arrives
-  const line = [...list.querySelectorAll('li.partial')].find((li) => li.dataset.speaker === speaker) || list.appendChild(el('li'))
-  line.dataset.speaker = speaker
-  line.className = final ? '' : 'partial'
-  line.replaceChildren(el('span', 'who', speaker), el('span', 'said', text))
-  while (list.children.length > MAX_CAPTIONS) list.firstElementChild.remove()
-  if (atBottom) list.scrollTop = list.scrollHeight
+// "Show transcript" opens the strip along the bottom (its own window; the preview shows it in place).
+function setTranscriptShown(shown) {
+  $('transcriptBtn').setAttribute('aria-pressed', shown)
+  $('transcriptBtn').lastElementChild.textContent = transcriptToggle(shown).label
+  if (view === 'all') {
+    $('transcript').hidden = !shown
+    $('captions').scrollTop = $('captions').scrollHeight // lines added while it was hidden couldn't scroll
+    schedulePreview()
+  }
 }
 
 function copy(button, text) {
@@ -538,55 +591,82 @@ for (const button of document.querySelectorAll('.copy-btn')) button.dataset.labe
 
 if (shows('insights')) {
   $('transcriptBtn').addEventListener('click', () => {
-    const { open, label } = transcriptToggle($('transcript').hidden)
-    $('transcript').hidden = !open
-    $('insightsBody').hidden = open
-    $('transcriptBtn').setAttribute('aria-pressed', open)
-    $('transcriptBtn').lastElementChild.textContent = label
-    if (open) $('transcript').scrollTop = $('transcript').scrollHeight
+    if (window.overlay && view !== 'all') window.overlay.toggleTranscript()
+    else setTranscriptShown($('transcriptBtn').getAttribute('aria-pressed') !== 'true')
   })
+  window.overlay?.onTranscriptShown(setTranscriptShown)
   $('copyInsights').addEventListener('click', (e) => {
-    const lines = $('transcript').hidden
-      ? insights ? [insights.topic, ...insights.points.map((p) => '- ' + p)] : []
-      : [...$('transcript').children].map((li) => `${li.dataset.speaker}: ${li.lastChild.textContent}`)
-    copy(e.currentTarget, lines.join('\n'))
+    copy(e.currentTarget, insights ? [insights.topic, ...insights.points.map((p) => '- ' + p)].join('\n') : '')
   })
 }
 
-// ---------- AI response ----------
+// ---------- transcript strip ----------
 
-let response = { state: 'idle' } // idle | ask | thinking | done | error
+const MAX_CAPTIONS = 200
+
+function addCaption({ speaker, text, final }) {
+  const list = $('captions')
+  // a speaker's partial line keeps growing in place until its final version arrives
+  const line = [...list.querySelectorAll('li.partial')].find((li) => li.dataset.speaker === speaker) || list.appendChild(el('li'))
+  line.dataset.speaker = speaker
+  line.className = final ? '' : 'partial'
+  line.replaceChildren(el('span', 'who', speaker), el('span', 'said', text))
+  while (list.children.length > MAX_CAPTIONS) list.firstElementChild.remove()
+  list.scrollTop = list.scrollHeight // the newest line sits at the bottom edge
+}
+
+// ---------- Ask AI: a thread of questions and answers ----------
+
+let turns = [] // [{ id, query, status, text, sources }], oldest first
 let actions = [] // the latest actions, to put the right emoji on a query chip
-let closed = null
+let startNew = false // the next question starts a fresh thread (⌘↵ or the Ask AI button)
+let closed = null // the turn the user closed; its late events must not reopen the panel
 
 function showResponse(e) {
-  if (!takesOver(response, e, closed)) return
+  if (e.id === closed) return
   wakePanel()
-  response = { state: e.status, id: e.id, query: e.query, text: e.text || '', sources: e.sources || [] }
-  renderResponse()
+  let turn = turns.find((t) => t.id === e.id)
+  if (!turn) {
+    turn = { id: e.id }
+    turns.push(turn)
+  }
+  Object.assign(turn, { query: e.query, status: e.status, text: e.text || '', sources: e.sources || [] })
+  renderThread(turn)
 }
 
-function renderResponse() {
-  const { state, query, text, sources } = response
-  const panel = $('response')
-  panel.hidden = state === 'idle'
-  panel.dataset.state = state
-  $('responseTitle').textContent = state === 'ask' ? 'Ask AI' : 'AI response'
-  $('askForm').hidden = state !== 'ask'
-  $('askNote').textContent = ''
-  $('chip').hidden = state === 'ask' || !query
-  $('chipEmoji').textContent = KIND_EMOJI[actions.find((a) => a.label === query)?.kind] || ''
-  $('chipText').textContent = query || ''
-  $('chip').title = query || ''
-  $('copyAnswer').hidden = state === 'ask'
-  $('copyAnswer').disabled = state !== 'done'
-  $('thinking').hidden = state !== 'thinking'
-  $('answer').replaceChildren(...answerLines(state, text).map((line, i) => {
+function renderThread(changed) {
+  $('response').hidden = view === 'all' && !turns.length && !asking
+  $('thread').replaceChildren(...turns.map((t) => turnNode(t, t === changed)))
+  $('copyAnswer').disabled = !turns.some((t) => t.status === 'done')
+  $('question').placeholder = turns.length ? 'Ask a follow-up…' : 'Ask about this call…'
+  $('thread').scrollTop = $('thread').scrollHeight
+}
+
+function turnNode({ query, status, text, sources }, animate) {
+  const item = el('li', 'turn')
+  item.dataset.state = status
+  const chip = el('span', 'chip')
+  chip.title = query || ''
+  chip.append(el('span', 'emoji', KIND_EMOJI[actions.find((a) => a.label === query)?.kind] || ''), el('span', 'q', query || ''))
+  item.append(chip)
+  if (status === 'thinking') {
+    const row = el('div', 'thinking')
+    row.append(icon('sparkle', 'mark'), verb('Thinking,Searching,Reading,Writing'))
+    item.append(row)
+  }
+  const answer = el('div', 'answer')
+  answer.append(...answerLines(status, text).map((line, i) => {
     const p = el('p', null, line)
-    p.style.animationDelay = i * 70 + 'ms'
+    if (animate) p.style.animationDelay = i * 70 + 'ms'
+    else p.style.animation = 'none'
     return p
   }))
-  $('sources').replaceChildren(...(state === 'done' ? sources : []).map(sourceLink))
+  item.append(answer)
+  const list = el('ul', 'sources')
+  list.setAttribute('aria-label', 'Sources')
+  list.append(...(status === 'done' ? sources : []).map(sourceLink))
+  item.append(list)
+  return item
 }
 
 function sourceLink({ title, url }) {
@@ -604,42 +684,104 @@ function sourceLink({ title, url }) {
   return item
 }
 
+let asking = false // the preview keeps the panel open while a question is being typed
 function closeResponse() {
-  closed = response.id
-  window.overlay?.closeResponse(response.id)
-  response = { state: 'idle' }
-  setTimeout(renderResponse, window.overlay ? 200 : 0) // after the window has faded out
+  closed = turns.at(-1)?.id ?? null
+  asking = false
+  window.overlay?.closeResponse(closed ?? '')
+  setTimeout(() => renderThread(), window.overlay ? 200 : 0) // after the window has faded out
 }
 
+// A fresh thread: the panel clears and the next question is sent with new: true.
 function startAsk() {
   closed = null
-  response = { state: 'ask' }
-  renderResponse()
+  turns = []
+  startNew = true
+  asking = true
+  renderThread()
+  $('askNote').textContent = ''
   $('question').value = ''
+  if (view === 'all') previewLayout() // the app's main.js places the panel before it takes focus; so does the preview
   $('question').focus()
+  busy()
 }
+
+// The thread ends with the call.
+function endThread() {
+  turns = []
+  startNew = true
+  renderThread()
+}
+
+// Main must not move the panel while the question field is focused or holds text.
+const busy = () => window.overlay?.setAskBusy(document.activeElement === $('question') || !!$('question').value)
 
 if (shows('response')) {
   window.overlay?.onAsk(startAsk)
   $('closeResponse').addEventListener('click', closeResponse)
-  document.addEventListener('keydown', (e) => e.key === 'Escape' && response.state !== 'idle' && closeResponse())
+  document.addEventListener('keydown', (e) => e.key === 'Escape' && !$('response').hidden && closeResponse())
   $('copyAnswer').addEventListener('click', (e) => {
-    copy(e.currentTarget, [response.text, ...response.sources.map((s) => `${s.title}: ${s.url}`)].join('\n'))
+    const lines = turns.filter((t) => t.status === 'done').flatMap((t) => [t.query, t.text, ...t.sources.map((s) => `${s.title}: ${s.url}`), ''])
+    copy(e.currentTarget, lines.join('\n'))
+  })
+  for (const type of ['focus', 'blur', 'input']) $('question').addEventListener(type, busy)
+  $('question').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || !(e.metaKey || e.ctrlKey)) return
+    e.preventDefault() // ⌘↵ starts a fresh thread (main's shortcut in the app; here in the preview)
+    if (!window.overlay) startAsk()
   })
   $('askForm').addEventListener('submit', async (e) => {
     e.preventDefault()
     const question = $('question').value.trim()
     if (!question) return
     $('question').disabled = true
-    response = { state: 'sent' } // the answer's events may arrive before its id does; let them in
-    const { id, error } = await api('/ask', { question })
+    $('askNote').textContent = ''
+    const { id, error } = await api('/ask', startNew ? { question, new: true } : { question })
     $('question').disabled = false
     if (error) {
-      response = { state: 'ask' }
-      renderResponse()
       $('askNote').textContent = error
-    } else if (response.id !== id) showResponse({ id, query: question, status: 'thinking' })
+      return $('question').focus()
+    }
+    startNew = false
+    $('question').value = ''
+    busy()
+    if (!turns.find((t) => t.id === id)) showResponse({ id, query: question, status: 'thinking' }) // unless its events came first
+    $('question').focus()
   })
+}
+
+// ---------- Recap ----------
+
+function showRecap(r) {
+  $('recap').hidden = false
+  $('recapTopic').textContent = r.topic || 'This call'
+  $('recapPoints').replaceChildren(...(r.points || []).slice(0, 5).map((p) => fresh(el('li', null, p))))
+  $('recapActionsTitle').hidden = !r.actions?.length
+  $('recapActions').replaceChildren(...shownActions(r.actions || []).map((a) => fresh(actionRow(a, $('recapNote')))))
+  $('recapNote').textContent = ''
+  $('recapPeopleTitle').hidden = !r.people?.length
+  $('recapPeople').replaceChildren(...(r.people || []).map(recapPerson))
+  $('recap').dataset.copy = [r.topic, ...(r.points || []).map((p) => '- ' + p), ...(r.people || []).map((p) => `${p.name}: ${p.lastTime || ''}`)].join('\n')
+}
+
+function recapPerson({ name, role, lastTime }) {
+  const item = el('li')
+  const head = el('div', 'who-row')
+  head.append(el('span', 'who', name), el('span', 'sub', role || ''))
+  item.append(head)
+  if (lastTime) item.append(el('p', 'last', lastTime))
+  return item
+}
+
+function closeRecap() {
+  if (window.overlay && view === 'recap') window.overlay.closeRecap()
+  else $('recap').hidden = true
+}
+
+if (shows('recap')) {
+  $('closeRecap').addEventListener('click', closeRecap)
+  if (view === 'recap') document.addEventListener('keydown', (e) => e.key === 'Escape' && closeRecap())
+  $('copyRecap').addEventListener('click', (e) => copy(e.currentTarget, $('recap').dataset.copy || ''))
 }
 
 // ---------- panels fit their windows and fade when the call goes quiet ----------
@@ -659,11 +801,50 @@ function wakePanel() {
 }
 
 for (const part of ['insights', 'response']) {
-  if (!shows(part)) continue
-  $(part).addEventListener('mouseenter', wakePanel)
+  if (shows(part)) $(part).addEventListener('mouseenter', wakePanel)
+}
+for (const part of ['insights', 'response', 'recap']) {
   if (view === part && window.overlay) {
     new ResizeObserver(() => window.overlay.fit(Math.ceil($(part).getBoundingClientRect().height))).observe($(part))
   }
+}
+
+// The browser preview places the pieces the way the app does, from the same layout rules: the spots follow the
+// call window, and Ask AI is nudged clear of faces (unless a question is being typed), like main.js.
+let previewWindow = { app: null, rect: null }
+let previewPending = false
+function schedulePreview() {
+  if (previewPending) return
+  previewPending = true
+  requestAnimationFrame(() => {
+    previewPending = false
+    previewLayout()
+  })
+}
+function previewLayout() {
+  const work = { x: 0, y: 0, width: innerWidth, height: innerHeight }
+  const l = layoutFor(previewWindow.app, previewWindow.rect, work, $('insights').offsetHeight || 220)
+  const put = (node, { x, y, width }) => Object.assign(node.style, { left: x + 'px', top: y + 'px', width: width + 'px' })
+  put($('bar'), l.bar)
+  put($('transcript'), l.transcript)
+  put($('recap'), l.recap)
+  const cardNodes = [...document.querySelectorAll('#cards .card[data-face]')]
+  const boxes = cardNodes.map((c) => JSON.parse(c.dataset.face))
+  const faces = boxes.map(([x, y, width, height]) => ({ x, y, width, height }))
+  const cards = boxes.map((box, i) => cardRect(box, work, cardNodes[i].classList.contains('known')))
+  const blocks = [l.bar, ...l.bands]
+  const insights = { ...askPlace({ work, spot: l.insights, faces, blocks, cards, panel: { width: l.insights.width, height: $('insights').offsetHeight || 220 }, fixedX: true }), width: l.insights.width, height: $('insights').offsetHeight }
+  put($('insights'), insights)
+  if (document.activeElement === $('question') || $('question').value) return
+  blocks.push(insights)
+  if (!$('transcript').hidden) blocks.push(l.transcript)
+  const spot = { x: insights.x, y: insights.y + insights.height + 12 }
+  put($('response'), { ...askPlace({ work, spot, faces, blocks, cards, panel: { width: l.ask.width, height: $('response').offsetHeight || 160 } }), width: l.ask.width })
+}
+if (view === 'all') {
+  previewLayout()
+  new ResizeObserver(schedulePreview).observe($('insights'))
+  window.addEventListener('resize', schedulePreview)
 }
 
 window.overlay?.onEvent(handle)

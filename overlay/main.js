@@ -13,7 +13,7 @@
 const { app, BrowserWindow, clipboard, globalShortcut, ipcMain, screen, shell, systemPreferences } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
-const { inviteLink, validCall, webUrl, layoutFor, askPlace, recapFrom, devMode } = require('./logic')
+const { inviteLink, validCall, webUrl, layoutFor, askPlace, cardRect, recapFrom, devMode } = require('./logic')
 const { createLauncher } = require('./launcher')
 
 // The repo's .env supplies ENROLL_CODE, ENROLL_URL and MEMORY_URL; variables already set win.
@@ -163,9 +163,11 @@ function openAsk() {
 
 function toggleTranscript() {
   const win = windows.transcript
-  if (showing(win)) conceal(win)
-  else reveal(win)
-  windows.insights.webContents.send('transcript-shown', !showing(win) ? false : true)
+  const shown = !showing(win)
+  if (shown) reveal(win)
+  else conceal(win)
+  windows.insights.webContents.send('transcript-shown', shown)
+  if (shown) placeAsk() // Ask AI keeps off the strip
 }
 
 // ---------- where everything sits ----------
@@ -181,29 +183,48 @@ const workAreaFor = (rect) => (rect ? screen.getDisplayMatching({ x: rect[0], y:
 function move(win, spot) {
   const bounds = win.getBounds()
   const next = { ...bounds, ...spot }
+  for (const k of ['x', 'y', 'width', 'height']) next[k] = Math.round(next[k]) // setBounds wants integers; capture's rects may not be
   if (next.x !== bounds.x || next.y !== bounds.y || next.width !== bounds.width || next.height !== bounds.height) win.setBounds(next)
 }
 
-// Puts the strip, Live insights, the transcript and the Recap in the preset's spots, then nudges Ask AI.
+// Puts the strip, the transcript and the Recap in the preset's spots, then Live insights and Ask AI.
 function place() {
   layout = layoutFor(callWindow.app, callWindow.rect, workAreaFor(callWindow.rect), insightsHeight)
   move(windows.bar, layout.bar)
-  move(windows.insights, layout.insights)
   move(windows.transcript, layout.transcript)
   move(windows.recap, { x: layout.recap.x, y: layout.recap.y, width: layout.recap.width })
+  placeInsights()
   placeAsk()
 }
 
-// Ask AI goes to its spot unless that covers a face or a control, then to the nearest free area. `opening`
-// forces the move; otherwise it only moves when free and a face has pushed it more than a nudge away.
+const faceRects = () => [...faces.values()].map(({ screenBox: [x, y, width, height] }) => ({ x, y, width, height }))
+const cardRects = () => [...faces.values()].map(({ screenBox, person }) => cardRect(screenBox, windows.cards.getBounds(), !!person))
+
+// A window only moves for a real change, not for a face wobbling a few points.
+function nudge(win, spot, force) {
+  const { x, y } = win.getBounds()
+  if (force || !showing(win) || Math.abs(spot.x - x) > 32 || Math.abs(spot.y - y) > 32) move(win, spot)
+}
+
+// Live insights stays in its rail and slides along it when a face is under it.
+function placeInsights() {
+  if (!layout) return
+  const panel = windows.insights.getBounds()
+  const blocks = [windows.bar.getBounds(), ...layout.bands]
+  const spot = askPlace({ work: workAreaFor(callWindow.rect), spot: layout.insights, faces: faceRects(), blocks, cards: cardRects(), panel, fixedX: true })
+  nudge(windows.insights, spot)
+}
+
+// Ask AI goes to its spot under Live insights unless that covers a face, a card or a control, then to the
+// nearest free area. `opening` forces the move; a focused or filled question field pins it.
 function placeAsk(opening = false) {
   if (!layout || (askBusy && !opening)) return
   const panel = windows.response.getBounds()
   const blocks = [windows.bar.getBounds(), ...layout.bands]
-  if (showing(windows.insights)) blocks.push(windows.insights.getBounds())
-  const boxes = [...faces.values()].map(({ screenBox: [x, y, width, height] }) => ({ x, y, width, height }))
-  const spot = askPlace({ work: workAreaFor(callWindow.rect), spot: layout.ask, faces: boxes, blocks, panel })
-  if (opening || !showing(windows.response) || Math.abs(spot.x - panel.x) > 32 || Math.abs(spot.y - panel.y) > 32) move(windows.response, spot)
+  for (const win of [windows.insights, windows.transcript]) if (showing(win)) blocks.push(win.getBounds())
+  const insights = windows.insights.getBounds()
+  const spot = { x: insights.x, y: insights.y + insights.height + 12 }
+  nudge(windows.response, askPlace({ work: workAreaFor(callWindow.rect), spot, faces: faceRects(), blocks, cards: cardRects(), panel }), opening)
 }
 
 // ---------- events in ----------
@@ -217,10 +238,12 @@ function broadcast(event) {
   if (event.type === 'insights') {
     lastInsights = event
     insightsAll.push(event)
+    if (!showing(windows.insights)) reveal(windows.insights) // a new call after a Recap
   }
   if (event.type === 'face') {
     faces.set(event.trackId, event)
     if (event.person) peopleSeen.set(event.person.id, event.person)
+    placeInsights()
     if (showing(windows.response)) placeAsk()
   }
   if (event.type === 'face_gone') faces.delete(event.trackId)
@@ -236,11 +259,14 @@ function broadcast(event) {
   for (const win of Object.values(windows)) win.webContents.send('event', event)
 }
 
+// The Recap takes over from Live insights and Ask AI; they come back with the next call's events.
 function showRecap() {
   clearTimeout(recapTimer)
   insightsAll.length = 0
   peopleSeen.clear()
   if (allHidden) toggleAll()
+  conceal(windows.insights)
+  conceal(windows.response)
   reveal(windows.recap)
 }
 
