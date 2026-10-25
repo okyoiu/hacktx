@@ -61,10 +61,14 @@ update people set delete_token = encode(sha256(convert_to(delete_token, 'UTF8'))
 -- Tiger Data (TimescaleDB): encounters are a time series, so make them a hypertable on met_at. A hypertable's unique keys
 -- must include the time column, hence the primary key change. Plain Postgres has no timescaledb: nothing happens.
 do $$
+declare
+  pk record;
 begin
   if exists (select 1 from pg_extension where extname = 'timescaledb') then
     if not exists (select 1 from timescaledb_information.hypertables where hypertable_name = 'encounters') then
-      alter table encounters drop constraint encounters_pkey;
+      for pk in select conname from pg_constraint where conrelid = 'encounters'::regclass and contype = 'p' loop
+        execute format('alter table encounters drop constraint %I', pk.conname);  -- whatever the constraint is called
+      end loop;
       alter table encounters add primary key (id, met_at);
       perform create_hypertable('encounters', 'met_at', migrate_data => true);
     end if;
