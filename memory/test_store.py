@@ -143,32 +143,32 @@ def test_a_role_you_typed_is_never_replaced_by_muses_suggestion(db, enroll):
         db.execute("delete from people where id = %s", (typed,))
 
 
-def test_face_card_bullets_run_role_facts_last_time_how_we_met_then_this_calls_snippets(db, enroll, monkeypatch):
+def test_face_card_has_three_bullets_facts_then_last_time_then_how_we_met_and_this_calls_snippets_replace_the_oldest(db, enroll, monkeypatch):
     face = random_print()
     pid, _ = enroll(face)
     monkeypatch.setattr(server, "snippets", {})
     assert server.card_for(face.tolist())["bullets"] == [] and server.card_for(face.tolist())["role"] == ""
     store.add_note(pid, "My own note")  # the user's notes are not card bullets
+    store.set_role(pid, "Your team lead", "user")  # nor is the role: the card shows it as its own field
     assert server.card_for(face.tolist())["bullets"] == []
 
-    store.set_role(pid, "Your team lead", "user")
-    store.add_facts(pid, ["Loves F1"])
-    store.add_facts(pid, ["Has two kids"])
-    store.add_facts(pid, ["Moving to Austin in May"])
+    for fact in ("Loves F1", "Has two kids", "Moving to Austin in May"):
+        store.add_facts(pid, [fact])
     store.add_encounter(pid, datetime.now().astimezone(), "x", "Talked about his move.")
     store.set_how_met(pid, "Oct 25, 2026 on Zoom: a HackTX demo call")
     card = server.card_for(face.tolist())
     assert card["role"] == "Your team lead" and card["line"] == "Last time: Talked about his move."
-    assert card["bullets"] == ["Your team lead", "Moving to Austin in May", "Has two kids",  # newest facts first, two at most
-                               "Last time: Talked about his move.", "Met Oct 25, 2026 on Zoom: a HackTX demo call"]
+    assert card["bullets"] == ["Moving to Austin in May", "Has two kids", "Last time: Talked about his move."]  # newest facts first
 
-    server.snippets[pid] = ["This call: Took up climbing", "This call: Lives in Austin"]  # more than 5: shorter "Met", fewer facts
-    card = server.card_for(face.tolist())
-    assert card["bullets"] == ["Your team lead", "Last time: Talked about his move.", "Met Oct 25, 2026 on Zoom",
-                               "This call: Took up climbing", "This call: Lives in Austin"]
+    pid2, _ = enroll(random_print())
+    store.add_encounter(pid2, datetime.now().astimezone(), "x", "Chatted about golf.")
+    store.set_how_met(pid2, "Oct 25, 2026 on Zoom")
+    assert server.card(store.person(pid2))["bullets"] == ["Last time: Chatted about golf.", "Met Oct 25, 2026 on Zoom"]
+
     server.snippets[pid] = ["This call: Took up climbing"]
-    assert server.card_for(face.tolist())["bullets"] == ["Your team lead", "Moving to Austin in May", "Last time: Talked about his move.",
-                                                         "Met Oct 25, 2026 on Zoom", "This call: Took up climbing"]
+    assert server.card_for(face.tolist())["bullets"] == ["Moving to Austin in May", "Has two kids", "This call: Took up climbing"]
+    server.snippets[pid] = ["This call: Took up climbing", "This call: Lives in Austin"]
+    assert server.card_for(face.tolist())["bullets"] == ["Moving to Austin in May", "This call: Took up climbing", "This call: Lives in Austin"]
 
 
 def test_dashboard_lists_edits_and_deletes_people_from_this_laptop(db, enroll, monkeypatch):
@@ -186,7 +186,7 @@ def test_dashboard_lists_edits_and_deletes_people_from_this_laptop(db, enroll, m
         server.tracks[1] = {"id": a, "name": "old"}
         edited = http.patch(f"/people/{a}", json={"role": " Your team lead ", "name": " New Name "})
         assert edited.status_code == 200 and (edited.json()["name"], edited.json()["role"]) == ("New Name", "Your team lead")
-        assert server.tracks[1]["name"] == "New Name" and server.tracks[1]["bullets"][0] == "Your team lead"
+        assert server.tracks[1]["name"] == "New Name" and server.tracks[1]["role"] == "Your team lead"
         store.set_role(a, "Muse guess", "muse")
         assert store.person(a)["role"] == "Your team lead"  # a role set in the dashboard is the user's
         assert http.patch(f"/people/{a}", json={"role": ""}).json()["role"] == ""

@@ -185,7 +185,7 @@ def test_remember_saves_the_face_on_screen_only_with_consent(http, events, monke
     assert enrolled == [("Kai Park", face, None, "Your team lead")]  # the print from the call, no selfie
     assert events[-1] == {"type": "face", "trackId": 7, "screenBox": box,
                           "person": {"id": "p_new", "name": "Kai Park", "role": "Your team lead", "line": "", "met": "Met Oct 24",
-                                     "bullets": ["Your team lead"], **NEVER}}
+                                     "bullets": [], **NEVER}}
     assert "p_new" in server.call.people  # counted in this call from now on
     assert http.post("/faces/7/remember", json={"name": "Kai Park", "consent": True}).status_code == 409  # already saved
 
@@ -722,11 +722,11 @@ def test_live_bullets_add_this_calls_facts_to_the_card_and_skip_when_nothing_is_
         return json.dumps({"topic": "", "points": [], "actions": []})
 
     monkeypatch.setattr(picks, "chat", muse)
-    base = ["Your team lead", "Starts a fintech job Monday", "Last time: Talked about his move."]
+    base = ["Starts a fintech job Monday", "Last time: Talked about his move."]
     server.tracks[1] = JORDAN
     http.post("/faces", json={"trackId": 1, "screenBox": [5, 6, 70, 80]})
     http.post("/speakers", json={"label": "speaker_0", "name": "Jordan Lee"})
-    faces = lambda: [e for e in events if e["type"] == "face" and e["person"] and len(e["person"].get("bullets", [])) > 3]
+    faces = lambda: [e for e in events if e["type"] == "face" and e["person"] and len(e["person"].get("bullets", [])) > 2]
 
     def say(label: str, text: str) -> None:
         http.post("/transcript", json=line(label, text))
@@ -739,7 +739,7 @@ def test_live_bullets_add_this_calls_facts_to_the_card_and_skip_when_nothing_is_
     wait_for(lambda: len(faces()) == 1)
     shown = faces()[0]
     assert shown["screenBox"] == [5, 6, 70, 80] and shown["trackId"] == 1
-    assert shown["person"]["bullets"] == base + ["This call: Took up climbing", "This call: Lives in Austin"]  # 5 at most
+    assert shown["person"]["bullets"] == base[:1] + ["This call: Took up climbing", "This call: Lives in Austin"]  # 3 at most
     assert len(live_prompts) == 1 and "Somebody unrecognised" not in live_prompts[0] and "bouldering" in live_prompts[0]
     assert server.tracks[1]["bullets"] == shown["person"]["bullets"]  # later frames keep them
 

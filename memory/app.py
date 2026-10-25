@@ -36,7 +36,7 @@ OUTBOUND_SECONDS = 45
 THREAD_TURNS = 6  # question/answer turns of an Ask AI chat that follow-ups can see
 LIVE_BULLET_SECONDS = 60  # check what a person has said at most this often
 LIVE_MIN_WORDS = 8  # fewer words than this since the last check is not worth a Muse call
-MAX_BULLETS = 5  # a card past this gets a shorter "Met …" line, then fewer facts
+MAX_BULLETS = 3  # the card shows role, last seen, last spoke, topic and context itself
 TOPIC_CHARS = 60  # the topic shown on a card is kept short
 NOTE_POINTS = 10  # Muse rephrases points every refresh, so the call note keeps only the latest few
 
@@ -268,12 +268,9 @@ def card(person: dict) -> dict:
     met = person["firstMet"]
     last = store.last_time(person["id"])
     how, facts, seen = store.card_extras(person["id"])
-    last_bullet = f"Last time: {last}" if last else ""
     live = snippets.get(person["id"], [])
-    met_bullet = f"Met {how}" if how else ""
-    if sum(map(bool, (person["role"], last_bullet, met_bullet))) + len(facts) + len(live) > MAX_BULLETS:
-        met_bullet = f"Met {how.split(':')[0]}" if how else ""  # just the date and app
-        facts = facts[:max(0, MAX_BULLETS - len(live) - sum(map(bool, (person["role"], last_bullet, met_bullet))))]
+    base = [*facts, *([f"Last time: {last}"] if last else []), *([f"Met {how}"] if how else [])]
+    bullets = base[:MAX_BULLETS - len(live)] + live  # what they say now pushes out the oldest history, last in the list
     return {
         "id": person["id"],
         "name": person["name"],
@@ -281,7 +278,7 @@ def card(person: dict) -> dict:
         "line": f"Last time: {last}" if last else store.latest_note(person["id"]) or "",
         "met": f"Met {met:%b} {met.day}",
         **seen,
-        "bullets": [b for b in (person["role"], *facts, last_bullet, met_bullet) if b] + live,
+        "bullets": bullets,
     }
 
 
