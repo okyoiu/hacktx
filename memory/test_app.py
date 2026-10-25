@@ -5,6 +5,7 @@ import time
 from datetime import date, datetime
 
 import httpx
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -215,6 +216,24 @@ def test_insights_survive_a_failed_note_and_ignore_a_garbage_reply(http, events,
     http.post("/transcript", json=line("speaker_0", "Third"))
     wait_for(lambda: server.history[-1:] == ["speaker_0: Third"])
     assert server.latest_insights is good  # a garbage reply doesn't blank the panel
+
+
+def test_deleting_yourself_mid_call_removes_your_card_and_keeps_insights_flowing(http, events, monkeypatch):
+    server.tracks.update({1: JORDAN, 2: None})
+    monkeypatch.setattr(store, "delete_person", lambda pid, token: True)
+    assert http.delete("/people/p_jordan", headers={"X-Delete-Token": "t"}).status_code == 200
+    assert server.tracks == {1: None, 2: None}  # no longer named on screen or sent to Muse
+
+    muse = FakeMuse({"notes": [{"personId": "p_gone", "text": "Moved"}], "topic": "Move", "points": ["Moved"], "actions": []})
+    monkeypatch.setattr(picks, "chat", muse)
+    server.tracks[3] = JORDAN | {"id": "p_gone"}
+
+    def add_note(pid, text):
+        raise psycopg.errors.ForeignKeyViolation("person deleted while Muse thought")
+
+    monkeypatch.setattr(store, "add_note", add_note)
+    http.post("/transcript", json=line("speaker_0", "Hello"))
+    wait_for(lambda: server.latest_insights is not None)  # the refresh still ends in an insights event
 
 
 def test_call_ending_while_muse_thinks_drops_the_late_result(http, events, monkeypatch):

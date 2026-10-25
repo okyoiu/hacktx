@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Annotated
 
 import numpy as np
+import psycopg
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, StringConstraints
@@ -305,7 +306,10 @@ async def refresh_insights() -> None:
             del history[:-20]
 
     for note in out["notes"]:
-        await asyncio.to_thread(store.add_note, note["personId"], note["text"])
+        try:
+            await asyncio.to_thread(store.add_note, note["personId"], note["text"])
+        except psycopg.errors.ForeignKeyViolation:
+            continue  # they deleted themselves while Muse thought
         owner.people.setdefault(note["personId"], []).append(note["text"])
     if call is not owner or not (out["topic"] or out["points"] or out["actions"]):
         return  # the call ended while Muse thought, or the reply was unusable: leave the panel as it is
@@ -441,4 +445,7 @@ def get_person(pid: str):
 def forget(pid: str, x_delete_token: str = Header()):
     if not store.delete_person(pid, x_delete_token):
         raise HTTPException(403, "That delete link doesn't match. Nothing was deleted.")
+    for t, card in tracks.items():  # not named on screen, and not sent to Muse, from now on
+        if card and card["id"] == pid:
+            tracks[t] = None
     return {"deleted": pid}
