@@ -3,7 +3,7 @@
 Run: uv run --env-file .env python -m capture.faces --region 0,38,1100,700
 The region is the call window as x,y,width,height in screen points (on a Mac: the numbers Cmd+Shift+4 shows).
 On a Mac, --app zoom.us (or FaceTime, 'Google Chrome', …) follows that app's window instead, even when you move it;
-with neither, it follows the largest window of a known call app (capture/window.py).
+with neither, it follows the largest window of a known call app (capture/window.py), waiting quietly until one appears.
 Without a live call: --video call.mp4 reads a recording instead; its pixels stand in for screen points.
 It also names Muse's voices from whose lips move (capture/speakers.py) and tells memory with POST /speakers.
 Nothing here shows frames or boxes to anyone; tools/cv_check.py is the debug view.
@@ -24,24 +24,35 @@ from ultralytics import YOLO
 
 from capture.embed import faces_in, mouths_in
 from capture.speakers import Namer, listen
-from capture.window import CALL_APPS, apps_on_screen, call_window
+from capture.window import CALL_APPS, call_window
 
 PERSON = 0  # COCO class id YOLO uses for people
 FOLLOW_EVERY = 3  # seconds between window position checks (each takes ~0.1 s)
 RETRY = 3.0  # seconds before another InsightFace pass for a person whose face wasn't visible last time
 
 
-def screen_frames(region: tuple[int, int, int, int], follow: str | None = None):
-    """Yield (frame, (x, y, width)) of the region in screen points; with follow (an app name), move with its window.
-    While that window is gone (the user left the call) it yields (None, ...) instead, and picks up again when it returns."""
-    checked = time.time()
+def screen_frames(region: tuple[int, int, int, int] | None, follow: list[str] | None = None):
+    """Yield (frame, (x, y, width)) of the region in screen points; with follow (app names), move with that app's window.
+    While there is no such window (not started yet, or the user left the call) it yields (None, ...) instead and keeps
+    looking, logging one line when that changes."""
+    checked = time.time() if region else 0  # no region yet: look right away
+    apps, shown = follow, None
     with mss.MSS() as screen:
         while True:
             if follow and time.time() - checked > FOLLOW_EVERY:
                 # shortcut: follows the app's largest window, so a bigger second window of the same app (another browser
                 # window) takes over; follow kCGWindowNumber instead if that bites
-                found, checked = call_window([follow]), time.time()
-                region = found[1] if found else None
+                why = "waiting for a call window"
+                try:
+                    found = call_window(apps)
+                except SystemExit as e:  # the window list isn't readable (no osascript, no permission): keep waiting
+                    found, why = None, str(e)
+                checked = time.time()
+                region, apps = (found[1], [found[0]]) if found else (None, follow)  # stick with the app we found
+                state = f"following the {found[0]} window" if found else why
+                if state != shown:
+                    print(state)
+                    shown = state
             if region is None:
                 yield None, (0, 0, 1)
                 continue
@@ -95,12 +106,8 @@ def main() -> None:
         frames = screen_frames(tuple(int(v) for v in args.region.split(",")))
     elif sys.platform != "darwin":
         ap.error("pass --region or --video")
-    elif found := call_window([args.app] if args.app else CALL_APPS):
-        app, region = found  # stick with this app from now on, even if another call app opens a bigger window
-        print(f"following the {app} window, now at --region {','.join(map(str, region))}")
-        frames = screen_frames(region, follow=app)
-    else:
-        ap.error(f"no {args.app or 'call app'} window on screen; apps with windows now: {', '.join(apps_on_screen())}")
+    else:  # also how the overlay app starts us, before any call: wait for a call window to appear
+        frames = screen_frames(None, follow=[args.app] if args.app else list(CALL_APPS))
 
     model = YOLO("yolo26n.pt")  # downloads on first run
     memory_url = os.getenv("MEMORY_URL", "http://localhost:8000")

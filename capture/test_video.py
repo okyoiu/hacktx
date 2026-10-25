@@ -68,7 +68,7 @@ class Stop(Exception):
 def test_leaving_the_call_clears_the_cards_and_coming_back_brings_them_again(monkeypatch):
     t1 = get_image("t1")
     h, w = t1.shape[:2]
-    checks = iter([True] + [True] * 5 + [False] * 4 + [True] * 5)  # main's first look, then one per frame: there, gone, back
+    checks = iter([True] * 5 + [False] * 4 + [True] * 5)  # one look per frame: there, gone, back
 
     def call_window(apps):
         try:
