@@ -129,3 +129,9 @@ def test_a_print_is_only_computed_for_the_face_that_asks_for_one():
     assert len(found) == 6 and all(not hasattr(f, "embedding") or f.embedding is None for f in found)
     add_print(get_image("t1"), found[0])
     assert abs(np.linalg.norm(found[0].normed_embedding) - 1) < 1e-3 and found[1].embedding is None
+
+
+def test_debug_face_box_is_dropped_once_the_person_has_moved_off_it():
+    person = [100, 100, 200, 400]
+    assert faces.face_in([150, 120, 60, 80], person) == [150, 120, 60, 80]
+    assert faces.face_in([500, 120, 60, 80], person) is None and faces.face_in(None, person) is None

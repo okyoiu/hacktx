@@ -72,6 +72,13 @@ def video_frames(video: cv2.VideoCapture, fps: float):
             video.grab()
 
 
+def face_in(face: list[float] | None, person: list[float]) -> list[float] | None:
+    """The last face box if its centre is still inside the person's box (they haven't moved off it), else None."""
+    if face and person[0] <= face[0] + face[2] / 2 <= person[0] + person[2] and person[1] <= face[1] + face[3] / 2 <= person[1] + person[3]:
+        return face
+    return None
+
+
 def assign(faces: list, boxes: dict[int, list[float]]) -> dict[int, object]:
     """Give each person box (track id -> x1, y1, x2, y2) the face that belongs to it, so overlapping people (a shared room
     camera) can't get a neighbour's face: the face's centre is inside the box and nearest the box's top middle, where a
@@ -125,11 +132,20 @@ def main() -> None:
             return http.post(path, json=body).json()
         except httpx.HTTPError as e:
             print(f"memory service unreachable ({e!r}); is uvicorn running?")
-            return {}
+            return {"unreachable": True}
 
+    debug = os.getenv("HELLO_DEBUG") == "1"  # developer mode: /faces also says what the computer vision saw
+    stamps: deque[float] = deque(maxlen=10)  # when the last frames were processed, for fps
+    face_boxes: dict[int, list[float]] = {}  # track id -> last InsightFace box in screen points
+    window = None  # the call window's rect memory was last told about, or None
     for frame, (x, y, w) in frames:
         started = time.time()
         scale = frame.shape[1] / w if frame is not None else 1  # pixels per screen point (2.0 on Retina)
+        rect = None if frame is None else [x, y, w, frame.shape[0] / scale]
+        if rect != window and not send("/window", {"rect": rect}).get("unreachable"):
+            window = rect  # on change only; if memory was down it is told again next frame
+        if frame is not None:
+            stamps.append(time.monotonic())
         result = model.track(frame, persist=True, classes=[PERSON], verbose=False)[0] if frame is not None else None
 
         live: set[int] = set()  # empty while the call window is gone, so every card clears
@@ -152,6 +168,12 @@ def main() -> None:
             for tid, (x1, y1, x2, y2) in boxes.items():
                 live.add(tid)
                 body = {"trackId": tid, "screenBox": [x + x1 / scale, y + y1 / scale, (x2 - x1) / scale, (y2 - y1) / scale]}
+                if tid in found:
+                    fx1, fy1, fx2, fy2 = map(float, found[tid].bbox)
+                    face_boxes[tid] = [x + fx1 / scale, y + fy1 / scale, (fx2 - fx1) / scale, (fy2 - fy1) / scale]
+                if debug:
+                    body["debug"] = {"personBox": body["screenBox"], "faceBox": face_in(face_boxes.get(tid), body["screenBox"]),
+                                     "fps": round((len(stamps) - 1) / max(stamps[-1] - stamps[0], 1e-6), 1) if len(stamps) > 1 else 0}
                 if tid not in printed:
                     if tid not in wanting or tid not in found:
                         continue  # face not visible yet (turned away); looked again after RETRY
@@ -165,6 +187,7 @@ def main() -> None:
                     namer.met(reply["person"])
 
         tried = {t: v for t, v in tried.items() if t in live}
+        face_boxes = {t: v for t, v in face_boxes.items() if t in live}
         for tid in printed - live:
             send("/faces/gone", {"trackId": tid})
             printed.discard(tid)

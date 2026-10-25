@@ -48,7 +48,9 @@ def run_video(tmp_path, monkeypatch, frames: list[np.ndarray]) -> list:
     return server.posts
 
 
-def test_video_posts_each_face_once_with_a_print_then_face_gone(tmp_path, monkeypatch):
+@pytest.mark.parametrize("debug", [False, True])
+def test_video_posts_each_face_once_with_a_print_then_face_gone(tmp_path, monkeypatch, debug):
+    monkeypatch.setenv("HELLO_DEBUG", "1") if debug else monkeypatch.delenv("HELLO_DEBUG", raising=False)
     t1 = get_image("t1")  # six people around a table
     posts = run_video(tmp_path, monkeypatch, [t1] * 8 + [np.zeros_like(t1)] * 4)
     seen = [body for path, body in posts if path == "/faces"]
@@ -57,6 +59,14 @@ def test_video_posts_each_face_once_with_a_print_then_face_gone(tmp_path, monkey
     assert len(tracks) == 6 and len(printed) == 6  # a print only for a new track
     assert all(len(b["facePrint"]) == 512 and len(b["screenBox"]) == 4 for b in printed)
     assert {b["trackId"] for path, b in posts if path == "/faces/gone"} == tracks
+    if debug:  # developer mode: what the computer vision saw, in screen points, on every /faces
+        assert all(set(b["debug"]) == {"personBox", "faceBox", "fps"} for b in seen)
+        first = printed[0]["debug"]
+        assert first["personBox"] == printed[0]["screenBox"] and len(first["faceBox"]) == 4 and first["fps"] >= 0
+        assert any(b["debug"]["fps"] > 0 for b in seen)
+    else:
+        assert all("debug" not in b for b in seen)
+    assert [b["rect"] for path, b in posts if path == "/window"] == [[0, 0, t1.shape[1], t1.shape[0]]]  # once, not per frame
     kinds = [path for path, _ in posts]
     assert kinds.index("/faces/gone") > max(i for i, k in enumerate(kinds) if k == "/faces")  # gone only after the last face
 
@@ -68,11 +78,11 @@ class Stop(Exception):
 def test_leaving_the_call_clears_the_cards_and_coming_back_brings_them_again(monkeypatch):
     t1 = get_image("t1")
     h, w = t1.shape[:2]
-    checks = iter([True] * 5 + [False] * 4 + [True] * 5)  # one look per frame: there, gone, back
+    checks = iter([True] * 5 + [False] * 4 + [True] * 2 + ["moved"] * 3)  # one look per frame: there, gone, back
 
     def call_window(apps):
         try:
-            return ("zoom.us", (0, 0, w, h)) if next(checks) else None
+            return {True: ("zoom.us", (0, 0, w, h)), False: None, "moved": ("zoom.us", (5, 6, w, h))}[next(checks)]
         except StopIteration:
             raise Stop from None
 
@@ -103,3 +113,4 @@ def test_leaving_the_call_clears_the_cards_and_coming_back_brings_them_again(mon
     first_gone, last_gone = kinds.index("/faces/gone"), len(kinds) - 1 - kinds[::-1].index("/faces/gone")
     assert kinds[:first_gone].count("print") == 6 and kinds[last_gone + 1:].count("print") == 6  # six cards, cleared, six again
     assert kinds.count("/faces/gone") == 6
+    assert [b["rect"] for path, b in server.posts if path == "/window"] == [[0, 0, w, h], None, [0, 0, w, h], [5, 6, w, h]]
