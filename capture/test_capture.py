@@ -261,3 +261,9 @@ def test_a_window_without_an_id_is_grabbed_from_the_screen_by_its_rect(monkeypat
     monkeypatch.setattr(faces, "grab", lambda window_id: pytest.fail("screencapture is macOS only"))
     frame, origin = next(faces.screen_frames(None, follow=["Zoom"]))
     assert frame.shape == (20, 30, 3) and origin == (10, 20, 30, "Zoom", True)
+
+
+def test_is_me_reads_the_roles_people_give_their_own_face():
+    assert all(faces.is_me({"role": r}) for r in ("Me", "me!", " MYSELF ", "myself"))
+    assert faces.is_me({"role": "", "self": True}) and not faces.is_me({"role": None}) and not faces.is_me({})
+    assert not faces.is_me({"role": "Your team lead"}) and not faces.is_me({"role": "Met me at HackTX"})

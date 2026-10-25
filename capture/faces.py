@@ -36,6 +36,9 @@ STILL_AFTER = 3.0  # seconds between two looks at a person box; the same picture
 # shortcut: a still tile with a flashing icon in it reads 0.78 and so counts as a person; use the median if that shows up
 STILL = 0.25
 REPORT_EVERY = 60  # seconds between "capture: N fps, YOLO x ms, InsightFace y ms, cpu z%" log lines
+RECENT_FOR = 30.0  # seconds a face that left is remembered, so a layout change (every track id new) doesn't start people over
+SAME_FACE = 0.1  # cosine distance under which a new print is the same face as a remembered one
+ME = ("me", "me!", "myself")  # roles people give their own face when they enroll it, so their own tile gets no card
 
 
 def screen_frames(region: tuple[int, int, int, int] | None, follow: list[str] | None = None):
@@ -100,6 +103,27 @@ def video_frames(video: cv2.VideoCapture, fps: float):
         yield frame, (0, 0, frame.shape[1], None, True)  # video pixels stand in for screen points
         for _ in range(skip):
             video.grab()
+
+
+class Recent:
+    """Prints of faces that just left, with who memory said they were. Zoom's gallery/speaker switch gives everyone a new
+    track id; the same face within RECENT_FOR seconds reuses the person instead of starting as "Recalling…" again."""
+
+    def __init__(self):
+        self.faces: list[tuple[float, np.ndarray, dict]] = []  # (when it left, print, person)
+
+    def add(self, face_print, person: dict, now: float) -> None:
+        self.faces.append((now, np.asarray(face_print, dtype=np.float32), person))
+
+    def find(self, face_print, now: float) -> dict | None:
+        self.faces = [f for f in self.faces if now - f[0] < RECENT_FOR]
+        best = max(self.faces, key=lambda f: float(f[1] @ face_print), default=None)
+        return best[2] if best is not None and 1 - float(best[1] @ face_print) <= SAME_FACE else None
+
+
+def is_me(person: dict) -> bool:
+    """Memory's reply names the user themself (their own tile is a person in every call)."""
+    return bool(person.get("self")) or str(person.get("role") or "").strip().lower() in ME
 
 
 def cpu_seconds() -> float:
@@ -204,97 +228,121 @@ def main() -> None:
     stamps: deque[float] = deque(maxlen=10)  # when the last frames were processed, for fps
     face_boxes: dict[int, list[float]] = {}  # track id -> last InsightFace box in screen points
     pictures = Pictures()
+    mine: set[int] = set()  # track ids that are the user's own tile: told gone once, then left alone
+    recent, prints = Recent(), {}  # faces that just left; track id -> the print we sent, for recent
     window = {}  # the call window (app and rect) memory was last told about
     last_person = quiet_told = time.monotonic()  # when a person was last in the frame, and when the log last said nobody is
     last_frame = result = None  # the last grab and YOLO's answer for it: a grab with the same bytes (a still window) reuses it
     report_at, frames_done, yolo_ms, insight_ms, cpu0 = time.monotonic(), 0, 0.0, 0.0, cpu_seconds()
     for frame, (x, y, w, app, calls) in frames:
         started = time.time()
-        scale = frame.shape[1] / w if frame is not None else 1  # pixels per screen point (2.0 on Retina)
-        rect = None if frame is None else [x, y, w, frame.shape[0] / scale]
-        if {"app": app, "rect": rect} != window and not send("/window", {"app": app, "rect": rect}).get("unreachable"):
-            window = {"app": app, "rect": rect}  # on change only; if memory was down it is told again next frame
-        if frame is not None:
-            stamps.append(time.monotonic())
-        if frame is None or not calls:
-            result = last_frame = None
-        elif last_frame is None or not np.array_equal(frame, last_frame):
-            t0 = time.perf_counter()
-            # YOLO resizes to 640 itself; shrinking the frame first was measured as a loss (TASKS.md, round 8)
-            result = model.track(frame, persist=True, classes=[PERSON], verbose=False)[0]
-            yolo_ms += (time.perf_counter() - t0) * 1000
-            last_frame = frame
+        try:
+            scale = frame.shape[1] / w if frame is not None else 1  # pixels per screen point (2.0 on Retina)
+            rect = None if frame is None else [x, y, w, frame.shape[0] / scale]
+            if {"app": app, "rect": rect} != window and not send("/window", {"app": app, "rect": rect}).get("unreachable"):
+                window = {"app": app, "rect": rect}  # on change only; if memory was down it is told again next frame
+            if frame is not None:
+                stamps.append(time.monotonic())
+            if frame is None or not calls:
+                result = last_frame = None
+            elif last_frame is None or not np.array_equal(frame, last_frame):
+                t0 = time.perf_counter()
+                # YOLO resizes to 640 itself; shrinking the frame first was measured as a loss (TASKS.md, round 8)
+                result = model.track(frame, persist=True, classes=[PERSON], verbose=False)[0]
+                yolo_ms += (time.perf_counter() - t0) * 1000
+                last_frame = frame
 
-        live: set[int] = set()  # empty while the call window is gone or isn't a call, so every card clears
-        if result is not None and result.boxes is not None and result.boxes.is_track:
-            boxes = dict(zip(result.boxes.id.int().tolist(), result.boxes.xyxy.tolist()))
-            for tid in boxes.keys() - seen:
-                print(f"person {tid} on screen, looking for a face")
-                seen.add(tid)
+            live: set[int] = set()  # empty while the call window is gone or isn't a call, so every card clears
+            if result is not None and result.boxes is not None and result.boxes.is_track:
+                boxes = dict(zip(result.boxes.id.int().tolist(), result.boxes.xyxy.tolist()))
+                for tid in boxes.keys() - seen:
+                    print(f"person {tid} on screen, looking for a face")
+                    seen.add(tid)
+                now = time.monotonic()
+                still = pictures.update(frame, boxes, now)
+                mine &= boxes.keys()
+                boxes = {t: b for t, b in boxes.items() if t not in still and t not in mine}  # pictures and you: no card, no print
+                wanting = {t for t in boxes.keys() - printed if now - tried.get(t, -RETRY) >= RETRY}
+                t0 = time.perf_counter()
+                if wanting:
+                    found = assign(find_faces(frame), boxes)  # one InsightFace pass gives every face's lips
+                    for tid in wanting & found.keys():
+                        add_print(frame, found[tid])  # prints only for people who need one
+                    tried.update(dict.fromkeys(wanting, now))
+                elif namer.wants_lips([p["id"] for p in people.values()], now):
+                    found = assign(mouths_in(frame), boxes)
+                else:
+                    found = {}
+                insight_ms += (time.perf_counter() - t0) * 1000
+                for tid, face in found.items():
+                    if tid in people:
+                        namer.saw(people[tid], face, now)
+                for tid, (x1, y1, x2, y2) in boxes.items():
+                    live.add(tid)
+                    body = {"trackId": tid, "screenBox": [x + x1 / scale, y + y1 / scale, (x2 - x1) / scale, (y2 - y1) / scale]}
+                    if tid in found:
+                        fx1, fy1, fx2, fy2 = map(float, found[tid].bbox)
+                        face_boxes[tid] = [x + fx1 / scale, y + fy1 / scale, (fx2 - fx1) / scale, (fy2 - fy1) / scale]
+                    if debug:
+                        body["debug"] = {"personBox": body["screenBox"], "faceBox": face_in(face_boxes.get(tid), body["screenBox"]),
+                                         "fps": round((len(stamps) - 1) / max(stamps[-1] - stamps[0], 1e-6), 1) if len(stamps) > 1 else 0}
+                    if tid not in printed:
+                        if tid not in wanting or tid not in found:
+                            continue  # face not visible yet (turned away); looked again after RETRY
+                        body["facePrint"] = prints[tid] = found[tid].normed_embedding.tolist()
+                        again = recent.find(found[tid].normed_embedding, now)
+                        if again and is_me(again):
+                            print(f"person {tid}: that's you again, skipping")
+                            mine.add(tid)
+                            continue
+                        if again:  # shortcut: memory still matches the print itself; a personId on /faces would spare it that
+                            print(f"person {tid}: the same face as {again['name']} a moment ago")
+                            people[tid] = again
+                            namer.met(again)
+                        printed.add(tid)
+                    reply = send("/faces", body)
+                    if "facePrint" in body:
+                        who = reply.get("person")
+                        print(f"person {tid}: face print sent, memory says {who['name'] if who else 'nobody yet (Recalling… card)'}")
+                    if reply.get("needPrint"):
+                        printed.discard(tid)
+                    if reply.get("person") and is_me(reply["person"]):
+                        print(f"person {tid} is {reply['person']['name']}: that's you, skipping")
+                        mine.add(tid)
+                        recent.add(prints[tid], reply["person"], now)
+                        send("/faces/gone", {"trackId": tid})
+                        printed.discard(tid)
+                    elif reply.get("person"):
+                        people[tid] = reply["person"]
+                        namer.met(reply["person"])
+
+            tried = {t: v for t, v in tried.items() if t in live}
+            face_boxes = {t: v for t, v in face_boxes.items() if t in live}
+            for tid in printed - live:
+                send("/faces/gone", {"trackId": tid})
+                printed.discard(tid)
+                if tid in people and tid in prints:
+                    recent.add(prints[tid], people[tid], time.monotonic())
+                people.pop(tid, None)
+                prints.pop(tid, None)
             now = time.monotonic()
-            still = pictures.update(frame, boxes, now)
-            boxes = {t: b for t, b in boxes.items() if t not in still}  # a picture is not a person: no card, no print
-            wanting = {t for t in boxes.keys() - printed if now - tried.get(t, -RETRY) >= RETRY}
-            t0 = time.perf_counter()
-            if wanting:
-                found = assign(find_faces(frame), boxes)  # one InsightFace pass gives every face's lips
-                for tid in wanting & found.keys():
-                    add_print(frame, found[tid])  # prints only for people who need one
-                tried.update(dict.fromkeys(wanting, now))
-            elif namer.wants_lips([p["id"] for p in people.values()], now):
-                found = assign(mouths_in(frame), boxes)
-            else:
-                found = {}
-            insight_ms += (time.perf_counter() - t0) * 1000
-            for tid, face in found.items():
-                if tid in people:
-                    namer.saw(people[tid], face, now)
-            for tid, (x1, y1, x2, y2) in boxes.items():
-                live.add(tid)
-                body = {"trackId": tid, "screenBox": [x + x1 / scale, y + y1 / scale, (x2 - x1) / scale, (y2 - y1) / scale]}
-                if tid in found:
-                    fx1, fy1, fx2, fy2 = map(float, found[tid].bbox)
-                    face_boxes[tid] = [x + fx1 / scale, y + fy1 / scale, (fx2 - fx1) / scale, (fy2 - fy1) / scale]
-                if debug:
-                    body["debug"] = {"personBox": body["screenBox"], "faceBox": face_in(face_boxes.get(tid), body["screenBox"]),
-                                     "fps": round((len(stamps) - 1) / max(stamps[-1] - stamps[0], 1e-6), 1) if len(stamps) > 1 else 0}
-                if tid not in printed:
-                    if tid not in wanting or tid not in found:
-                        continue  # face not visible yet (turned away); looked again after RETRY
-                    body["facePrint"] = found[tid].normed_embedding.tolist()
-                    printed.add(tid)
-                reply = send("/faces", body)
-                if "facePrint" in body:
-                    who = reply.get("person")
-                    print(f"person {tid}: face print sent, memory says {who['name'] if who else 'nobody yet (Recalling… card)'}")
-                if reply.get("needPrint"):
-                    printed.discard(tid)
-                if reply.get("person"):
-                    people[tid] = reply["person"]
-                    namer.met(reply["person"])
-
-        tried = {t: v for t, v in tried.items() if t in live}
-        face_boxes = {t: v for t, v in face_boxes.items() if t in live}
-        for tid in printed - live:
-            send("/faces/gone", {"trackId": tid})
-            printed.discard(tid)
-            people.pop(tid, None)
-        now = time.monotonic()
-        frames_done += frame is not None and calls
-        if now - report_at >= REPORT_EVERY:
-            wall, n = now - report_at, max(frames_done, 1)
-            print(f"capture: {frames_done / wall:.1f} fps, YOLO {yolo_ms / n:.0f} ms, InsightFace {insight_ms / n:.0f} ms, "
-                  f"cpu {(cpu_seconds() - cpu0) / wall * 100:.0f}%")  # per frame; cpu over all threads, so it can pass 100
-            report_at, frames_done, yolo_ms, insight_ms, cpu0 = now, 0, 0.0, 0.0, cpu_seconds()
-        if frame is None or not calls or live:
-            last_person = quiet_told = now
-        elif now - quiet_told >= QUIET_AFTER:
-            print(f"following {app or 'the region'}, no person seen for {int(now - last_person)} s")
-            quiet_told = now
-        while captions:
-            if named := namer.caption(*captions.popleft()):
-                send("/speakers", {"label": named[0], "name": named[1]})
-                print(f"Muse speaker {named[0]} is {named[1]}")
+            frames_done += frame is not None and calls
+            if now - report_at >= REPORT_EVERY:
+                wall, n = now - report_at, max(frames_done, 1)
+                print(f"capture: {frames_done / wall:.1f} fps, YOLO {yolo_ms / n:.0f} ms, InsightFace {insight_ms / n:.0f} ms, "
+                      f"cpu {(cpu_seconds() - cpu0) / wall * 100:.0f}%")  # per frame; cpu over all threads, so it can pass 100
+                report_at, frames_done, yolo_ms, insight_ms, cpu0 = now, 0, 0.0, 0.0, cpu_seconds()
+            if frame is None or not calls or live:
+                last_person = quiet_told = now
+            elif now - quiet_told >= QUIET_AFTER:
+                print(f"following {app or 'the region'}, no person seen for {int(now - last_person)} s")
+                quiet_told = now
+            while captions:
+                if named := namer.caption(*captions.popleft()):
+                    send("/speakers", {"label": named[0], "name": named[1]})
+                    print(f"Muse speaker {named[0]} is {named[1]}")
+        except Exception as e:  # one bad frame (a model, a decode, a reply) must not take the whole capture down
+            print(f"capture: skipped a frame after an error: {e!r}")
         time.sleep(max(0.0, 1 / args.fps - (time.time() - started)))
 
     for tid in printed:  # the video ended; clear its cards
