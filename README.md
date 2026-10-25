@@ -75,7 +75,7 @@ Anyone can delete themselves from the link they get after enrolling.
 | Problem | Fix |
 |---|---|
 | `address already in use` | A server is already running on port 8000. The app reuses it; if you started one by hand, that's fine too. |
-| No card appears next to a face | Make the call window bigger and the person's face clearly visible; check `logs/faces.log`. |
+| No card appears next to a face | Capture follows the frontmost window: a known call app (Zoom, Teams, FaceTime, Meet in a browser) if one is open, otherwise whatever app is in front. It grabs that window by its id, so other windows on top or another desktop don't matter. Check `logs/faces.log`: it says which window it follows, when a person appears, and when it has seen nobody for 30 s. Make the person's face bigger if it sees nobody. |
 | Captions show `speaker_0` instead of names | Names come from whose lips move; give it a moment, or name them yourself: `curl -X POST localhost:8000/speakers -H 'content-type: application/json' -d '{"label":"speaker_0","name":"Their Name"}'` |
 | No captions at all | Microphone permission (System Settings → Privacy & Security); check `logs/transcribe.log`. To pick another input: `uv run python -m capture.transcribe --list-devices`. |
 | Live insights stays empty | Say a few full sentences, then wait about 10 seconds; check `MODEL_API_KEY` in `.env`. |
@@ -165,7 +165,7 @@ On connect the server first sends the latest `listening` and `insights` events, 
  "person": {"id": "p_1a2b", "name": "Jordan Lee", "role": "Your team lead", "line": "Last time: …", "met": "Met Sep 24",
             "bullets": ["Your team lead", "Last time: talked about his move to Austin", "Starts a fintech job Monday"]}}  // null = can't name them yet (thinking card); role may be ""; bullets has at most 3
 {"type": "face_gone", "trackId": 3}
-{"type": "window", "app": "zoom.us", "rect": [x, y, w, h]}   // the followed call window: its app (as capture/window.py names it) and screen points; both null when there is none
+{"type": "window", "app": "Zoom", "rect": [x, y, w, h]}   // the followed window: its app (as capture/window.py names it; a known call app if one is open, else the frontmost app) and screen points; both null when there is none
 {"type": "recap", "topic": "…", "points": ["…"], "actions": [{"id": "x1", "kind": "places", "label": "…"}],
  "people": [{"id": "p_1a2b", "name": "Jordan Lee", "role": "…", "lastTime": "…"}]}   // once per call, when it ends; also sent to an overlay that connects later
 {"type": "debug", "trackId": 3, "personBox": [x, y, w, h], "faceBox": [x, y, w, h] | null, "score": 0.62 | null,
