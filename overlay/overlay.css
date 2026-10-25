@@ -97,16 +97,19 @@ body:not([data-view="all"]) .island { width: 100%; } /* the window is sized to t
 .chip-act:hover { background: var(--hover); }
 .chip-act .label { overflow: hidden; text-overflow: ellipsis; }
 
-.tools { margin-left: auto; display: flex; gap: 2px; }
-.tool { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 9px; background: none; color: var(--ink-2); -webkit-app-region: no-drag; transition: background-color 0.15s ease, color 0.15s ease; }
+/* the header's tools: 8px apart, the last one 12px from the sheet's edge (the island's 20px inset minus 8) */
+.tools { margin-left: auto; margin-right: -8px; display: flex; align-items: center; gap: 8px; }
+.tool { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 10px; background: none; color: var(--ink-2); -webkit-app-region: no-drag; transition: background-color 0.15s ease, color 0.15s ease; }
 .tool:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
 .tool:disabled { opacity: 0.35; }
 .tool[aria-pressed="true"] { background: var(--fill); color: var(--ink); }
-.tool.end { color: var(--coral); }
+/* End call is the one tool with a word on it: a red-tinted pill, never a bare icon at the edge */
+.tool.end { width: auto; display: inline-flex; gap: 7px; padding: 0 14px 0 11px; border-radius: 999px; background: rgba(255, 120, 110, 0.18); color: var(--coral); font-size: 14px; font-weight: 600; white-space: nowrap; }
+.tool.end:hover:not(:disabled) { background: rgba(255, 120, 110, 0.3); color: #FFD3CC; }
 .tool svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .tool .i-play, .head[data-state="paused"] .i-pause { display: none; }
 .head[data-state="paused"] .i-play { display: block; }
-#closeRecap { margin-left: auto; }
+#closeRecap { margin-left: auto; margin-right: -8px; background: var(--fill); border-radius: 50%; }
 
 /* the bodies: Live insights and the thread in the sheet, the Recap in its place */
 .body { display: none; }
