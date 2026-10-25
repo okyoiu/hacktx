@@ -8,6 +8,7 @@ const origin = { x: +q.get('ox') || 0, y: +q.get('oy') || 0 } // the cards windo
 const CARD = { width: 208, gap: 12, open: 150 } // open: room for a name and three bullets
 const KIND_EMOJI = { define: '📘', search: '🌐', places: '📍', events: '📅', recall: '👋', followups: '💬', helpful: '✨' }
 const calm = matchMedia('(prefers-reduced-motion: reduce)')
+const DEBUG = q.get('debug') === '1' // developer mode: only main.js sets this, and only when started with `npm run dev`
 
 const $ = (id) => document.getElementById(id)
 document.body.dataset.view = view
@@ -36,6 +37,8 @@ function handle(e) {
     }
     if (e.type === 'face_gone') removeCard(e.trackId)
     if (e.type === 'caption') heard(e.speaker)
+    if (DEBUG && e.type === 'debug') drawDebug(e)
+    if (DEBUG && e.type === 'face_gone') $('dbg' + e.trackId)?.remove()
   }
   if (shows('bar')) {
     if (e.type === 'listening') setListening(e)
@@ -301,6 +304,54 @@ setInterval(() => {
     node.animate([{ opacity: 0, filter: 'blur(3px)' }, { opacity: 1, filter: 'blur(0)' }], { duration: 320, easing: 'ease-out' })
   }
 }, 2400)
+
+// ---------- developer debug view (only built in developer mode; the normal app has none of this) ----------
+
+// What the computer sees, on the click-through layer: each person's box and track number, the face box, the
+// match score against the cutoff and the decision, plus frames per second. Hidden until the toggle or ⌘⌥D.
+function drawDebug({ trackId, personBox, faceBox, score, decision, fps }) {
+  const layer = $('debug')
+  if (!layer) return
+  const box = (node, [x, y, w, h]) => Object.assign(node.style, { left: x - origin.x + 'px', top: y - origin.y + 'px', width: w + 'px', height: h + 'px' })
+  let item = $('dbg' + trackId)
+  if (!item) {
+    item = el('div', 'dbg')
+    item.id = 'dbg' + trackId
+    item.append(el('div', 'dbg-person'), el('div', 'dbg-face'), el('span', 'dbg-label'))
+    layer.append(item)
+  }
+  const [person, face, label] = item.children
+  box(person, personBox)
+  face.hidden = !faceBox
+  if (faceBox) box(face, faceBox)
+  label.textContent = debugLabel({ trackId, score, decision })
+  label.style.left = personBox[0] - origin.x + 'px'
+  label.style.top = personBox[1] + personBox[3] - origin.y + 4 + 'px'
+  $('fps').textContent = typeof fps === 'number' ? fps.toFixed(1) + ' fps' : ''
+}
+
+if (DEBUG && shows('cards')) {
+  const layer = el('div')
+  layer.id = 'debug'
+  layer.hidden = !!window.overlay // the browser preview shows it straight away
+  const fps = el('span', 'dbg-fps')
+  fps.id = 'fps'
+  layer.append(fps)
+  document.body.append(layer)
+  window.overlay?.onDebugShow((on) => (layer.hidden = !on))
+}
+
+if (DEBUG && shows('bar')) {
+  const toggle = el('button', 'icon-btn debug-btn')
+  toggle.type = 'button'
+  toggle.title = 'Debug view ⌘⌥D: what the computer sees'
+  toggle.setAttribute('aria-label', toggle.title)
+  toggle.setAttribute('aria-pressed', 'false')
+  toggle.append(icon('eye'))
+  toggle.addEventListener('click', () => window.overlay?.toggleDebug())
+  window.overlay?.onDebugShow((on) => toggle.setAttribute('aria-pressed', String(on)))
+  $('peopleBtn').after(toggle)
+}
 
 // ---------- control bar ----------
 

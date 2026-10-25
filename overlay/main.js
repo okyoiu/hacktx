@@ -13,7 +13,7 @@
 const { app, BrowserWindow, clipboard, globalShortcut, ipcMain, screen, shell, systemPreferences } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
-const { inviteLink, validCall, webUrl, layoutFor, askPlace, recapFrom, BAR, PANEL, STRIP, RECAP } = require('./logic')
+const { inviteLink, validCall, webUrl, layoutFor, askPlace, recapFrom, devMode } = require('./logic')
 const { createLauncher } = require('./launcher')
 
 // The repo's .env supplies ENROLL_CODE, ENROLL_URL and MEMORY_URL; variables already set win.
@@ -23,7 +23,7 @@ try {
 
 const MOCK = process.argv.includes('--mock')
 // Developer mode (`npm run dev`): the debug view exists, and the processes the launcher starts inherit HELLO_DEBUG.
-const DEV = process.argv.includes('--dev') || process.env.HELLO_DEBUG === '1'
+const DEV = devMode(process.argv, process.env)
 if (DEV) process.env.HELLO_DEBUG = '1'
 const MEMORY_URL = process.env.MEMORY_URL || 'http://localhost:8000'
 const ENROLL_URL = process.env.ENROLL_URL || 'http://localhost:8000/enroll'

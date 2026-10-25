@@ -323,10 +323,13 @@ function recapFrom(insightsList, people) {
 
 // ---------- developer debug view ----------
 
+// Developer mode exists only when the app was started that way; nothing over IPC or the network can turn it on.
+const devMode = (argv, env) => argv.includes('--dev') || env.HELLO_DEBUG === '1'
+
 const MATCH_MIN = 0.45 // memory/store.py's cutoff; shown so a developer sees why a face stayed "Recalling…"
 function debugLabel({ trackId, score, decision }) {
   const scored = typeof score === 'number' ? `${score.toFixed(2)} ${score >= MATCH_MIN ? '≥' : '<'} ${MATCH_MIN}` : 'no score'
   return `#${trackId} · ${scored} · ${decision}`
 }
 
-if (typeof module !== 'undefined') module.exports = { presetFor, layoutFor, askPlace, recapFrom, debugLabel, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
+if (typeof module !== 'undefined') module.exports = { presetFor, layoutFor, askPlace, recapFrom, debugLabel, devMode, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }

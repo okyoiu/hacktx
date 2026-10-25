@@ -245,7 +245,7 @@ test('dashboard search also finds the "who they are to you" label', () => {
 })
 
 // ---------- round 5: presets, fixed spots, Ask AI nudge, Recap, debug ----------
-const { presetFor, layoutFor, askPlace, recapFrom, debugLabel, BAR, PANEL, STRIP, RECAP, MATCH_MIN } = require('./logic')
+const { presetFor, layoutFor, askPlace, recapFrom, debugLabel, devMode, BAR, PANEL, STRIP, RECAP, MATCH_MIN } = require('./logic')
 
 const WORK = { x: 0, y: 25, width: 1440, height: 875 } // a 13" Mac under its menu bar
 const inside = (r, area = WORK) => r.x >= area.x && r.y >= area.y && r.x + r.width <= area.x + area.width && r.y + (r.height || 0) <= area.y + area.height
@@ -353,6 +353,14 @@ test('without a recap from the server, one is built from the call\'s insights an
   })
   assert.equal(recapFrom([], []).topic, 'This call')
   assert.equal(recapFrom([{ points: Array.from({ length: 9 }, (_, i) => 'q' + i), actions: [] }], []).points.length, 5)
+})
+
+test('developer mode comes only from `npm run dev` (--dev) or HELLO_DEBUG=1 in the environment', () => {
+  assert.ok(devMode(['electron', '.', '--dev'], {}))
+  assert.ok(devMode([], { HELLO_DEBUG: '1' }))
+  assert.ok(!devMode(['electron', '.', '--mock'], {}))
+  assert.ok(!devMode([], { HELLO_DEBUG: 'yes' }))
+  assert.ok(!devMode(['--debug'], {}), 'no other flag turns it on')
 })
 
 test('the debug label says the track, the score against the cutoff and the decision', () => {
