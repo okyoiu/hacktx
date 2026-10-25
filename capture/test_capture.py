@@ -240,3 +240,24 @@ def test_a_box_that_never_changes_is_a_picture_until_it_starts_moving():
     assert pictures.update(camera(), {}, 12.0) == set() and not pictures.last  # the track ended: forgotten
     live = faces.Pictures()
     assert all(live.update(camera(), box, t) == set() for t in (0.0, 3.0, 6.0, 9.0))
+
+
+def test_windows_windows_take_the_shape_the_mac_list_has_so_picking_works_unchanged():
+    zoom = win.win32_window("Zoom Meeting", r"C:\Users\me\AppData\Roaming\Zoom\bin\Zoom.exe", (10, 20, 1110, 720))
+    meet = win.win32_window("Meet - abc-defg-hij - Google Chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe", (0, 0, 1400, 900))
+    github = win.win32_window("GitHub - Google Chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe", (0, 0, 1400, 900))
+    notepad = win.win32_window("Untitled - Notepad", r"C:\Windows\notepad.exe", (0, 0, 800, 600))
+    # a call app wins over the window in front; no window id, so faces.py grabs it by rect with mss
+    assert pick([notepad, zoom], CALL_APPS) == Window("Zoom", (10, 20, 1100, 700), None, "notepad", True)
+    assert pick([meet], CALL_APPS).calls and not pick([github], CALL_APPS).calls
+    assert pick([notepad], CALL_APPS) == Window("notepad", (0, 0, 800, 600), None, None, False)  # follow any app, no faces
+    assert can_record([notepad])  # titles are always there on Windows: no permission check to trip
+
+
+def test_a_window_without_an_id_is_grabbed_from_the_screen_by_its_rect(monkeypatch):
+    monkeypatch.setattr(faces.mss, "MSS", FakeScreen)
+    monkeypatch.setattr(faces, "FOLLOW_EVERY", -1)
+    monkeypatch.setattr(faces, "call_window", lambda apps: Window("Zoom", (10, 20, 30, 20), None, None, True))
+    monkeypatch.setattr(faces, "grab", lambda window_id: pytest.fail("screencapture is macOS only"))
+    frame, origin = next(faces.screen_frames(None, follow=["Zoom"]))
+    assert frame.shape == (20, 30, 3) and origin == (10, 20, 30, "Zoom", True)
