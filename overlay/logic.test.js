@@ -482,6 +482,34 @@ test('the header tools fit inside the sheet at every width the layout can produc
   assert.equal(sheetWidthFor(600, 500), 500 + HEAD.left + HEAD.gap + 2 * HEAD.pad, 'grows to fit wider tools, never the reverse')
 })
 
+test('hover is decided from where the pointer is: inside the island plus a margin, and for how long outside', () => {
+  const { insideBounds, hoverStep, HOVER_MARGIN } = require('./logic')
+  const b = { x: 420, y: 31, width: 600, height: 130 }
+  assert.equal(HOVER_MARGIN, 12)
+  assert.ok(insideBounds({ x: 700, y: 80 }, b, HOVER_MARGIN), 'the middle')
+  assert.ok(insideBounds({ x: 425, y: 80 }, b, HOVER_MARGIN), 'near the left end, past where the pill was')
+  assert.ok(insideBounds({ x: 410, y: 80 }, b, HOVER_MARGIN), 'within the margin outside the left edge')
+  assert.ok(insideBounds({ x: 1029, y: 170 }, b, HOVER_MARGIN), 'within the margin at the bottom right')
+  assert.ok(!insideBounds({ x: 407, y: 80 }, b, HOVER_MARGIN), 'past the margin')
+  assert.ok(!insideBounds({ x: 700, y: 174 }, b, HOVER_MARGIN), 'below it')
+
+  const grace = 600
+  let s = { outsideSince: null }
+  s = hoverStep(s, { inside: true, now: 0, grace })
+  assert.deepEqual(s, { outsideSince: null, collapse: false })
+  s = hoverStep(s, { inside: false, now: 100, grace })
+  assert.deepEqual(s, { outsideSince: 100, collapse: false }, 'just left: remember when')
+  s = hoverStep(s, { inside: false, now: 600, grace })
+  assert.equal(s.collapse, false, 'outside for 500 ms: not yet')
+  s = hoverStep(s, { inside: true, now: 650, grace })
+  assert.deepEqual(s, { outsideSince: null, collapse: false }, 'back inside: forgotten')
+  s = hoverStep(s, { inside: false, now: 700, grace })
+  s = hoverStep(s, { inside: false, now: 1299, grace })
+  assert.equal(s.collapse, false)
+  s = hoverStep(s, { inside: false, now: 1300, grace })
+  assert.equal(s.collapse, true, 'outside for 600 ms: back off')
+})
+
 test('the island keeps its centre as it grows (Teams: its left edge) and stays on screen', () => {
   const spot = { x: 440, y: 31, width: BAR.width, height: BAR.height, anchor: 'center' }
   assert.deepEqual(islandBounds(spot, { width: ISLAND.pill, height: 44 }, WORK), { x: 440 + (BAR.width - ISLAND.pill) / 2, y: 31, width: ISLAND.pill, height: 44 })

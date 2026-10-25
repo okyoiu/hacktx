@@ -12,7 +12,7 @@
 const { app, BrowserWindow, clipboard, globalShortcut, ipcMain, Menu, screen, shell, systemPreferences } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
-const { inviteLink, validCall, webUrl, layoutFor, islandBounds, recapFrom, devMode, menuModel, ISLAND, BAR } = require('./logic')
+const { inviteLink, validCall, webUrl, layoutFor, islandBounds, recapFrom, devMode, menuModel, insideBounds, hoverStep, HOVER_MARGIN, HOVER_GRACE, ISLAND, BAR } = require('./logic')
 const { createLauncher } = require('./launcher')
 
 // The repo's .env supplies ENROLL_CODE, ENROLL_URL and MEMORY_URL; variables already set win.
@@ -390,6 +390,27 @@ on('people-toggle', togglePeople)
 on('transcript-toggle', toggleTranscript)
 on('toggle-all', toggleAll)
 on('quit', () => app.quit()) // will-quit stops what the launcher started
+
+// The island's hover is decided here from where the pointer is, not from the page's mouseleave: that fired at
+// the old pill's edges while the window grew and over its transparent corners, collapsing the island under a
+// pointer that never left. While hovered, poll every 100 ms; back off once the pointer has been outside the
+// island (plus a margin) for HOVER_GRACE.island ms.
+let hoverPoll = null
+function islandHover(hovered) {
+  clearInterval(hoverPoll)
+  hoverPoll = null
+  if (!hovered) return
+  let state = { outsideSince: null }
+  hoverPoll = setInterval(() => {
+    const inside = insideBounds(screen.getCursorScreenPoint(), windows.island.getBounds(), HOVER_MARGIN)
+    state = hoverStep(state, { inside, now: Date.now(), grace: HOVER_GRACE.island })
+    if (!state.collapse) return
+    clearInterval(hoverPoll)
+    hoverPoll = null
+    windows.island.webContents.send('island-hover', false)
+  }, 100)
+}
+on('island-hover', (_e, hovered) => islandHover(hovered === true))
 
 // The ⋯ menu and the pill's right-click: a native menu built from logic.js's model.
 const menuActions = { people: togglePeople, transcript: toggleTranscript, debug: () => toggleDebug(), quit: () => app.quit() }

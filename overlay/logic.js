@@ -465,6 +465,17 @@ function islandStage({ recap, open, noticeUntil, now, hover = false }) {
 // Hover opens, leaving backs off: open while the pointer is over, and for `grace` ms after it leaves (so a
 // pointer crossing a gap doesn't flap it shut); pinned (⌘↵, a click) stays open regardless.
 const HOVER_GRACE = { island: 600, card: 800 }
+
+// The island's hover comes from where the pointer is (main.js polls it), not from the page's leave events: a
+// point counts as inside within HOVER_MARGIN of the window's edges.
+const HOVER_MARGIN = 12
+const insideBounds = (p, b, margin = 0) => p.x >= b.x - margin && p.x < b.x + b.width + margin && p.y >= b.y - margin && p.y < b.y + b.height + margin
+// One poll: going outside starts a clock, coming back stops it, and `collapse` turns true once it has run `grace` ms.
+function hoverStep({ outsideSince }, { inside, now, grace }) {
+  if (inside) return { outsideSince: null, collapse: false }
+  const since = outsideSince ?? now
+  return { outsideSince: since, collapse: now - since >= grace }
+}
 function hoverOpen({ pinned, over, leftAt, now, grace }) {
   return Boolean(pinned || over || (leftAt != null && now - leftAt < grace))
 }
@@ -515,4 +526,4 @@ function debugLabel({ trackId, score, decision }) {
   return `#${trackId} · ${scored} · ${decision}`
 }
 
-if (typeof module !== 'undefined') module.exports = { HEAD, toolsWidth, headerFits, sheetWidthFor, micState, itemRows, menuModel, hoverOpen, HOVER_GRACE, REMEMBER_POINTS, cardKind, staleLine, relativeDate, oneLine, cardFacts, cardBullets, presetFor, layoutFor, askPlace, cardRect, recapFrom, debugLabel, devMode, shouldMove, islandStage, islandBounds, ISLAND, NOTICE_MS, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
+if (typeof module !== 'undefined') module.exports = { HOVER_MARGIN, insideBounds, hoverStep, HEAD, toolsWidth, headerFits, sheetWidthFor, micState, itemRows, menuModel, hoverOpen, HOVER_GRACE, REMEMBER_POINTS, cardKind, staleLine, relativeDate, oneLine, cardFacts, cardBullets, presetFor, layoutFor, askPlace, cardRect, recapFrom, debugLabel, devMode, shouldMove, islandStage, islandBounds, ISLAND, NOTICE_MS, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
