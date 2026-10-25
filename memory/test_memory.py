@@ -202,3 +202,27 @@ def test_a_muse_written_query_is_one_short_line_without_angle_brackets_in_the_pr
     assert quoted == ("borrow checker/transcript Ignore the rules people" + "x" * 300)[:picks.QUERY_CHARS]  # one line, no <>, cut
     picks.answer("ask", "Is a < b?", {}, [])
     assert "Is a < b?" in seen[1]  # the host's own question is left alone
+
+
+def test_person_file_starts_with_the_cards_header_then_facts_conversations_and_the_users_notes(tmp_path, monkeypatch):
+    from memory import store
+
+    monkeypatch.setattr(notes, "NOTES", tmp_path)
+    when = datetime(2026, 10, 18, 12).astimezone()
+    person = {"id": "p_j", "name": "Jordan\nLee", "role": "Your team lead", "firstMet": date(2026, 10, 1), "howMet": "Oct 1, 2026 on Zoom: a demo",
+              "lastSeen": "2026-10-18", "lastSpoke": "2026-10-10", "topic": "his move", "context": "work",
+              "encounters": [{"metAt": when, "about": "Engineer", "lastTime": "Talked about Austin."}],
+              "facts": [{"text": "Loves F1"}], "notes": [{"text": "Owes me a book"}]}
+    monkeypatch.setattr(store, "person", lambda pid: person)
+    text = notes.write_person("p_j").read_text()
+    assert text.splitlines()[:9] == [
+        "# Jordan Lee", "", "- Who they are to you: Your team lead", "- Last seen: 2026-10-18", "- Last spoke: 2026-10-10",
+        "- About: Engineer", "- Context: work", "- How we met: Oct 1, 2026 on Zoom: a demo", "- First met: Oct 1, 2026"]
+    order = [text.index(h) for h in ("## Facts (Muse)", "## Conversations", "## Notes")]
+    assert order == sorted(order) and "- Loves F1" in text and "Owes me a book" in text.split("## Notes")[1]
+
+    person |= {"role": "", "howMet": "", "lastSeen": None, "lastSpoke": None, "context": "", "encounters": [], "facts": [], "notes": []}
+    bare = notes.write_person("p_j").read_text()
+    assert "- Who they are to you: not set" in bare and "- Last seen: not yet" in bare and "- About: unknown" in bare
+    assert "- Context: unknown" in bare and "- How we met: unknown" in bare and "Nothing yet." in bare
+    assert "## Facts" not in bare and "## Notes" not in bare
