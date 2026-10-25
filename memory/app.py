@@ -280,6 +280,7 @@ def card(person: dict) -> dict:
         "id": person["id"],
         "name": person["name"],
         "role": person["role"],
+        "self": store.is_self(person["role"]),
         "line": f"Last time: {last}" if last else store.latest_note(person["id"]) or "",
         "met": f"Met {met:%b} {met.day}",
         **seen,

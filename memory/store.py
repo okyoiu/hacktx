@@ -116,6 +116,11 @@ def set_role(pid: str, role: str, source: str) -> None:
     )
 
 
+def is_self(role: str) -> bool:
+    """The user's own card: capture and the overlay skip it."""
+    return role.strip().casefold() in ("me", "me!", "myself")
+
+
 def people() -> list[dict]:
     """Everyone with valid consent, most recently met first, for the dashboard."""
     rows = conn().execute(
@@ -128,7 +133,7 @@ def people() -> list[dict]:
     by_person: dict[str, list] = {}
     for pid, *row in conn().execute("select person_id, met_at, spoke, topic, context from encounters order by met_at desc, id desc").fetchall():
         by_person.setdefault(pid, []).append(tuple(row))
-    return [{"id": i, "name": n, "role": r, "howMet": h, "firstMet": f, "lastMet": m, "lastTime": t, **seen_fields(by_person.get(i, []))}
+    return [{"id": i, "name": n, "role": r, "self": is_self(r), "howMet": h, "firstMet": f, "lastMet": m, "lastTime": t, **seen_fields(by_person.get(i, []))}
             for i, n, r, f, h, m, t in rows]
 
 

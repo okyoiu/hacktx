@@ -184,7 +184,7 @@ def test_remember_saves_the_face_on_screen_only_with_consent(http, events, monke
     assert saved.json() == {"id": "p_new", "deleteToken": "token123"}
     assert enrolled == [("Kai Park", face, None, "Your team lead")]  # the print from the call, no selfie
     assert events[-1] == {"type": "face", "trackId": 7, "screenBox": box,
-                          "person": {"id": "p_new", "name": "Kai Park", "role": "Your team lead", "line": "", "met": "Met Oct 24",
+                          "person": {"id": "p_new", "name": "Kai Park", "role": "Your team lead", "self": False, "line": "", "met": "Met Oct 24",
                                      "bullets": [], **NEVER}}
     assert "p_new" in server.call.people  # counted in this call from now on
     assert http.post("/faces/7/remember", json={"name": "Kai Park", "consent": True}).status_code == 409  # already saved
