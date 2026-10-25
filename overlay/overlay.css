@@ -81,8 +81,11 @@ body:not([data-view="all"]) .island { width: 100%; } /* the window is sized to t
 /* what each stage shows in the head */
 .island:not([data-stage="recap"]) .ended, .island[data-stage="recap"] :is(.wave, .timer, .health, .warn) { display: none; }
 .island:not([data-stage="pill"]) :is(.spark-btn, .badge), .island[data-stage="pill"] :is(.warn, .tools, .notice, #closeRecap) { display: none; }
-.island[data-stage="notice"] :is(.timer, .tools, #closeRecap), .island[data-stage="sheet"] :is(.notice, #closeRecap), .island[data-stage="recap"] :is(.notice, .tools) { display: none; }
+.island[data-stage="notice"] :is(.timer, .tools), .island[data-stage="sheet"] .notice, .island[data-stage="recap"] :is(.notice, .tools) { display: none; }
+.island:not([data-stage="recap"]) #closeRecap { display: none; } /* on its own: an id inside :is() would outrank the hover rule below */
 .island:not([data-stage="notice"]) .notice { display: none; }
+.island[data-stage="notice"][data-hover="true"] .tools { display: flex; } /* hovered: the tools come along */
+.island[data-stage="notice"][data-hover="true"] .chip-act { display: none; } /* and make room for them */
 
 .spark-btn { margin-left: auto; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: none; -webkit-app-region: no-drag; transition: background-color 0.15s ease; }
 .spark-btn:hover { background: var(--hover); }

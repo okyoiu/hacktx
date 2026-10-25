@@ -99,6 +99,8 @@ function placeCard({ trackId, screenBox, person }) {
     })
     card.addEventListener('mouseleave', () => {
       delete card.dataset.hover
+      card.dataset.leftAt = Date.now() // the card backs off HOVER_GRACE.card ms after the pointer leaves
+      setTimeout(() => syncOpen(card, true), HOVER_GRACE.card + 20)
       syncMouse()
       syncOpen(card, true)
     })
@@ -210,7 +212,9 @@ const dismissed = new Set() // person ids whose card was closed with ✕
 // `hover`: the pointer opened it, so it must not move out from under the pointer.
 function syncOpen(card, hover = false) {
   const pid = card.dataset.pid
-  const open = card.dataset.pinned === 'true' || (!dismissed.has(pid) && isOpen(+card.dataset.popUntil || 0, !!card.dataset.hover, Date.now()))
+  const now = Date.now()
+  const hovering = hoverOpen({ pinned: false, over: !!card.dataset.hover, leftAt: +card.dataset.leftAt || null, now, grace: HOVER_GRACE.card })
+  const open = card.dataset.pinned === 'true' || (!dismissed.has(pid) && isOpen(+card.dataset.popUntil || 0, hovering, now))
   const was = card.classList.contains('open')
   card.classList.toggle('open', open)
   if (open !== was && !hover && card.dataset.face) position(card) // the open card and the tag have different spots
@@ -492,9 +496,15 @@ let recapOn = false // the call ended and the Recap is showing
 let noticeUntil = 0 // a new insight widens the pill until then
 let noticeTimer
 let unseen = 0 // points that arrived while the sheet was closed, for the pill's badge
+let islandOver = false // the pointer is over the island
+let islandLeftAt = null // when it left; the pill backs off HOVER_GRACE.island ms later
+let hoverTimer
 
 function syncStage() {
-  const stage = islandStage({ recap: recapOn, open, noticeUntil, now: Date.now() })
+  const now = Date.now()
+  const hover = hoverOpen({ pinned: open, over: islandOver, leftAt: islandLeftAt, now, grace: HOVER_GRACE.island })
+  $('island').dataset.hover = hover
+  const stage = islandStage({ recap: recapOn, open, noticeUntil, now, hover })
   if ($('island').dataset.stage !== stage) {
     $('island').dataset.stage = stage
     wakePanel()
@@ -539,7 +549,20 @@ if (shows('bar')) {
     recapOn = false
     setOpen(false)
   })
-  $('island').addEventListener('mouseenter', wakePanel)
+  // hover grows the pill into the notice (with its tools); leaving lets it back off after a moment.
+  // Nothing here takes keyboard focus: the call keeps it until ⌘↵ or a click.
+  $('island').addEventListener('mouseenter', () => {
+    islandOver = true
+    wakePanel()
+    syncStage()
+  })
+  $('island').addEventListener('mouseleave', () => {
+    islandOver = false
+    islandLeftAt = Date.now()
+    clearTimeout(hoverTimer)
+    hoverTimer = setTimeout(syncStage, HOVER_GRACE.island + 20)
+    syncStage()
+  })
 }
 
 // ---------- the head: waveform, timer, tools ----------
@@ -700,6 +723,11 @@ function showInsights(next) {
 
 function setInsightsEmpty(on) {
   $('insightsEmpty').textContent = insightsEmptyText(on)
+  if (!insights) {
+    // the pill hovered before any insight: the notice says what it's doing and how to open
+    $('noticePoint').textContent = insightsEmptyText(on)
+    $('noticeMeta').textContent = 'Click to open · ⌘↵ to ask'
+  }
 }
 setInsightsEmpty()
 

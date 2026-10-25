@@ -431,8 +431,15 @@ function askPlace({ work, spot, faces, blocks, cards = [], panel, fixedX = false
 // One glass object at the top of the call: a pill while you talk, a one-line notice for NOTICE_MS when a new
 // insight arrives, a sheet when opened (⌘↵, a click, an answer), and the Recap when the call ends.
 const NOTICE_MS = 6000
-function islandStage({ recap, open, noticeUntil, now }) {
-  return recap ? 'recap' : open ? 'sheet' : now < noticeUntil ? 'notice' : 'pill'
+function islandStage({ recap, open, noticeUntil, now, hover = false }) {
+  return recap ? 'recap' : open ? 'sheet' : hover || now < noticeUntil ? 'notice' : 'pill'
+}
+
+// Hover opens, leaving backs off: open while the pointer is over, and for `grace` ms after it leaves (so a
+// pointer crossing a gap doesn't flap it shut); pinned (⌘↵, a click) stays open regardless.
+const HOVER_GRACE = { island: 600, card: 800 }
+function hoverOpen({ pinned, over, leftAt, now, grace }) {
+  return Boolean(pinned || over || (leftAt != null && now - leftAt < grace))
 }
 
 // The island window for a content size: it grows around its anchor (the spot's centre, or its left edge for
@@ -470,4 +477,4 @@ function debugLabel({ trackId, score, decision }) {
   return `#${trackId} · ${scored} · ${decision}`
 }
 
-if (typeof module !== 'undefined') module.exports = { REMEMBER_POINTS, cardKind, staleLine, relativeDate, oneLine, cardFacts, cardBullets, presetFor, layoutFor, askPlace, cardRect, recapFrom, debugLabel, devMode, shouldMove, islandStage, islandBounds, ISLAND, NOTICE_MS, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
+if (typeof module !== 'undefined') module.exports = { hoverOpen, HOVER_GRACE, REMEMBER_POINTS, cardKind, staleLine, relativeDate, oneLine, cardFacts, cardBullets, presetFor, layoutFor, askPlace, cardRect, recapFrom, debugLabel, devMode, shouldMove, islandStage, islandBounds, ISLAND, NOTICE_MS, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }

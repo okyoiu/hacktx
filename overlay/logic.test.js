@@ -425,6 +425,20 @@ test('the island is a pill, widens to a notice for a moment, opens as a sheet, a
   assert.equal(islandStage({ recap: true, open: true, noticeUntil: now + 100, now }), 'recap', 'the Recap beats everything')
 })
 
+test('hover opens, leaving backs off after a grace period, and a pinned thing stays open', () => {
+  const { hoverOpen, HOVER_GRACE } = require('./logic')
+  const now = 50_000
+  assert.ok(hoverOpen({ pinned: false, over: true, leftAt: null, now, grace: 600 }), 'pointer over')
+  assert.ok(hoverOpen({ pinned: false, over: false, leftAt: now - 200, now, grace: 600 }), 'just left: still open')
+  assert.ok(!hoverOpen({ pinned: false, over: false, leftAt: now - 600, now, grace: 600 }), 'the grace is over')
+  assert.ok(!hoverOpen({ pinned: false, over: false, leftAt: null, now, grace: 600 }), 'never hovered')
+  assert.ok(hoverOpen({ pinned: true, over: false, leftAt: now - 5000, now, grace: 600 }), 'pinned (⌘↵ or a click) stays')
+  assert.deepEqual(HOVER_GRACE, { island: 600, card: 800 })
+  assert.equal(islandStage({ recap: false, open: false, noticeUntil: 0, now, hover: true }), 'notice', 'the pill grows while hovered')
+  assert.equal(islandStage({ recap: false, open: true, noticeUntil: 0, now, hover: true }), 'sheet', 'an open sheet stays a sheet')
+  assert.equal(islandStage({ recap: true, open: false, noticeUntil: 0, now, hover: true }), 'recap', 'the Recap is unaffected')
+})
+
 test('the island keeps its centre as it grows (Teams: its left edge) and stays on screen', () => {
   const spot = { x: 440, y: 31, width: BAR.width, height: BAR.height, anchor: 'center' }
   assert.deepEqual(islandBounds(spot, { width: ISLAND.pill, height: 44 }, WORK), { x: 440 + (BAR.width - ISLAND.pill) / 2, y: 31, width: ISLAND.pill, height: 44 })
