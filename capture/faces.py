@@ -24,20 +24,22 @@ from ultralytics import YOLO
 
 from capture.embed import add_print, find_faces, mouths_in, warm_up
 from capture.speakers import Namer, listen
-from capture.window import CALL_APPS, call_window
+from capture.window import CALL_APPS, call_window, grab
 
 PERSON = 0  # COCO class id YOLO uses for people
 FOLLOW_EVERY = 3  # seconds between window position checks (each takes ~0.1 s)
 RETRY = 3.0  # seconds before another InsightFace pass for a person whose face wasn't visible last time
+QUIET_AFTER = 30  # seconds without a person in the followed window before the log says so (and again every 30 s)
 
 
 def screen_frames(region: tuple[int, int, int, int] | None, follow: list[str] | None = None):
-    """Yield (frame, (x, y, width, app)) of the region in screen points; with follow (app names), move with that app's
-    window (app is its name as capture/window.py reports it, None with a fixed region).
+    """Yield (frame, (x, y, width, app)) in screen points. With follow (app names), move with that app's frontmost window
+    and grab the window itself (capture/window.grab), so a terminal in front of the call doesn't get in the way; app is
+    its name as capture/window.py reports it. With a fixed region, grab the screen there (app is None).
     While there is no such window (not started yet, or the user left the call) it yields (None, ...) instead and keeps
-    looking, logging one line when that changes."""
+    looking. One log line per change: which window, whether another app's window covers it."""
     checked = time.time() if region else 0  # no region yet: look right away
-    shown = app = None
+    shown = behind = app = window_id = failed = None  # failed: the window id screencapture last gave nothing for
     with mss.MSS() as screen:
         while True:
             if follow and time.time() - checked > FOLLOW_EVERY:
@@ -49,16 +51,33 @@ def screen_frames(region: tuple[int, int, int, int] | None, follow: list[str] | 
                 except SystemExit as e:  # the window list isn't readable (no osascript, no permission): keep waiting
                     found, why = None, str(e)
                 checked = time.time()
-                app, region = found if found else (None, None)
-                state = f"following the {found[0]} window" if found else why
+                app, region, window_id = (found.app, found.rect, found.id) if found else (None, None, None)
+                state = f"following the {app} window" if found else why
                 if state != shown:
                     print(state)
                     shown = state
+                covered = found.behind if found else None
+                if covered != behind:
+                    if covered:
+                        print(f"the {app} window is behind {covered}")
+                    elif found:
+                        print(f"the {app} window is clear again")
+                    behind = covered
             if region is None:
                 yield None, (0, 0, 1, None)
                 continue
             x, y, w, h = region
-            frame = cv2.cvtColor(np.array(screen.grab({"left": x, "top": y, "width": w, "height": h})), cv2.COLOR_BGRA2BGR)
+            if window_id is not None:
+                frame = grab(window_id)
+                if frame is None:  # it closed since the last look, or this app may not record the screen: say so once
+                    if window_id != failed:
+                        print(f"couldn't capture the {app} window; if it is still open, allow Screen Recording for this app")
+                        failed = window_id
+                    region = None  # no frames until the next look (FOLLOW_EVERY)
+                    continue
+                failed = None
+            else:
+                frame = cv2.cvtColor(np.array(screen.grab({"left": x, "top": y, "width": w, "height": h})), cv2.COLOR_BGRA2BGR)
             yield frame, (x, y, w, app)
 
 
@@ -140,6 +159,7 @@ def main() -> None:
     stamps: deque[float] = deque(maxlen=10)  # when the last frames were processed, for fps
     face_boxes: dict[int, list[float]] = {}  # track id -> last InsightFace box in screen points
     window = {}  # the call window (app and rect) memory was last told about
+    last_person = quiet_told = time.monotonic()  # when a person was last in the frame, and when the log last said nobody is
     for frame, (x, y, w, app) in frames:
         started = time.time()
         scale = frame.shape[1] / w if frame is not None else 1  # pixels per screen point (2.0 on Retina)
@@ -200,6 +220,12 @@ def main() -> None:
             send("/faces/gone", {"trackId": tid})
             printed.discard(tid)
             people.pop(tid, None)
+        now = time.monotonic()
+        if frame is None or live:
+            last_person = quiet_told = now
+        elif now - quiet_told >= QUIET_AFTER:
+            print(f"following {app or 'the region'}, no person seen for {int(now - last_person)} s")
+            quiet_told = now
         while captions:
             if named := namer.caption(*captions.popleft()):
                 send("/speakers", {"label": named[0], "name": named[1]})

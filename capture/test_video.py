@@ -10,6 +10,7 @@ import pytest
 from insightface.data import get_image
 
 from capture import faces
+from capture.window import Window
 
 
 class FakeMemory(HTTPServer):
@@ -49,10 +50,12 @@ def run_video(tmp_path, monkeypatch, frames: list[np.ndarray]) -> list:
 
 
 @pytest.mark.parametrize("debug", [False, True])
-def test_video_posts_each_face_once_with_a_print_then_face_gone(tmp_path, monkeypatch, debug):
+def test_video_posts_each_face_once_with_a_print_then_face_gone(tmp_path, monkeypatch, capsys, debug):
     monkeypatch.setenv("HELLO_DEBUG", "1") if debug else monkeypatch.delenv("HELLO_DEBUG", raising=False)
+    monkeypatch.setattr(faces, "QUIET_AFTER", 0)  # say so on every frame without a person, instead of every 30 s
     t1 = get_image("t1")  # six people around a table
     posts = run_video(tmp_path, monkeypatch, [t1] * 8 + [np.zeros_like(t1)] * 4)
+    assert capsys.readouterr().out.count("following the region, no person seen for 0 s") == 4  # the blank frames
     seen = [body for path, body in posts if path == "/faces"]
     printed = [b for b in seen if "facePrint" in b]
     tracks = {b["trackId"] for b in printed}
@@ -82,8 +85,8 @@ def test_leaving_the_call_clears_the_cards_and_coming_back_brings_them_again(mon
 
     def call_window(apps):
         try:
-            return {True: ("zoom.us", (0, 0, w, h)), False: None, "moved": ("zoom.us", (5, 6, w, h)),
-                    "chrome": ("Google Chrome", (5, 6, w, h))}[next(checks)]
+            return {True: Window("zoom.us", (0, 0, w, h), 7, None), False: None, "moved": Window("zoom.us", (5, 6, w, h), 7, None),
+                    "chrome": Window("Google Chrome", (5, 6, w, h), 8, None)}[next(checks)]
         except StopIteration:
             raise Stop from None
 
@@ -105,6 +108,7 @@ def test_leaving_the_call_clears_the_cards_and_coming_back_brings_them_again(mon
     monkeypatch.setattr(faces.mss, "MSS", Screen)
     monkeypatch.setattr(faces, "FOLLOW_EVERY", -1)
     monkeypatch.setattr(faces, "call_window", call_window)
+    monkeypatch.setattr(faces, "grab", lambda window_id: t1)  # the window's own pixels, whatever is in front of it
     try:
         with pytest.raises(Stop):
             faces.main()
