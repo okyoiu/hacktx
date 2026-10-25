@@ -44,7 +44,19 @@ def test_pick_finds_nothing_without_a_call_app():
     assert pick([], CALL_APPS) is None
 
 
+class FakeScreen:  # stands in for mss.MSS, which needs a display
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        pass
+
+    def grab(self, box):
+        return np.zeros((box["height"], box["width"], 4), np.uint8)
+
+
 def test_screen_frames_follows_the_window_and_keeps_its_last_spot(monkeypatch):
+    monkeypatch.setattr(faces.mss, "MSS", FakeScreen)
     spots = iter([("zoom.us", (50, 60, 30, 20)), None])  # moved, then closed
     monkeypatch.setattr(faces, "FOLLOW_EVERY", -1)
     monkeypatch.setattr(faces, "call_window", lambda apps: next(spots))
