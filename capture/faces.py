@@ -28,6 +28,7 @@ from capture.window import CALL_APPS, apps_on_screen, call_window
 
 PERSON = 0  # COCO class id YOLO uses for people
 FOLLOW_EVERY = 3  # seconds between window position checks (each takes ~0.1 s)
+RETRY = 3.0  # seconds before another InsightFace pass for a person whose face wasn't visible last time
 
 
 def screen_frames(region: tuple[int, int, int, int], follow: str | None = None):
@@ -106,6 +107,7 @@ def main() -> None:
     http = httpx.Client(base_url=memory_url, timeout=10)
     printed: set[int] = set()  # track ids whose face print the memory service already has
     people: dict[int, dict] = {}  # track id -> the recognized person memory replied with
+    tried: dict[int, float] = {}  # track id -> when InsightFace last looked for its face
     namer, captions = Namer(), deque()
     threading.Thread(target=listen, args=(memory_url.replace("http", "ws", 1) + "/ws", captions), daemon=True).start()
 
@@ -125,8 +127,10 @@ def main() -> None:
         if result is not None and result.boxes is not None and result.boxes.is_track:
             boxes = dict(zip(result.boxes.id.int().tolist(), result.boxes.xyxy.tolist()))
             now = time.monotonic()
-            if boxes.keys() - printed:
+            wanting = {t for t in boxes.keys() - printed if now - tried.get(t, -RETRY) >= RETRY}
+            if wanting:
                 found = assign(faces_in(frame), boxes)  # one full InsightFace pass gives prints and lips
+                tried.update(dict.fromkeys(wanting, now))
             elif namer.wants_lips([p["id"] for p in people.values()], now):
                 found = assign(mouths_in(frame), boxes)
             else:
@@ -138,8 +142,8 @@ def main() -> None:
                 live.add(tid)
                 body = {"trackId": tid, "screenBox": [x + x1 / scale, y + y1 / scale, (x2 - x1) / scale, (y2 - y1) / scale]}
                 if tid not in printed:
-                    if tid not in found:
-                        continue  # face not visible yet (turned away); try again next frame
+                    if tid not in wanting or tid not in found:
+                        continue  # face not visible yet (turned away); looked again after RETRY
                     body["facePrint"] = found[tid].normed_embedding.tolist()
                     printed.add(tid)
                 reply = send("/faces", body)
@@ -149,6 +153,7 @@ def main() -> None:
                     people[tid] = reply["person"]
                     namer.met(reply["person"])
 
+        tried = {t: v for t, v in tried.items() if t in live}
         for tid in printed - live:
             send("/faces/gone", {"trackId": tid})
             printed.discard(tid)
