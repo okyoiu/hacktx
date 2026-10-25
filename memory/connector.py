@@ -4,7 +4,7 @@ import os
 import secrets
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from memory import store
 
@@ -55,6 +55,12 @@ def one_person(pid: str):
             "notes": [n["text"] for n in p["notes"]]}
 
 
+@router.get("/calls", dependencies=[Depends(require_key)])
+def recent_calls(limit: int = Query(5, ge=1, le=20)):
+    """The last calls, newest first, with only the people who agreed to the connector."""
+    return store.calls(limit, "connector")
+
+
 def schema(props: dict, required: list[str]) -> dict:
     return {"type": "object", "properties": props, "required": required}
 
@@ -71,6 +77,16 @@ OPENAPI = {
     "components": {"securitySchemes": {"bearer": {"type": "http", "scheme": "bearer"}}},
     "security": [{"bearer": []}],
     "paths": {
+        "/connector/calls": {"get": {
+            "operationId": "recentCalls", "summary": "The meeting recap: what happened in the user's last calls",
+            "description": "Use this for \"what happened in my last meeting?\". Newest first. Each call has when it ended, the app, what it "
+                           "was about, the key points, the follow-up actions that were suggested, and who was there with their last conversation.",
+            "parameters": [{"name": "limit", "in": "query", "required": False, "schema": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5}}],
+            "responses": {"200": {"description": "Calls", "content": {"application/json": {"schema": {"type": "array", "items": schema({
+                "endedAt": STR, "app": NULLABLE, "topic": STR, "points": {"type": "array", "items": STR},
+                "actions": {"type": "array", "items": STR, "description": "Labels of the suggested actions"},
+                "people": {"type": "array", "items": schema({"id": STR, "name": STR, "role": STR, "lastTime": STR}, ["id", "name"])}},
+                ["endedAt", "topic", "points", "actions", "people"])}}}}}}},
         "/connector/people": {"get": {
             "operationId": "listPeople", "summary": "Everyone the user remembers, with when they last met",
             "responses": {"200": {"description": "People", "content": {"application/json": {"schema": {

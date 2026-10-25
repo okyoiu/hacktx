@@ -594,8 +594,9 @@ def test_recap_is_sent_when_the_call_ends_with_this_calls_last_time_and_kept_for
     monkeypatch.setattr(picks, "chat", muse)
     monkeypatch.setattr(store, "person", lambda pid: {"id": pid, "name": "Jordan Lee", "role": "Your team lead", "firstMet": date(2026, 10, 1),
                                                        "encounters": [], "notes": []} if pid == "p_jordan" else None)
-    stored = []
+    stored, kept_calls = [], []
     monkeypatch.setattr(store, "add_encounter", lambda *args: stored.append(args))
+    monkeypatch.setattr(store, "add_call", lambda *args: kept_calls.append(args))
     monkeypatch.setattr(notes, "write_person", lambda pid: None)
     server.tracks[1] = JORDAN
     http.post("/faces", json={"trackId": 1, "screenBox": [0, 0, 10, 10]})
@@ -609,6 +610,7 @@ def test_recap_is_sent_when_the_call_ends_with_this_calls_last_time_and_kept_for
     assert recap == {"type": "recap", "topic": "Jordan's move", "points": ["Moved to Austin"], "actions": [action],
                      "people": [{"id": "p_jordan", "name": "Jordan Lee", "role": "Your team lead", "lastTime": "Talked about Austin."}]}
     assert [e["type"] for e in events if e["type"] == "recap"] == ["recap"] and stored  # once per call
+    assert kept_calls == [(None, "Jordan's move", ["Moved to Austin"], ["Suggest follow-up questions"], recap["people"])]  # kept for the connector
 
     with http.websocket_connect("/ws") as ws:  # an overlay that starts after the call ended
         assert ws.receive_json()["type"] == "listening"

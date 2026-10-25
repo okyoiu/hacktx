@@ -198,8 +198,14 @@ async def send_recap(ended: Call, insights: dict | None) -> None:
               for p in map(store.person, ended.people) if p]
     recap = {"type": "recap", "topic": (insights or {}).get("topic", ""), "points": (insights or {}).get("points", []),
              "actions": (insights or {}).get("actions", []), "people": people}
-    if call is not None or not (recap["topic"] or recap["points"] or recap["actions"] or people):
-        return  # a new call already started, or there was no call to recap
+    if not (recap["topic"] or recap["points"] or recap["actions"] or people):
+        return  # there was no call to recap
+    try:  # kept for the Muse connector, even if the next call has already begun
+        await asyncio.to_thread(store.add_call, ended.app, recap["topic"], recap["points"], [a["label"] for a in recap["actions"]], people)
+    except Exception as e:
+        print(f"recap not stored: {type(e).__name__}")
+    if call is not None:
+        return  # a new call already started: this recap is not shown
     latest_recap = recap
     await push(recap)
 

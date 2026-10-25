@@ -69,6 +69,17 @@ create table if not exists mentions (
 );
 create unique index if not exists mentions_once on mentions (person_id, lower(text));
 
+-- one row per finished call, for the Muse connector's "what happened in my last meeting?"; people are {id, name, role, lastTime}
+create table if not exists calls (
+  id bigserial primary key,
+  ended_at timestamptz not null default now(),
+  app text,
+  topic text not null default '',
+  points text[] not null default '{}',
+  actions text[] not null default '{}',
+  people jsonb not null default '[]'
+);
+
 -- delete tokens are stored as sha256 hex; this upgrades older plain tokens (22 characters) once and does nothing after
 update people set delete_token = encode(sha256(convert_to(delete_token, 'UTF8')), 'hex') where length(delete_token) <> 64;
 

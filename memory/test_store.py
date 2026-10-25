@@ -603,3 +603,26 @@ def test_facts_and_places_are_kept_only_for_people_whose_scope_includes_facts(db
         store.add_facts(person, ["Loves F1"])
         store.add_mentions(person, ["Zilker Park"])
     assert [(len(store.person(p)["facts"]), len(store.person(p)["mentions"])) for p in (pid, old)] == [(1, 1), (0, 0)]
+
+
+def test_calls_are_stored_newest_first_and_drop_deleted_expired_and_unagreed_people(db, enroll):
+    marker = "Recap " + secrets.token_hex(3)
+    (a, ta), (b, _), (c, _), (d, _) = (enroll(random_print()) for _ in range(4))
+    db.execute("update consents set scope = '{facePrint,notes}' where person_id = %s", (d,))  # never ticked the connector
+    db.execute("update consents set scope = '{facePrint,connector}' where person_id = any(%s)", ([a, b, c],))  # these three did
+    who = lambda pid, name: {"id": pid, "name": name, "role": "", "lastTime": "Chat."}
+    store.add_call("zoom.us", marker + " old", ["p1"], ["Find gyms"], [who(a, "A")])
+    store.add_call(None, marker + " new", ["p2"], [], [who(a, "A"), who(b, "B"), who(c, "C"), who(d, "D")])
+    ours = lambda rows: [r for r in rows if r["topic"].startswith(marker)]
+    got = ours(store.calls(50))
+    assert [r["topic"][-3:] for r in got] == ["new", "old"] and got[1]["app"] == "zoom.us" and got[1]["actions"] == ["Find gyms"]
+    assert [p["id"] for p in got[0]["people"]] == [a, b, c, d] and "endedAt" in got[0]
+    assert [p["id"] for p in ours(store.calls(50, "connector"))[0]["people"]] == [a, b, c]  # d did not agree to the connector
+
+    db.execute("update consents set expires_at = current_date - 1 where person_id = %s", (c,))
+    assert [p["id"] for p in ours(store.calls(50, "connector"))[0]["people"]] == [a, b]  # consent ran out
+    assert store.delete_person(a, ta)
+    stored = db.execute("select people from calls where topic like %s", (marker + "%",)).fetchall()
+    assert all(a not in json.dumps(people) for (people,) in stored) and len(stored) == 2  # gone from the stored rows themselves
+    assert len(ours(store.calls(1))) <= 1
+    db.execute("delete from calls where topic like %s", (marker + "%",))

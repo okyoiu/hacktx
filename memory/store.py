@@ -9,6 +9,7 @@ import numpy as np
 import psycopg
 from pgvector import Vector
 from pgvector.psycopg import register_vector
+from psycopg.types.json import Jsonb
 
 # Cosine similarity an ArcFace print needs to count as the same person.
 # shortcut: one fixed cutoff picked by eye; upgrade by measuring enrolled faces on real call video.
@@ -43,6 +44,7 @@ def purge_expired() -> None:
         "delete from people where id in (select person_id from consents where expires_at < current_date) returning id, name"
     ).fetchall()
     for pid, name in rows:
+        drop_from_calls(pid)
         notes.forget(pid, name)
 
 
@@ -94,6 +96,29 @@ def enroll(name: str, face_print: np.ndarray, selfie: bytes | None, role: str = 
     return pid, token
 
 
+def add_call(app: str | None, topic: str, points: list[str], actions: list[str], people: list[dict]) -> None:
+    """A finished call's recap: topic, points, action labels and the people who were there."""
+    conn().execute("insert into calls (app, topic, points, actions, people) values (%s, %s, %s, %s, %s)",
+                   (app, topic, points, actions, Jsonb(people)))
+
+
+def calls(limit: int, only_scope: str | None = None) -> list[dict]:
+    """The last calls, newest first. People whose consent ran out (or who were deleted) are left out, and so is
+    anyone whose scope lacks `only_scope` when one is given."""
+    allowed = {r[0] for r in conn().execute(
+        "select person_id from consents where expires_at >= current_date and (%s::text is null or %s = any(scope))",
+        (only_scope, only_scope)).fetchall()}
+    rows = conn().execute("select ended_at, app, topic, points, actions, people from calls order by ended_at desc, id desc limit %s", (limit,)).fetchall()
+    return [{"endedAt": at, "app": app, "topic": topic, "points": points, "actions": actions,
+             "people": [p for p in people if p["id"] in allowed]} for at, app, topic, points, actions, people in rows]
+
+
+def drop_from_calls(pid: str) -> None:
+    conn().execute(
+        "update calls set people = (select coalesce(jsonb_agg(p), '[]'::jsonb) from jsonb_array_elements(people) p where p->>'id' <> %s)"
+        " where people @> %s", (pid, Jsonb([{"id": pid}])))
+
+
 def delete_person(pid: str, token: str | None) -> bool:
     """Delete with their token; token=None skips the check and is only for callers that know the request came
     from this laptop."""
@@ -103,6 +128,7 @@ def delete_person(pid: str, token: str | None) -> bool:
     from memory import notes  # lazy: notes imports store
 
     conn().execute("delete from people where id = %s", (pid,))
+    drop_from_calls(pid)
     notes.forget(pid, row[1])  # every way of deleting someone also clears them from notes/
     return True
 
