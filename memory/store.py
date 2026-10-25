@@ -23,6 +23,8 @@ _conn: psycopg.Connection | None = None
 def conn() -> psycopg.Connection:
     # shortcut: one shared connection; switch to psycopg_pool if requests start queuing.
     global _conn
+    if _conn is not None and _conn.closed:  # the network dropped (hotspot, venue Wi-Fi): reconnect instead of failing forever
+        _conn = None
     if _conn is None:
         _conn = psycopg.connect(os.environ["DATABASE_URL"], autocommit=True, connect_timeout=5)  # fail fast, never hang
         _conn.execute("create extension if not exists vector")

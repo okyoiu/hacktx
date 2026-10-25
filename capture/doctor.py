@@ -53,9 +53,10 @@ def checks() -> list[Result]:
         w = state.get("window")
         if w is None:
             return False, "nothing to grab"
-        if w.id is not None:
-            frame = window.grab(w.id)
-        else:
+        frame = window.grab(w.id) if w.id is not None else None
+        how = "by window id"
+        if frame is None:  # Zoom blocks window capture: capture falls back to the screen there, so the doctor does too
+            how = "screen grab (the window blocks window capture: keep it uncovered)"
             x, y, width, height = w.rect
             with mss.MSS() as screen:
                 frame = cv2.cvtColor(np.array(screen.grab({"left": x, "top": y, "width": width, "height": height})), cv2.COLOR_BGRA2BGR)
@@ -63,7 +64,7 @@ def checks() -> list[Result]:
             return False, "screencapture gave nothing for that window"
         state["frame"] = frame
         blank = float(frame.std()) < 1
-        return not blank, f"{frame.shape[1]}x{frame.shape[0]} px" + (", blank (all one colour)" if blank else ", has content")
+        return not blank, f"{frame.shape[1]}x{frame.shape[0]} px, {how}" + (", blank (all one colour)" if blank else ", has content")
 
     def sample():  # what the models run on when there is no grab: InsightFace's bundled photo of six people
         if "frame" not in state:
