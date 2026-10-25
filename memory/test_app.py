@@ -128,12 +128,13 @@ def test_next_call_does_not_see_the_last_calls_insights_or_transcript(http, even
 def test_wifi_devices_may_only_enroll_or_delete_themselves(http, monkeypatch):
     monkeypatch.setattr(store, "delete_person", lambda pid, token: False)
     phone = TestClient(server.app, client=WIFI)
-    for method, path in [("get", "/people/p_jordan"), ("post", "/listening"), ("post", "/calls/end"),
+    for method, path in [("get", "/people/p_jordan"), ("get", "/people"), ("patch", "/people/p_jordan"), ("post", "/listening"), ("post", "/calls/end"),
                          ("post", "/transcript"), ("post", "/faces"), ("post", "/ask"), ("post", "/actions/a1")]:
         assert getattr(phone, method)(path).status_code == 403, path
     assert phone.get("/enroll").status_code == 200
     deleted = phone.delete("/people/p_jordan", headers={"X-Delete-Token": "wrong"})
     assert deleted.status_code == 403 and "delete link" in deleted.json()["detail"]  # reached the route's own token check
+    assert phone.delete("/people/p_jordan").status_code == 403  # a phone without its token can't delete anyone
 
 
 def test_web_pages_on_this_laptop_are_refused_and_docs_are_off(http):

@@ -156,6 +156,36 @@ def test_face_card_has_role_last_time_and_a_key_fact_as_at_most_three_bullets(db
     assert card["bullets"] == ["Your team lead", "Last time: Talked about his move.", "Starts a fintech job Monday"]
 
 
+def test_dashboard_lists_edits_and_deletes_people_from_this_laptop(db, enroll, monkeypatch):
+    (a, _), (b, tb) = enroll(random_print()), enroll(random_print())
+    store.add_encounter(a, datetime(2026, 10, 1, 12).astimezone(), "x", "Talked about Austin.")
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http, TestClient(server.app, client=("192.168.1.9", 50000)) as phone:
+        listed = [p for p in http.get("/people").json() if p["id"] in (a, b)]
+        assert len(listed) == 2
+        by_id = {p["id"]: p for p in listed}
+        assert by_id[a]["lastTime"] == "Talked about Austin." and by_id[a]["lastMet"].startswith("2026-10-01")
+        assert by_id[b]["lastTime"] is None and by_id[b]["role"] == ""
+        order = [p["id"] for p in http.get("/people").json()]
+        assert order.index(b) < order.index(a)  # b was only enrolled now; its first-met is later than a's last call
+
+        server.tracks[1] = {"id": a, "name": "old"}
+        edited = http.patch(f"/people/{a}", json={"role": " Your team lead ", "name": " New Name "})
+        assert edited.status_code == 200 and (edited.json()["name"], edited.json()["role"]) == ("New Name", "Your team lead")
+        assert server.tracks[1]["name"] == "New Name" and server.tracks[1]["bullets"][0] == "Your team lead"
+        store.set_role(a, "Muse guess", "muse")
+        assert store.person(a)["role"] == "Your team lead"  # a role set in the dashboard is the user's
+        assert http.patch(f"/people/{a}", json={"role": ""}).json()["role"] == ""  # clearing hands it back to Muse
+        assert http.patch(f"/people/{a}", json={"role": "r" * 61}).status_code == 422
+        assert http.patch(f"/people/{a}", json={"name": " "}).status_code == 422
+        assert http.patch("/people/p_nobody", json={"role": "x"}).status_code == 404
+
+        assert phone.delete(f"/people/{b}").status_code == 403 and store.person(b)
+        assert phone.delete(f"/people/{b}", headers={"X-Delete-Token": tb}).status_code == 200  # a guest with their token
+        assert http.delete(f"/people/{a}").status_code == 200 and store.person(a) is None  # the dashboard needs no token
+        assert http.delete(f"/people/{a}").status_code == 404
+    server.tracks.pop(1, None)
+
+
 def test_person_returns_notes_newest_first(db, enroll):
     pid, _ = enroll(random_print())
     store.add_note(pid, "Moved to Austin")

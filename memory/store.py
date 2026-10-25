@@ -77,9 +77,11 @@ def enroll(name: str, face_print: np.ndarray, selfie: bytes | None, role: str = 
     return pid, token
 
 
-def delete_person(pid: str, token: str) -> bool:
+def delete_person(pid: str, token: str | None) -> bool:
+    """Delete with their token; token=None skips the check and is only for callers that know the request came
+    from this laptop."""
     row = conn().execute("select delete_token from people where id = %s", (pid,)).fetchone()
-    if row is None or not secrets.compare_digest(row[0], digest(token)):
+    if row is None or (token is not None and not secrets.compare_digest(row[0], digest(token))):
         return False
     conn().execute("delete from people where id = %s", (pid,))
     from memory import notes  # lazy: notes imports store
@@ -89,11 +91,28 @@ def delete_person(pid: str, token: str) -> bool:
 
 
 def set_role(pid: str, role: str, source: str) -> None:
-    """A user's role always wins; Muse's suggestion only fills in or replaces an earlier suggestion."""
+    """A user's role always wins; Muse's suggestion only fills in or replaces an earlier suggestion.
+    The user clearing the role (empty) hands it back to Muse."""
     conn().execute(
         "update people set role = %s, role_source = %s where id = %s and (%s = 'user' or role_source <> 'user')",
-        (role, source, pid, source),
+        (role, "user" if source == "user" and role else "muse", pid, source),
     )
+
+
+def people() -> list[dict]:
+    """Everyone with valid consent, most recently met first, for the dashboard."""
+    rows = conn().execute(
+        """select p.id, p.name, p.role, p.first_met,
+                  coalesce((select max(met_at) from encounters where person_id = p.id), p.first_met::timestamptz) as last_met,
+                  (select last_time from encounters where person_id = p.id order by met_at desc, id desc limit 1)
+           from people p join consents c on c.person_id = p.id
+           where c.expires_at >= current_date
+           order by last_met desc, p.first_met desc, p.id""").fetchall()
+    return [{"id": i, "name": n, "role": r, "firstMet": f, "lastMet": m, "lastTime": t} for i, n, r, f, m, t in rows]
+
+
+def rename(pid: str, name: str) -> None:
+    conn().execute("update people set name = %s where id = %s", (name, pid))
 
 
 def person(pid: str) -> dict | None:

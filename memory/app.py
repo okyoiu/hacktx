@@ -181,8 +181,11 @@ class Gone(BaseModel):
 
 def card_for(face_print: list[float]) -> dict | None:
     person = store.match(np.asarray(face_print, dtype=np.float32))
-    if person is None:
-        return None
+    return card(person) if person else None
+
+
+def card(person: dict) -> dict:
+    """The face-event card for a store.match or store.person result."""
     met = person["firstMet"]
     last = store.last_time(person["id"])
     fact = store.key_fact(person["id"])
@@ -467,6 +470,11 @@ async def enroll(
     return {"id": pid, "deleteToken": token}
 
 
+@app.get("/people")
+def list_people():
+    return store.people()
+
+
 @app.get("/people/{pid}")
 def get_person(pid: str):
     found = store.person(pid)
@@ -475,10 +483,33 @@ def get_person(pid: str):
     return found
 
 
+class PersonEdit(BaseModel):
+    role: Annotated[str, StringConstraints(strip_whitespace=True, max_length=picks.ROLE_CHARS)] | None = None
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)] | None = None
+
+
+@app.patch("/people/{pid}")
+async def edit_person(pid: str, body: PersonEdit):
+    if await asyncio.to_thread(store.person, pid) is None:
+        raise HTTPException(404, "Nobody with that id (or their consent has run out).")
+    if body.name is not None:
+        await asyncio.to_thread(store.rename, pid, body.name)
+    if body.role is not None:  # what you type here is yours: Muse won't replace it (clearing it lets Muse suggest again)
+        await asyncio.to_thread(store.set_role, pid, body.role, "user")
+    updated = await asyncio.to_thread(store.person, pid)
+    for t, shown in tracks.items():  # the next frame of a face on screen carries the new name and role
+        if shown and shown["id"] == pid:
+            tracks[t] = await asyncio.to_thread(card, updated)
+    return updated
+
+
 @app.delete("/people/{pid}")
-def forget(pid: str, x_delete_token: str = Header()):
-    if not store.delete_person(pid, x_delete_token):
+def forget(pid: str, request: Request, x_delete_token: str | None = Header(default=None)):
+    mine = from_this_laptop(request)  # the dashboard needs no token; a phone on the Wi-Fi does
+    if not mine and x_delete_token is None:
         raise HTTPException(403, "That delete link doesn't match. Nothing was deleted.")
+    if not store.delete_person(pid, None if mine else x_delete_token):
+        raise HTTPException(404 if mine else 403, "Nobody with that id." if mine else "That delete link doesn't match. Nothing was deleted.")
     for t, card in tracks.items():  # not named on screen, and not sent to Muse, from now on
         if card and card["id"] == pid:
             tracks[t] = None
