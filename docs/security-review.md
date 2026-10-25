@@ -541,3 +541,85 @@ I walked the Quick start and the real-call walkthrough against the code: command
 | 13 | 44 | Windows exe path only | `Start-Hello-Again.bat` exists in the repo root and is not mentioned; either mention it or delete it. The Windows window finder is untested (its own docstring says so). |
 
 I did not check: the GitHub clone URL on line 19, the Muse app's connector screens (line 143), and anything that needs a Mac (permissions prompts, the packaged app, the Dock).
+
+---
+
+## Audit before demo
+
+Run with `ponytail:ponytail-audit` on main `253d438`, plus what the security rounds already found. One report, no code changed.
+
+**What this repo does:** Hello Again watches a video call on one laptop. It finds faces, names the ones who agreed to be remembered, listens to the call, and asks Meta's Muse model to write notes and answers, keeping everything in Postgres. **Load assumed:** one person, one call at a time, at most about a dozen faces and a few phones enrolling; so "scale" means a few threads at once and a server that stays up for hours, not many users.
+
+### Must fix
+
+1. **While the tunnel runs, the whole internet can reach `/enroll` and `DELETE /people/*`** (`memory/app.py:96`)
+   - **What this is:** A middleware decides who may call what. Phones on the Wi-Fi may enroll and delete themselves; everything else is for the laptop only. The Muse connector tunnel arrives as loopback with forwarding headers.
+   - **Problem:** The two guest paths skip the forwarding-header check, so anyone with the tunnel address can try to enroll a face (and `ENROLL_CODE` is empty in `.env.example`) or guess delete tokens.
+   - **Fix:** First thing in the middleware: `if any(h in request.headers for h in FORWARDED) and not request.url.path.startswith("/connector/"): return JSONResponse({"detail": "Not available through the tunnel."}, 403)`. Delete the xfail marker on `test_the_tunnel_reaches_nothing_but_the_connector`.
+   - **If we skip it:** Someone enrolls their own face under a fake name in front of the judges. Set `ENROLL_CODE` before any tunnel as a stop-gap.
+
+2. **A person who deletes themselves is still named and still sent to Muse** (`memory/app.py:719` `forget`; state at `:56`, `:57`, `:59`, `:61`)
+   - **What this is:** Deleting someone removes their rows and their notes files and clears their card.
+   - **Problem:** The stored recap (`latest_recap`) keeps their name and role for any overlay that connects later. `snippets`, `live` and the Ask AI `thread` keep their words until the call ends and go into later prompts.
+   - **Fix:** In `forget`, after the delete: `snippets.pop(pid, None); live.pop(pid, None); if latest_recap: latest_recap["people"] = [p for p in latest_recap["people"] if p["id"] != pid]`. Delete the marker on `test_a_deleted_person_leaves_the_stored_recap`.
+   - **If we skip it:** The README promises "no longer knows you"; one reconnect of the overlay shows their name again.
+
+3. **One shared database connection, used by many threads, with a transaction on it** (`memory/store.py:18-32`, `:83`)
+   - **What this is:** `conn()` keeps a single connection for the whole process. Face matching, notes, live bullets and enrolling all call it from worker threads.
+   - **Problem:** `enroll` opens `with conn().transaction()` on that same connection. A query another thread sends in that moment runs inside the enroll transaction, and if enroll fails (say a bad print), the other thread's write (a note, an encounter) is rolled back with it. The window is small, but enrolling happens during live calls.
+   - **Fix:** Give `enroll` its own short connection: `with psycopg.connect(os.environ["DATABASE_URL"]) as c, c.transaction(): c.execute(...)`, with `register_vector(c)`. No new dependency.
+   - **If we skip it:** Rarely, a note or "last time" line silently disappears during an enrollment.
+
+4. **A NaN in a box drops every overlay, and the window rect has no upper bound** (`memory/app.py:249-257`, `:333`)
+   - **What this is:** Capture posts face and window boxes as lists of floats.
+   - **Problem:** `NaN` or `Infinity` passes validation, then JSON encoding fails inside `push`, and the `except` removes every connected overlay, which then stops updating. `1e300` passes `good_rect` and breaks layout math.
+   - **Fix:** `Field(..., allow_inf_nan=False)` on `screenBox`, `personBox`, `faceBox`, `fps`; in `good_rect` add `abs(n) <= 20000`. Delete the markers on `test_a_nan_box_is_refused_and_does_not_drop_the_overlay` and `test_window_rect_is_validated`.
+   - **If we skip it:** One divide-by-zero in capture and the cards stop for the rest of the demo, with no error on screen.
+
+### Should fix
+
+5. **The first start on the shared Tiger database changes it for good, and a failure stops the server** (`memory/schema.sql:60-72`, run by `memory/store.py:32`)
+   - **What this is:** If TimescaleDB exists, `encounters` becomes a hypertable (a table split by time), after dropping and re-adding its primary key.
+   - **Problem:** `drop constraint encounters_pkey` assumes that name. If it differs, the whole schema script fails and `store.conn()` raises on every request, so the server is up but useless. I could not test this on real TimescaleDB.
+   - **Fix:** Wrap the block in `begin ... exception when others then raise notice 'hypertable skipped: %', sqlerrm; end` so a failure only skips the optimisation. Before the demo: `pg_dump`, start once against Tiger, check `timescaledb_information.hypertables`.
+   - **If we skip it:** A name mismatch on the day takes the app down at startup.
+
+6. **Every request URL, including the invite code, goes to `logs/server.log`** (`overlay/launcher.js:14`)
+   - **What this is:** The launcher starts uvicorn and saves its output to a log file.
+   - **Problem:** uvicorn's access log prints the full path with the query, and the invite link is `/enroll?code=...`.
+   - **Fix:** Add `'--no-access-log'` to the uvicorn arguments.
+   - **If we skip it:** The code sits in a file (private, trimmed to 1 MB) until someone shares or syncs `logs/`.
+
+7. **Three tests fail for the wrong reasons** (`capture/test_video.py:60`; `memory/test_app.py` `test_call_ends_by_itself_when_no_face_has_been_seen_for_the_idle_time` and `test_the_call_remembers_the_followed_app_and_its_last_topic_for_how_we_met`)
+   - **What this is:** Checks for the quiet-log line and for call bookkeeping.
+   - **Problem:** The first counts the exact text `no person seen for 0 s`, so it fails when a frame takes over a second (seen three times under load). The other two call the real database and fail with `KeyError: 'DATABASE_URL'` for anyone without a `.env`.
+   - **Fix:** Count the pattern `no person seen for \d+ s`; patch `store.match`/`store.person` in the two memory tests or skip them without `DATABASE_URL`, like `test_store.py` does.
+   - **If we skip it:** A red test run on the morning of the demo, from a clock or a missing database, hides a real failure.
+
+8. **A wrong-key flood locks out the real Muse caller** (`memory/connector.py:24-34`, `require_key`)
+   - **What this is:** After 20 wrong keys in a minute the connector answers 429.
+   - **Problem:** The limit is checked before the key, and through a tunnel all callers look the same, so anyone can make Muse's own calls fail with 429.
+   - **Fix:** Compare the key first and return the data if it matches; apply the 429 only to wrong keys.
+   - **If we skip it:** The connector demo fails when someone scans the tunnel address.
+
+9. **The packaged app puts user-writable folders before the system ones in `PATH`** (`overlay/package.js:22`)
+   - **What this is:** A Finder-launched app has a bare `PATH`, so the shim adds `/opt/homebrew/bin`, `/usr/local/bin` and `~/.local/bin`.
+   - **Problem:** They are placed first, so a file named `docker` or `pgrep` in `~/.local/bin` would run instead of the real one.
+   - **Fix:** `[process.env.PATH || '/usr/bin:/bin', '/opt/homebrew/bin', '/usr/local/bin', path.join(os.homedir(), '.local', 'bin')]`. Needs a rebuild.
+   - **If we skip it:** Only matters if something else already runs as you; low.
+
+### Nice to have
+
+10. **Dead code** (`capture/window.py:160-161` `apps_on_screen`)
+    - **What this is:** A helper that lists app names on screen.
+    - **Problem:** Nothing in the code, the tests or the docs calls it.
+    - **Fix:** Delete the two lines.
+    - **If we skip it:** Two lines nobody reads; harmless.
+
+- 2 smaller findings left out: the Muse topic keeps newlines (`memory/picks.py` where `topic.strip()[:80]` is used: use `" ".join(topic.split())[:80]`), and capture still grabs frames of a window that is not a call (`capture/faces.py`, `grab(window_id)` runs even when `calls` is false: skip the grab).
+
+**Verdict:** Healthy for a one-person demo. Fix 1 before any tunnel, and 4 and 5 before the live run; 2 and 3 when you can.
+
+**Lean:** about -2 lines, -0 dependencies possible. The code is already small for what it does; I found no duplicate helper or unused dependency.
+
+**Not checked:** the Windows window finder and the Windows app build (no Windows machine); the Mac-only parts (packaged app, permissions, the macOS window list); real TimescaleDB; the Muse realtime protocol; the JavaScript in `overlay/overlay.js` beyond the sinks and routes (it is large and only the security paths were read); `web/enroll.html` logic beyond consent and delete.
