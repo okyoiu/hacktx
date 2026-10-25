@@ -826,7 +826,11 @@ function setIdle(idle) {
 function wakePanel() {
   if (document.body.classList.contains('idle')) setIdle(false)
   clearTimeout(idleTimer)
-  idleTimer = setTimeout(() => setIdle(true), IDLE_MS)
+  idleTimer = setTimeout(() => {
+    // quiet for a while: an open sheet folds back into the pill, unless a question is being typed
+    if (open && !recapOn && document.activeElement !== $('question') && !$('question').value) setOpen(false)
+    setIdle(true)
+  }, IDLE_MS)
 }
 
 if (view === 'island' && window.overlay) {
