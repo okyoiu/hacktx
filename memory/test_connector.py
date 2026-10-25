@@ -65,12 +65,12 @@ def test_the_document_describes_both_routes_and_health_needs_no_key(web):
     assert web.get("/connector/health").json() == {"ok": True}
 
 
-def test_wrong_keys_are_throttled_for_everyone(web, monkeypatch):
+def test_wrong_keys_are_throttled_but_the_right_key_still_works(web, monkeypatch):
     monkeypatch.setattr(connector, "FAILS_PER_MINUTE", 3)
     for _ in range(3):
         assert web.get("/connector/people", headers=auth("wrong")).status_code == 401
     assert web.get("/connector/people", headers=auth("wrong")).status_code == 429
-    assert web.get("/connector/people", headers=auth()).status_code == 429  # even the right key waits
+    assert web.get("/connector/people", headers=auth()).status_code == 200  # the right key is never locked out
 
 
 def test_a_tunnel_reaches_the_connector_and_nothing_else(monkeypatch):

@@ -21,14 +21,15 @@ def require_key(request: Request) -> None:
     key = os.getenv("MUSE_CONNECTOR_KEY")
     if not key:
         raise HTTPException(404, "Not found")  # not set up: these routes do not exist
+    given = request.headers.get("authorization", "")
+    if given.startswith("Bearer ") and secrets.compare_digest(given[7:].encode(), key.encode()):
+        return  # the right key always gets in; only wrong ones are counted, so strangers can't lock Muse out
     now = time.monotonic()
     failures[:] = [t for t in failures if t > now - 60]
     if len(failures) >= FAILS_PER_MINUTE:
         raise HTTPException(429, "Too many wrong keys. Wait a minute.")
-    given = request.headers.get("authorization", "")
-    if not (given.startswith("Bearer ") and secrets.compare_digest(given[7:].encode(), key.encode())):
-        failures.append(now)
-        raise HTTPException(401, "Missing or wrong key", headers={"WWW-Authenticate": "Bearer"})
+    failures.append(now)
+    raise HTTPException(401, "Missing or wrong key", headers={"WWW-Authenticate": "Bearer"})
 
 
 @router.get("/health")
