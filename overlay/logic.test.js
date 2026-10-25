@@ -1,7 +1,7 @@
 // node --test (npm test in overlay/)
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { ROUTES, elapsed, takesOver, cleanName, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS } = require('./logic')
+const { ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS } = require('./logic')
 
 test('main only forwards the memory API calls the overlay makes', () => {
   for (const route of ['/listening', '/ask', '/actions/x1', '/actions/act_2-b']) assert.ok(ROUTES.test(route), route)
@@ -202,4 +202,44 @@ test('Live insights says Listening… until the first insight, and Paused when p
   assert.equal(insightsEmptyText(undefined), 'Listening…')
   assert.equal(insightsEmptyText(true), 'Listening…')
   assert.match(insightsEmptyText(false), /^Paused/)
+})
+
+test('a card sits beside its face, flips to the other side, then below or above, and never covers the face', () => {
+  const card = { width: 200, height: 150 }
+  const screen = { width: 1000, height: 800 }
+  const at = (face) => cardPlace({ face, card, screen })
+  assert.deepEqual(at([100, 100, 200, 200]), { left: 312, top: 100 }, 'right of the face')
+  assert.deepEqual(at([700, 100, 200, 200]), { left: 488, top: 100 }, 'no room on the right: left')
+  assert.deepEqual(at([100, 700, 200, 90]), { left: 312, top: 642 }, 'a side card slides up to stay on screen')
+  const wide = at([20, 20, 960, 300]) // a face as wide as the screen: below
+  assert.deepEqual(wide, { left: 20, top: 332 })
+  assert.deepEqual(at([20, 300, 960, 480]), { left: 20, top: 138 }, 'no room below: above')
+  for (const face of [[100, 100, 200, 200], [700, 100, 200, 200], [20, 20, 960, 300], [20, 300, 960, 480]]) {
+    const { left, top } = at(face)
+    const [x, y, w, h] = face
+    const apart = left + card.width <= x || left >= x + w || top + card.height <= y || top >= y + h
+    assert.ok(apart, `covers ${face}`)
+  }
+})
+
+test('dashboard keys: arrows move, Enter opens, / searches, Esc closes, a label being typed is left alone', () => {
+  const list = { count: 3, cursor: -1 }
+  assert.deepEqual(peopleKey('ArrowDown', list), { action: 'move', cursor: 0 })
+  assert.deepEqual(peopleKey('ArrowDown', { count: 3, cursor: 2 }), { action: 'move', cursor: 2 }, 'stops at the end')
+  assert.deepEqual(peopleKey('ArrowUp', { count: 3, cursor: 0 }), { action: 'move', cursor: 0 }, 'stops at the top')
+  assert.deepEqual(peopleKey('Enter', { count: 3, cursor: 1 }), { action: 'open', cursor: 1 })
+  assert.deepEqual(peopleKey('Enter', { ...list, field: 'search' }), { action: 'open', cursor: 0 }, 'the first match')
+  assert.equal(peopleKey('Enter', { count: 0, cursor: -1 }).action, null, 'nobody to open')
+  assert.equal(peopleKey('ArrowDown', { count: 0, cursor: -1 }).action, null)
+  assert.equal(peopleKey('/', list).action, 'search')
+  assert.equal(peopleKey('/', { ...list, field: 'search' }).action, null, 'a slash typed into search stays a slash')
+  assert.equal(peopleKey('Escape', list).action, 'close')
+  assert.equal(peopleKey('Escape', { ...list, field: 'role' }).action, 'close')
+  for (const key of ['Enter', 'ArrowDown', '/']) assert.equal(peopleKey(key, { ...list, field: 'role' }).action, null, key)
+})
+
+test('dashboard search also finds the "who they are to you" label', () => {
+  const people = [{ name: 'Jordan Lee', role: 'Recruiter at Meta' }, { name: 'Maya Chen', role: 'Your team lead' }]
+  assert.deepEqual(filterPeople(people, 'recruiter').map((p) => p.name), ['Jordan Lee'])
+  assert.deepEqual(filterPeople(people, 'TEAM LEAD').map((p) => p.name), ['Maya Chen'])
 })
