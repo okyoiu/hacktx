@@ -465,6 +465,7 @@ def test_a_hanging_muse_or_serpapi_ends_as_an_error_and_insights_recover(http, e
 
 
 def test_call_ends_by_itself_when_no_face_has_been_seen_for_the_idle_time(http, events, monkeypatch):
+    monkeypatch.setattr(store, "match", lambda p: None)  # no database needed
     monkeypatch.setattr(server, "CALL_IDLE_SECONDS", 0.3)
     monkeypatch.setattr(picks, "chat", FakeMuse())
     http.post("/faces", json={"trackId": 1, "screenBox": [0, 0, 10, 10], "facePrint": [0.1] * 512})
@@ -766,6 +767,10 @@ def test_live_bullets_add_this_calls_facts_to_the_card_and_skip_when_nothing_is_
 
 
 def test_the_call_remembers_the_followed_app_and_its_last_topic_for_how_we_met(http, events, monkeypatch):
+    monkeypatch.setattr(store, "person", lambda pid: None)  # no database needed
+    monkeypatch.setattr(store, "card_extras", lambda pid, facts=2: ("", [], NEVER))
+    monkeypatch.setattr(store, "last_time", lambda pid: None)
+    monkeypatch.setattr(store, "latest_note", lambda pid: None)
     seen = []
     monkeypatch.setattr(server, "remember_encounters", lambda ended: seen.append((ended.app, ended.topic)) or {})
     monkeypatch.setattr(picks, "chat", FakeMuse({"topic": "A HackTX demo", "points": ["x"], "actions": []}))
