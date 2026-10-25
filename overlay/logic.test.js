@@ -202,6 +202,9 @@ test('the status dot names what is wrong', () => {
   assert.deepEqual(healthProblems({ problems: ['No Muse key', 7] }), ['No Muse key'])
   assert.deepEqual(healthProblems({ error: 'x' }), ['The memory server is not answering'])
   assert.deepEqual(healthProblems({ problems: [] }, 'Face capture'), ['Face capture stopped'])
+  // the server's real reply: paused and unmuted are states, not failures
+  assert.deepEqual(healthProblems({ db: 'ok', muse: true, museError: null, serpapi: true, serpapiError: null, listening: false, muted: false, lastTranscriptAt: null }), [])
+  assert.deepEqual(healthProblems({ db: 'error', muse: true, serpapi: true, listening: true, muted: false }), ['db is not working'])
 })
 
 test('Live insights says Listening… until the first insight, and Paused when paused', () => {
@@ -475,11 +478,12 @@ test('result rows: three, then "+N more" that expands; prose only when there are
 
 test('the header tools fit inside the sheet at every width the layout can produce', () => {
   const { headerFits, toolsWidth, sheetWidthFor, HEAD } = require('./logic')
-  for (const width of [448, BAR.width, ISLAND.sheet]) assert.ok(headerFits(width), `fits at ${width}`)
-  assert.ok(headerFits(448, true), 'and compact')
+  // the sheet is never narrower than 600 (overlay.css min-width); a window under 520 switches to compact
+  for (const width of [BAR.width, ISLAND.sheet]) assert.ok(headerFits(width), `fits at ${width}`)
+  assert.ok(headerFits(448, true), 'compact fits a 448 window')
   assert.ok(toolsWidth(true) < toolsWidth(false), 'compact is narrower')
   assert.equal(sheetWidthFor(600, toolsWidth()), 600, 'the content minimum when the tools already fit')
-  assert.equal(sheetWidthFor(600, 500), 500 + HEAD.left + HEAD.gap + 2 * HEAD.pad, 'grows to fit wider tools, never the reverse')
+  assert.equal(sheetWidthFor(600, 500), 500 + HEAD.left + HEAD.gap + HEAD.pause + 2 * HEAD.pad, 'grows to fit wider tools, never the reverse')
 })
 
 test('hover is decided from where the pointer is: inside the island plus a margin, and for how long outside', () => {
@@ -508,6 +512,25 @@ test('hover is decided from where the pointer is: inside the island plus a margi
   assert.equal(s.collapse, false)
   s = hoverStep(s, { inside: false, now: 1300, grace })
   assert.equal(s.collapse, true, 'outside for 600 ms: back off')
+})
+
+test('the pause control says what it is doing and a click sends the opposite', () => {
+  const { pauseControl } = require('./logic')
+  assert.deepEqual(pauseControl(true), { icon: 'pause', label: 'Listening', tip: 'Pause Hello Again (stops listening and faces)', send: { on: false } })
+  assert.deepEqual(pauseControl(false), { icon: 'play', label: 'Paused', tip: 'Resume', send: { on: true } }, 'click while paused sends on: true')
+  assert.deepEqual(pauseControl(null), pauseControl(true), 'not known yet: the server starts listening, so show that until /health answers')
+  assert.equal(barState(true, null), 'live', 'unknown is not paused')
+  assert.equal(barState(true, false), 'paused')
+})
+
+test('End call explains itself, leaves the pause state alone, and the pill says Ready for 5 s after the Recap', () => {
+  const { END_CALL_TIP, READY, islandStage: stage } = require('./logic')
+  assert.equal(END_CALL_TIP, 'End call: save notes and show the Recap. Listening continues for the next call.')
+  assert.deepEqual(READY, { topic: 'Ready', meta: 'Next call starts when a face appears', ms: 5000 })
+  const closedAt = 1000
+  const noticeUntil = closedAt + READY.ms
+  assert.equal(stage({ recap: false, open: false, noticeUntil, now: closedAt + 4999 }), 'notice', 'Ready shows for 5 s')
+  assert.equal(stage({ recap: false, open: false, noticeUntil, now: closedAt + 5000 }), 'pill', 'then the pill')
 })
 
 test('only the first insight of a call opens the notice by itself; a new call resets it', () => {
