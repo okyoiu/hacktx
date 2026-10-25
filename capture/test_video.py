@@ -32,9 +32,11 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-def run_video(tmp_path, monkeypatch, frames: list[np.ndarray]) -> list:
+def run_video(tmp_path, monkeypatch, frames: list[np.ndarray], still_after=1e9) -> list:
+    monkeypatch.setattr(faces, "STILL_AFTER", still_after)  # identical test frames would otherwise count as pictures
     path = str(tmp_path / "call.avi")
-    out = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"MJPG"), 30, frames[0].shape[1::-1])
+    # FFV1 is lossless and deterministic; MJPG's first frames of an identical sequence come out slightly different
+    out = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"FFV1"), 30, frames[0].shape[1::-1])
     for frame in frames:
         out.write(frame)
     out.release()
@@ -81,12 +83,12 @@ class Stop(Exception):
 def test_leaving_the_call_clears_the_cards_and_coming_back_brings_them_again(monkeypatch):
     t1 = get_image("t1")
     h, w = t1.shape[:2]
-    checks = iter([True] * 5 + [False] * 4 + [True] * 2 + ["moved"] * 2 + ["chrome"] * 2)  # one look per frame: there, gone, back
+    checks = iter([True] * 5 + [False] * 4 + [True] * 2 + ["moved"] * 2 + ["chrome"] * 2 + ["notes"] * 2)  # one look per frame
 
     def call_window(apps):
         try:
             return {True: Window("zoom.us", (0, 0, w, h), 7, None), False: None, "moved": Window("zoom.us", (5, 6, w, h), 7, None),
-                    "chrome": Window("Google Chrome", (5, 6, w, h), 8, None)}[next(checks)]
+                    "chrome": Window("Google Chrome", (5, 6, w, h), 8, None), "notes": Window("Notes", (5, 6, w, h), 9, None, False)}[next(checks)]
         except StopIteration:
             raise Stop from None
 
@@ -109,14 +111,29 @@ def test_leaving_the_call_clears_the_cards_and_coming_back_brings_them_again(mon
     monkeypatch.setattr(faces, "FOLLOW_EVERY", -1)
     monkeypatch.setattr(faces, "call_window", call_window)
     monkeypatch.setattr(faces, "grab", lambda window_id: t1)  # the window's own pixels, whatever is in front of it
+    monkeypatch.setattr(faces, "STILL_AFTER", 1e9)  # identical test frames would otherwise count as pictures
     try:
         with pytest.raises(Stop):
             faces.main()
     finally:
         server.shutdown()
     kinds = [path if "facePrint" not in body else "print" for path, body in server.posts]  # a print marks a new card
-    first_gone, last_gone = kinds.index("/faces/gone"), len(kinds) - 1 - kinds[::-1].index("/faces/gone")
-    assert kinds[:first_gone].count("print") == 6 and kinds[last_gone + 1:].count("print") == 6  # six cards, cleared, six again
-    assert kinds.count("/faces/gone") == 6
+    cards = [k for k in kinds if k in ("print", "/faces/gone")]
+    # six cards; cleared when the window is gone; six again; cleared again when the followed window isn't a call
+    assert cards == ["print"] * 6 + ["/faces/gone"] * 6 + ["print"] * 6 + ["/faces/gone"] * 6
     assert [(b["app"], b["rect"]) for path, b in server.posts if path == "/window"] == [  # only when the app or rect changes
-        ("zoom.us", [0, 0, w, h]), (None, None), ("zoom.us", [0, 0, w, h]), ("zoom.us", [5, 6, w, h]), ("Google Chrome", [5, 6, w, h])]
+        ("zoom.us", [0, 0, w, h]), (None, None), ("zoom.us", [0, 0, w, h]), ("zoom.us", [5, 6, w, h]), ("Google Chrome", [5, 6, w, h]),
+        ("Notes", [5, 6, w, h])]
+
+
+def test_pictures_get_no_card_but_live_video_does(tmp_path, monkeypatch):
+    t1 = get_image("t1")
+    kinds = lambda posts: [p if "facePrint" not in b else "print" for p, b in posts]
+    # the same frame over and over, checked every frame: six cards, then all cleared as pictures, and nothing more
+    frozen = kinds(run_video(tmp_path, monkeypatch, [t1] * 6, still_after=0))
+    assert [k for k in frozen if k != "/window"] == ["print"] * 6 + ["/faces/gone"] * 6
+    rng = np.random.default_rng(0)
+    camera = [np.clip(t1 + rng.normal(0, 2, t1.shape), 0, 255).astype(np.uint8) for _ in range(6)]  # sensor noise
+    live = kinds(run_video(tmp_path, monkeypatch, camera, still_after=0))
+    assert live.count("print") == 6 and live.count("/faces") > 6  # cards stay and keep moving...
+    assert live.index("/faces/gone") > max(i for i, k in enumerate(live) if k in ("/faces", "print"))  # ...until the video ends

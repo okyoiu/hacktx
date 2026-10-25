@@ -12,7 +12,7 @@ from capture import faces
 from capture.embed import add_print, faces_in, find_faces
 from capture.faces import assign, video_frames
 from capture import window as win
-from capture.window import CALL_APPS, NO_PERMISSION, NoScreenRecording, Window, can_record, pick
+from capture.window import CALL_APPS, NO_PERMISSION, NoScreenRecording, Window, can_record, has_call, pick
 
 
 def test_video_frames_skips_to_keep_real_speed(tmp_path):
@@ -24,7 +24,7 @@ def test_video_frames_skips_to_keep_real_speed(tmp_path):
     frames = list(video_frames(cv2.VideoCapture(path), fps=5))
     assert len(frames) == 5  # one second of 30 fps video sampled at 5 fps
     frame, origin = frames[0]
-    assert frame.shape == (48, 64, 3) and origin == (0, 0, 64, None)
+    assert frame.shape == (48, 64, 3) and origin == (0, 0, 64, None, True)
 
 
 def window(owner, x, y, w, h, n=1):
@@ -40,7 +40,7 @@ def test_pick_takes_the_frontmost_big_window_of_the_apps_asked_for():
     ]
     assert pick(windows, ["zoom.us"]) == Window("zoom.us", (10, 38, 1100, 700), 4, "Finder")  # Finder's window covers it
     assert pick(windows, ["ZOOM"]) == Window("zoom.us", (10, 38, 1100, 700), 4, "Finder")
-    assert pick(windows, CALL_APPS) == Window("Google Chrome", (0, 0, 1400, 900), 3, "Finder")  # Chrome is in front of Zoom
+    assert pick(windows, CALL_APPS) == Window("Google Chrome", (0, 0, 1400, 900), 3, "Finder", False)  # in front of Zoom; no call tab
     assert pick(windows[:2], ["zoom.us"]) == Window("zoom.us", (900, 40, 200, 60), 2, "Finder")  # only a toolbar: better than nothing
     assert pick([window("Microsoft Teams classic", 5, 30, 1200, 800)], CALL_APPS).app == "Microsoft Teams classic"
     assert pick([window("Zoom", 5, 30, 1200, 800)], CALL_APPS).app == "Zoom"  # how newer Zoom versions are named
@@ -59,14 +59,27 @@ def test_pick_says_which_other_app_covers_the_window():
 
 def test_pick_follows_the_frontmost_app_when_no_call_app_is_open():
     assert pick([window("Archive Utility", 0, 0, 800, 600, 1), window("Electron", 0, 0, 3000, 2000, 2)], CALL_APPS) == \
-        Window("Archive Utility", (0, 0, 800, 600), 1, None)
+        Window("Archive Utility", (0, 0, 800, 600), 1, None, False)
     assert pick([window("Electron", 0, 0, 3000, 2000), window("Notes", 0, 0, 800, 600, 3)], CALL_APPS).app == "Notes"  # never our own windows
     assert pick([window("Terminal", 0, 0, 100, 50, 1), window("Notes", 0, 0, 800, 600, 3)], CALL_APPS) == \
-        Window("Notes", (0, 0, 800, 600), 3, "Terminal")  # a palette in front: too small to follow, but it does cover
+        Window("Notes", (0, 0, 800, 600), 3, "Terminal", False)  # a palette in front: too small to follow, but it does cover
     assert pick([window("Notes", 0, 0, 800, 600), window("Zoom", 0, 0, 1100, 700)], CALL_APPS).app == "Zoom"  # a call app wins
     assert pick([window("Terminal", 0, 0, 200, 100)], CALL_APPS) is None  # nothing of a real size
     assert pick([window("Electron", 0, 0, 3000, 2000)], CALL_APPS) is None
     assert pick([], CALL_APPS) is None
+
+
+def test_faces_are_looked_for_only_in_call_apps_and_browser_tabs_on_call_sites():
+    assert has_call("Zoom", "") and has_call("zoom.us", "Zoom Meeting") and has_call("Microsoft Teams classic", "")
+    assert has_call("Google Chrome", "Meet - weekly sync - Google Chrome")
+    assert has_call("Arc", "Launch Meeting - Zoom") and has_call("Safari", "https://teams.microsoft.com/...")
+    assert has_call("Google Chrome", "My room | whereby") and has_call("Google Chrome", "Jitsi Meet")
+    assert not has_call("Google Chrome", "GitHub - okyoiu/hacktx") and not has_call("Google Chrome", "")
+    assert not has_call("Notes", "Zoom notes") and not has_call("Archive Utility", "Zoom")  # not a browser, not a call app
+    tab = dict(window("Google Chrome", 0, 0, 1400, 900, 3), kCGWindowName="Meet - abc-defg-hij - Google Chrome")
+    assert pick([tab], CALL_APPS).calls and not pick([window("Google Chrome", 0, 0, 1400, 900, 3)], CALL_APPS).calls
+    assert pick([window("Zoom", 0, 0, 1100, 700)], CALL_APPS).calls and not pick([window("Notes", 0, 0, 800, 600)], CALL_APPS).calls
+    assert "Meet" not in repr(pick([tab], CALL_APPS))  # the title is matched, never kept
 
 
 def test_missing_screen_recording_permission_shows_as_windows_without_names(monkeypatch):
@@ -123,9 +136,9 @@ def test_screen_frames_follows_the_window_and_yields_nothing_while_it_is_gone(mo
     monkeypatch.setattr(faces, "grab", lambda window_id: np.full((20, 30, 3), window_id, np.uint8))
     frames = faces.screen_frames((0, 0, 30, 20), follow=["zoom.us"])
     frame, origin = next(frames)
-    assert origin == (50, 60, 30, "zoom.us") and frame[0, 0, 0] == 7  # the window's own pixels, by its id
+    assert origin == (50, 60, 30, "zoom.us", True) and frame[0, 0, 0] == 7  # the window's own pixels, by its id
     assert next(frames)[0] is None
-    assert next(frames)[1] == (5, 6, 30, "zoom.us")
+    assert next(frames)[1] == (5, 6, 30, "zoom.us", True)
 
 
 def test_assign_gives_overlapping_people_their_own_face():
@@ -172,17 +185,19 @@ def test_screen_frames_started_before_any_call_waits_quietly_then_follows(monkey
         return look
 
     chrome, zoom = Window("Google Chrome", (1, 2, 30, 20), 7, None), Window("zoom.us", (5, 6, 30, 20), 8, None)
-    looks = iter([None, None, "unreadable", chrome, zoom._replace(behind="Terminal"), zoom, None])
+    notes = Window("Notes", (1, 2, 30, 20), 3, None, False)
+    looks = iter([None, None, "unreadable", chrome, zoom._replace(behind="Terminal"), zoom, notes, None])
     monkeypatch.setattr(faces, "call_window", lookup)
     monkeypatch.setattr(faces, "grab", lambda window_id: np.zeros((20, 30, 3), np.uint8))
     frames = faces.screen_frames(None, follow=["zoom.us", "Google Chrome"])
-    got = [next(frames) for _ in range(7)]
-    assert [f is None for f, _ in got] == [True, True, True, False, False, False, True]
+    got = [next(frames) for _ in range(8)]
+    assert [f is None for f, _ in got] == [True, True, True, False, False, False, False, True]
+    assert got[6][1] == (1, 2, 30, "Notes", False)  # followed for the window event, but no faces
     assert all(apps == ["zoom.us", "Google Chrome"] for apps in seen)  # always every call app: the frontmost one wins
     assert capsys.readouterr().out.splitlines() == [  # one line per change, not per frame
         "waiting for a call window", "couldn't list windows: no permission", "following the Google Chrome window",
         "following the zoom.us window", "the zoom.us window is behind Terminal", "the zoom.us window is clear again",
-        "waiting for a call window"]
+        "following the Notes window (not a call: no faces)", "waiting for a call window"]
 
 
 def test_screen_frames_says_so_once_when_the_window_cannot_be_captured(monkeypatch, capsys):
@@ -210,3 +225,18 @@ def test_debug_face_box_is_dropped_once_the_person_has_moved_off_it():
     person = [100, 100, 200, 400]
     assert faces.face_in([150, 120, 60, 80], person) == [150, 120, 60, 80]
     assert faces.face_in([500, 120, 60, 80], person) is None and faces.face_in(None, person) is None
+
+
+def test_a_box_that_never_changes_is_a_picture_until_it_starts_moving():
+    t1, box = get_image("t1"), {1: [337, 219, 735, 648]}  # one person on the sample photo
+    rng = np.random.default_rng(0)
+    camera = lambda: np.clip(t1 + rng.normal(0, 1, t1.shape), 0, 255).astype(np.uint8)  # live video: a little sensor noise
+    pictures = faces.Pictures()
+    assert pictures.update(t1, box, 0.0) == set()  # first look: nothing to compare with yet
+    assert pictures.update(t1, box, 1.0) == set()  # too soon to tell
+    assert pictures.update(t1, box, 3.0) == {1}  # the same picture 3 s later
+    assert pictures.update(t1, {1: [340, 222, 738, 651]}, 6.0) == {1}  # YOLO's box jitters a little: still the same patch
+    assert pictures.update(camera(), box, 9.0) == set()  # the camera came on
+    assert pictures.update(camera(), {}, 12.0) == set() and not pictures.last  # the track ended: forgotten
+    live = faces.Pictures()
+    assert all(live.update(camera(), box, t) == set() for t in (0.0, 3.0, 6.0, 9.0))

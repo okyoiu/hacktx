@@ -33,7 +33,25 @@ def windows() -> list[dict]:
 MIN_SIZE = (300, 200)  # points; a call's toolbar or thumbnail window is smaller, so it doesn't count as the call
 
 # behind: the owner of another app's window in front of this one and overlapping it (the frontmost in the list), or None
-Window = namedtuple("Window", "app rect id behind")
+# calls: whether faces in it are people on a call (has_call), so faces.py knows to look for them
+Window = namedtuple("Window", "app rect id behind calls", defaults=(True,))
+
+BROWSERS = ("Google Chrome", "Arc", "Safari")  # in CALL_APPS: a call only when the tab is on one of these sites
+CALL_SITES = ("meet.google.com", "Google Meet", "Meet -", "Meet –", "zoom.us", "Zoom", "teams.microsoft.com", "Microsoft Teams",
+              "webex", "discord.com", "whereby", "jitsi")  # "Meet - <code>" is how Chrome titles a Meet tab
+
+
+def named(owner: str, apps) -> bool:
+    # \b so "Arc" doesn't match "Archive Utility" but "zoom" still matches "zoom.us"
+    return any(re.match(re.escape(a) + r"\b", owner, re.I) for a in apps)
+
+
+def has_call(owner: str, title: str) -> bool:
+    """Whether a window's faces are people on a call: a native call app, or a browser on a call site. Cesar: a lot of faces
+    online are just images, but people do join Zoom through the web. The title is only matched here, never kept."""
+    if named(owner, BROWSERS):
+        return any(site.lower() in title.lower() for site in CALL_SITES)
+    return named(owner, CALL_APPS)
 
 
 def overlap(a: dict, b: dict) -> bool:
@@ -48,8 +66,7 @@ def pick(windows: list[dict], apps) -> Window | None:
     """The frontmost window of any of these apps, as macOS lists them front to back; when none of them has a window, the
     frontmost regular window of whatever app is in front (never Hello Again's own). Its rect is (x, y, width, height) in
     screen points. Toolbars and thumbnails are skipped; if a call app has only those, its largest one wins."""
-    # \b so "Arc" doesn't match "Archive Utility" but "zoom" still matches "zoom.us"
-    ours = [w for w in windows if any(re.match(re.escape(a) + r"\b", w.get("kCGWindowOwnerName", ""), re.I) for a in apps)]
+    ours = [w for w in windows if named(w.get("kCGWindowOwnerName", ""), apps)]
     size = lambda w: (w["kCGWindowBounds"]["Width"], w["kCGWindowBounds"]["Height"])
     roomy = [w for w in windows if size(w)[0] >= MIN_SIZE[0] and size(w)[1] >= MIN_SIZE[1] and w.get("kCGWindowOwnerName") not in OWN_APPS]
     if ours:
@@ -62,7 +79,8 @@ def pick(windows: list[dict], apps) -> Window | None:
     front = next((f for f in windows if f.get("kCGWindowOwnerName") not in OWN_APPS), w)
     front_app = front.get("kCGWindowOwnerName", "")  # a nameless window (rare) never counts as covering
     behind = front_app if front_app and front_app != app and overlap(front["kCGWindowBounds"], b) else None
-    return Window(app, (int(b["X"]), int(b["Y"]), int(b["Width"]), int(b["Height"])), w.get("kCGWindowNumber"), behind)
+    return Window(app, (int(b["X"]), int(b["Y"]), int(b["Width"]), int(b["Height"])), w.get("kCGWindowNumber"), behind,
+                  has_call(app, w.get("kCGWindowName", "")))
 
 
 NO_PERMISSION = ("Screen Recording permission is off for the app that launched Hello Again (System Settings > Privacy & Security > "
