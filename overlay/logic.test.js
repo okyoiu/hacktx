@@ -453,6 +453,26 @@ test('the ⋯ menu: People, the transcript toggle, Debug only in developer mode,
   assert.equal(dev.at(-1).id, 'quit')
 })
 
+test('mute: the mic toggle flattens and dims the waveform without pausing everything', () => {
+  const { micState } = require('./logic')
+  assert.deepEqual(micState({ connected: true, on: true, muted: false }), { wave: 'live', label: 'Mute', dim: false })
+  assert.deepEqual(micState({ connected: true, on: true, muted: true }), { wave: 'flat', label: 'Unmute', dim: true })
+  assert.deepEqual(micState({ connected: true, on: false, muted: false }), { wave: 'flat', label: 'Mute', dim: false }, 'paused: flat but not dimmed')
+  assert.deepEqual(micState({ connected: false, on: true, muted: false }), { wave: 'flat', label: 'Mute', dim: false }, 'offline')
+  assert.ok(validCall('/mute', { on: true }), 'the mute route is allowed')
+  assert.ok(!validCall('/mute/x', { on: true }))
+})
+
+test('result rows: three, then "+N more" that expands; prose only when there are no items', () => {
+  const { itemRows } = require('./logic')
+  const items = [1, 2, 3, 4, 5].map((n) => ({ title: 'Place ' + n, detail: n + ' mi', url: 'https://maps.example/' + n }))
+  assert.deepEqual(itemRows(items, false), { shown: items.slice(0, 3), more: 2 })
+  assert.deepEqual(itemRows(items, true), { shown: items, more: 0 })
+  assert.deepEqual(itemRows(items.slice(0, 3), false), { shown: items.slice(0, 3), more: 0 }, 'three or fewer: no cutoff')
+  assert.deepEqual(itemRows(undefined, false), { shown: [], more: 0 })
+  assert.deepEqual(itemRows([{ title: 'x' }, { nope: 1 }, 'bad'], false).shown, [{ title: 'x' }], 'only rows with a title')
+})
+
 test('the island keeps its centre as it grows (Teams: its left edge) and stays on screen', () => {
   const spot = { x: 440, y: 31, width: BAR.width, height: BAR.height, anchor: 'center' }
   assert.deepEqual(islandBounds(spot, { width: ISLAND.pill, height: 44 }, WORK), { x: 440 + (BAR.width - ISLAND.pill) / 2, y: 31, width: ISLAND.pill, height: 44 })

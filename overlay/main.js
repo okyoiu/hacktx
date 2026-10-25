@@ -307,6 +307,10 @@ function demoApi(route, body, method) {
     broadcast({ type: 'listening', on: body.on, startedAt: demoStart })
     return {}
   }
+  if (route === '/mute') {
+    broadcast({ type: 'mute', on: Boolean(body.on) })
+    return {}
+  }
   const id = `demo${++demoAnswers}`
   const action = lastInsights?.actions.find((a) => route === `/actions/${encodeURIComponent(a.id)}`)
   const query = body?.question || action?.label || 'Sample question'
@@ -430,7 +434,12 @@ app.whenReady().then(async () => {
   windows.cards.showInactive()
   reveal(windows.island)
 
-  const shortcuts = { 'CommandOrControl+Return': openAsk, 'CommandOrControl+Shift+P': togglePeople, 'CommandOrControl+\\': toggleAll }
+  const shortcuts = {
+    'CommandOrControl+Return': openAsk,
+    'CommandOrControl+Shift+P': togglePeople,
+    'CommandOrControl+\\': toggleAll,
+    'CommandOrControl+M': () => windows.island.webContents.send('mute'), // the island posts /mute and the event answers
+  }
   if (DEV) shortcuts['CommandOrControl+Alt+D'] = toggleDebug
   for (const [keys, run] of Object.entries(shortcuts)) {
     if (!globalShortcut.register(keys, run)) console.warn(`${keys} is taken by another app; use the island instead`)

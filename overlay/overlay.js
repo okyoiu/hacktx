@@ -51,6 +51,10 @@ function handle(e) {
       setListening(e)
       setInsightsEmpty(e.on)
     }
+    if (e.type === 'mute') {
+      muted = Boolean(e.on)
+      renderBar()
+    }
     if (e.type === 'caption') {
       energy = 1
       wakePanel()
@@ -559,6 +563,7 @@ if (shows('bar')) {
 // ---------- the head: waveform, timer, tools ----------
 
 let listening = { on: false, startedAt: null }
+let muted = false // the mic toggle: no audio goes to Muse while muted; faces keep working
 let connected = !window.overlay || !!q.get('mock') // a browser preview has no connection to lose
 let energy = 0 // jumps to 1 on each caption, then settles: the waveform breathes with the conversation
 
@@ -591,14 +596,26 @@ window.overlay?.onLaunch((statuses) => {
 })
 
 function renderBar() {
-  const live = connected && listening.on
+  const mic = micState({ connected, on: listening.on, muted })
   $('bar').dataset.state = barState(connected, listening.on)
+  $('bar').dataset.muted = mic.dim
   $('pause').disabled = !connected
   $('endBtn').disabled = !connected
+  $('micBtn').disabled = !connected
+  $('micBtn').setAttribute('aria-pressed', String(muted))
+  $('micBtn').setAttribute('aria-label', mic.label + ' ⌘M')
   $('pause').setAttribute('aria-label', listening.on ? 'Pause listening' : 'Resume listening')
   tick()
-  if (live && !calm.matches) requestAnimationFrame(wave)
-  else drawWave(live ? 'icon' : 'flat')
+  if (mic.wave === 'live' && !calm.matches) requestAnimationFrame(wave)
+  else drawWave(mic.wave === 'live' ? 'icon' : 'flat')
+}
+
+async function toggleMute() {
+  $('micBtn').disabled = true
+  const { error } = await api('/mute', { on: !muted }) // the `mute` event answers
+  $('micBtn').disabled = !connected
+  if (error) flash = { text: 'Not sent', until: Date.now() + 3000 }
+  tick()
 }
 
 let flash = { text: '', until: 0 } // "Not sent" or "Saved" takes the timer's place for a few seconds
@@ -619,7 +636,7 @@ function wave(t) {
   if (waving) return
   waving = true
   const frame = (now) => {
-    if ($('bar').dataset.state !== 'live' || calm.matches) {
+    if ($('bar').dataset.state !== 'live' || muted || calm.matches) {
       waving = false
       return renderBar()
     }
@@ -658,6 +675,8 @@ if (shows('bar')) {
     tick()
   })
   $('hideBtn').addEventListener('click', () => window.overlay?.toggleAll())
+  $('micBtn').addEventListener('click', toggleMute)
+  window.overlay?.onMute(toggleMute) // ⌘M
   // People, the transcript, Debug (developer mode) and Quit live behind ⋯ and the pill's right-click
   $('moreBtn').addEventListener('click', () => window.overlay?.menu())
   $('island').addEventListener('contextmenu', (e) => {
@@ -780,9 +799,40 @@ function showResponse(e) {
     turn = { id: e.id }
     turns.push(turn)
   }
-  Object.assign(turn, { query: e.query, status: e.status, text: e.text || '', sources: e.sources || [] })
+  Object.assign(turn, { query: e.query, status: e.status, text: e.text || '', sources: e.sources || [], items: e.items || [] })
   renderThread(turn)
   if (e.id !== closed) setOpen(true)
+}
+
+// Places, events and search results as rows that open in the browser; three, then "+N more".
+function itemList(turn) {
+  const { shown, more } = itemRows(turn.items, turn.expanded)
+  const list = el('ul', 'rows')
+  for (const item of shown) {
+    const li = el('li')
+    const safe = webUrl(item.url || '')
+    const row = el(safe ? 'a' : 'div', 'row')
+    if (safe) {
+      row.href = item.url
+      row.target = '_blank'
+      row.rel = 'noreferrer'
+    }
+    row.append(el('span', 'title', item.title), el('span', 'detail', item.detail || ''))
+    li.append(row)
+    list.append(li)
+  }
+  if (more) {
+    const li = el('li')
+    const button = el('button', 'more-btn', `+${more} more`)
+    button.type = 'button'
+    button.addEventListener('click', () => {
+      turn.expanded = true
+      renderThread(turn)
+    })
+    li.append(button)
+    list.append(li)
+  }
+  return list
 }
 
 function renderThread(changed) {
@@ -791,7 +841,8 @@ function renderThread(changed) {
   $('thread').scrollTop = $('thread').scrollHeight
 }
 
-function turnNode({ query, status, text, sources }, animate) {
+function turnNode(turn, animate) {
+  const { query, status, text, sources } = turn
   const item = el('li', 'turn')
   item.dataset.state = status
   const chip = el('span', 'chip')
@@ -803,8 +854,10 @@ function turnNode({ query, status, text, sources }, animate) {
     row.append(icon('sparkle', 'mark'), verb('Thinking,Searching,Reading,Writing'))
     item.append(row)
   }
+  const hasRows = status === 'done' && itemRows(turn.items, false).shown.length > 0
+  if (hasRows) item.append(itemList(turn))
   const answer = el('div', 'answer')
-  answer.append(...answerLines(status, text).map((line, i) => {
+  answer.append(...(hasRows ? [] : answerLines(status, text)).map((line, i) => {
     const p = el('p', null, line)
     if (animate) p.style.animationDelay = i * 70 + 'ms'
     else p.style.animation = 'none'

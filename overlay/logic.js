@@ -1,7 +1,7 @@
 // Small rules shared by main.js and the renderer (loaded as a plain script), tested in logic.test.js.
 
 // The only memory API calls the overlay makes; main refuses anything else. Action ids are short words.
-const ROUTES = /^\/(listening|ask|actions\/[\w-]+|faces\/\d+\/remember|calls\/end)$/
+const ROUTES = /^\/(listening|mute|ask|actions\/[\w-]+|faces\/\d+\/remember|calls\/end)$/
 
 // What each method may call. The People dashboard reads, renames and deletes people; ids are short words.
 const PERSON = /^\/people\/[\w-]+$/
@@ -75,6 +75,21 @@ function barState(connected, listeningOn) {
 }
 function timerText({ connected, flash, startedAt, now }) {
   return flash || (connected ? elapsed(startedAt, now) : 'Offline')
+}
+
+// The mic toggle: muted flattens and dims the waveform (no audio goes to Muse); paused or offline is flat but
+// not dimmed, because that's the pause button's state, not the mic's.
+function micState({ connected, on, muted }) {
+  const live = connected && on && !muted
+  return { wave: live ? 'live' : 'flat', label: muted ? 'Unmute' : 'Mute', dim: Boolean(muted) }
+}
+
+// Places, events and search results as rows: the first three, then "+N more" until expanded.
+const ROWS_SHOWN = 3
+function itemRows(items, expanded) {
+  const rows = (Array.isArray(items) ? items : []).filter((i) => i && typeof i === 'object' && typeof i.title === 'string')
+  const shown = expanded ? rows : rows.slice(0, ROWS_SHOWN)
+  return { shown, more: rows.length - shown.length }
 }
 
 // Live insights: at most 3 points and 4 actions, whatever the service sends.
@@ -285,7 +300,7 @@ function shouldMove(prev, next) {
 // Window sizes the layout counts on, in screen points. Panels grow downwards from their spot (main.js `fit`).
 // The strip's spot is the island at its widest (the sheet); as a pill it sits centred in that spot.
 const BAR = { width: 600, height: 44 }
-const ISLAND = { pill: 236, sheet: 600 }
+const ISLAND = { pill: 272, sheet: 600 } // the pill: mic, waveform, timer, sparkle, badge
 const PANEL = { width: 448, gap: 12, margin: 24 }
 const STRIP = { width: 720, height: 72 } // the transcript strip along the bottom
 const RECAP = { width: 560, height: 440 } // height: a guess for centring; the window fits its content
@@ -488,4 +503,4 @@ function debugLabel({ trackId, score, decision }) {
   return `#${trackId} · ${scored} · ${decision}`
 }
 
-if (typeof module !== 'undefined') module.exports = { menuModel, hoverOpen, HOVER_GRACE, REMEMBER_POINTS, cardKind, staleLine, relativeDate, oneLine, cardFacts, cardBullets, presetFor, layoutFor, askPlace, cardRect, recapFrom, debugLabel, devMode, shouldMove, islandStage, islandBounds, ISLAND, NOTICE_MS, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
+if (typeof module !== 'undefined') module.exports = { micState, itemRows, menuModel, hoverOpen, HOVER_GRACE, REMEMBER_POINTS, cardKind, staleLine, relativeDate, oneLine, cardFacts, cardBullets, presetFor, layoutFor, askPlace, cardRect, recapFrom, debugLabel, devMode, shouldMove, islandStage, islandBounds, ISLAND, NOTICE_MS, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
