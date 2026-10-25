@@ -7,7 +7,7 @@ import re
 import subprocess
 
 # Owner names as macOS reports them; a name also matches longer ones ("Microsoft Teams" finds "Microsoft Teams classic").
-CALL_APPS = ("zoom.us", "FaceTime", "Photo Booth", "Microsoft Teams", "Google Chrome", "Arc", "Safari", "Discord", "Slack", "Webex")
+CALL_APPS = ("Zoom", "zoom.us", "FaceTime", "Photo Booth", "Microsoft Teams", "Google Chrome", "Arc", "Safari", "Discord", "Slack", "Webex")
 
 # Prints every on-screen window's owner app, layer and bounds; bounds are screen points, top-left origin, like mss.
 LIST_WINDOWS = """

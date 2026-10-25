@@ -32,11 +32,12 @@ RETRY = 3.0  # seconds before another InsightFace pass for a person whose face w
 
 
 def screen_frames(region: tuple[int, int, int, int] | None, follow: list[str] | None = None):
-    """Yield (frame, (x, y, width)) of the region in screen points; with follow (app names), move with that app's window.
+    """Yield (frame, (x, y, width, app)) of the region in screen points; with follow (app names), move with that app's
+    window (app is its name as capture/window.py reports it, None with a fixed region).
     While there is no such window (not started yet, or the user left the call) it yields (None, ...) instead and keeps
     looking, logging one line when that changes."""
     checked = time.time() if region else 0  # no region yet: look right away
-    shown = None
+    shown = app = None
     with mss.MSS() as screen:
         while True:
             if follow and time.time() - checked > FOLLOW_EVERY:
@@ -48,17 +49,17 @@ def screen_frames(region: tuple[int, int, int, int] | None, follow: list[str] | 
                 except SystemExit as e:  # the window list isn't readable (no osascript, no permission): keep waiting
                     found, why = None, str(e)
                 checked = time.time()
-                region = found[1] if found else None
+                app, region = found if found else (None, None)
                 state = f"following the {found[0]} window" if found else why
                 if state != shown:
                     print(state)
                     shown = state
             if region is None:
-                yield None, (0, 0, 1)
+                yield None, (0, 0, 1, None)
                 continue
             x, y, w, h = region
             frame = cv2.cvtColor(np.array(screen.grab({"left": x, "top": y, "width": w, "height": h})), cv2.COLOR_BGRA2BGR)
-            yield frame, (x, y, w)
+            yield frame, (x, y, w, app)
 
 
 def video_frames(video: cv2.VideoCapture, fps: float):
@@ -67,9 +68,16 @@ def video_frames(video: cv2.VideoCapture, fps: float):
         ok, frame = video.read()
         if not ok:
             return
-        yield frame, (0, 0, frame.shape[1])  # video pixels stand in for screen points
+        yield frame, (0, 0, frame.shape[1], None)  # video pixels stand in for screen points
         for _ in range(skip):
             video.grab()
+
+
+def face_in(face: list[float] | None, person: list[float]) -> list[float] | None:
+    """The last face box if its centre is still inside the person's box (they haven't moved off it), else None."""
+    if face and person[0] <= face[0] + face[2] / 2 <= person[0] + person[2] and person[1] <= face[1] + face[3] / 2 <= person[1] + person[3]:
+        return face
+    return None
 
 
 def assign(faces: list, boxes: dict[int, list[float]]) -> dict[int, object]:
@@ -126,11 +134,20 @@ def main() -> None:
             return http.post(path, json=body).json()
         except httpx.HTTPError as e:
             print(f"memory service unreachable ({e!r}); is uvicorn running?")
-            return {}
+            return {"unreachable": True}
 
-    for frame, (x, y, w) in frames:
+    debug = os.getenv("HELLO_DEBUG") == "1"  # developer mode: /faces also says what the computer vision saw
+    stamps: deque[float] = deque(maxlen=10)  # when the last frames were processed, for fps
+    face_boxes: dict[int, list[float]] = {}  # track id -> last InsightFace box in screen points
+    window = {}  # the call window (app and rect) memory was last told about
+    for frame, (x, y, w, app) in frames:
         started = time.time()
         scale = frame.shape[1] / w if frame is not None else 1  # pixels per screen point (2.0 on Retina)
+        rect = None if frame is None else [x, y, w, frame.shape[0] / scale]
+        if {"app": app, "rect": rect} != window and not send("/window", {"app": app, "rect": rect}).get("unreachable"):
+            window = {"app": app, "rect": rect}  # on change only; if memory was down it is told again next frame
+        if frame is not None:
+            stamps.append(time.monotonic())
         result = model.track(frame, persist=True, classes=[PERSON], verbose=False)[0] if frame is not None else None
 
         live: set[int] = set()  # empty while the call window is gone, so every card clears
@@ -156,6 +173,12 @@ def main() -> None:
             for tid, (x1, y1, x2, y2) in boxes.items():
                 live.add(tid)
                 body = {"trackId": tid, "screenBox": [x + x1 / scale, y + y1 / scale, (x2 - x1) / scale, (y2 - y1) / scale]}
+                if tid in found:
+                    fx1, fy1, fx2, fy2 = map(float, found[tid].bbox)
+                    face_boxes[tid] = [x + fx1 / scale, y + fy1 / scale, (fx2 - fx1) / scale, (fy2 - fy1) / scale]
+                if debug:
+                    body["debug"] = {"personBox": body["screenBox"], "faceBox": face_in(face_boxes.get(tid), body["screenBox"]),
+                                     "fps": round((len(stamps) - 1) / max(stamps[-1] - stamps[0], 1e-6), 1) if len(stamps) > 1 else 0}
                 if tid not in printed:
                     if tid not in wanting or tid not in found:
                         continue  # face not visible yet (turned away); looked again after RETRY
@@ -172,6 +195,7 @@ def main() -> None:
                     namer.met(reply["person"])
 
         tried = {t: v for t, v in tried.items() if t in live}
+        face_boxes = {t: v for t, v in face_boxes.items() if t in live}
         for tid in printed - live:
             send("/faces/gone", {"trackId": tid})
             printed.discard(tid)
