@@ -124,6 +124,22 @@ function shortDate(iso) {
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
 }
 
+// People dashboard keys. `field` is the focused text field ('' for none, 'search' or 'role'), `cursor` the
+// highlighted row (-1 for none) among `count` rows. Returns what to do and the new cursor.
+// Arrows move the cursor, Enter opens it (the first row if none), "/" jumps to search, Esc closes; a label
+// being typed keeps every key but Esc.
+function peopleKey(key, { field = '', count, cursor }) {
+  if (key === 'Escape') return { action: 'close', cursor }
+  if (field === 'role') return { action: null, cursor }
+  if (key === '/' && !field) return { action: 'search', cursor }
+  if (key === 'ArrowDown' || key === 'ArrowUp') {
+    const next = key === 'ArrowDown' ? cursor + 1 : cursor - 1
+    return { action: count ? 'move' : null, cursor: Math.max(0, Math.min(next, count - 1)) }
+  }
+  if (key === 'Enter' && count) return { action: 'open', cursor: Math.max(cursor, 0) }
+  return { action: null, cursor }
+}
+
 // Deleting takes two clicks: Delete, then Confirm. Cancel, Escape or opening someone else puts it back.
 function deleteStep(step, event) {
   if (event === 'delete') return step === 'idle' ? 'confirm' : step
@@ -163,4 +179,18 @@ function healthProblems(health, launchWarningText = '') {
 // What Live insights says before its first insight.
 const insightsEmptyText = (listeningOn) => (listeningOn === false ? 'Paused. Resume to keep listening.' : 'Listening…')
 
-if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver, cleanName, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
+// Where a card goes, in window coordinates: beside the face (right, else left), else below it, else above,
+// so it never covers the face. A side card slides up or down to stay on screen. With no room anywhere it
+// goes beside the face anyway, clamped (shortcut: one card can't avoid a face that fills the screen).
+function cardPlace({ face: [x, y, w, h], card, screen, gap = 12, margin = 8 }) {
+  const clamp = (v, size, max) => Math.max(margin, Math.min(v, max - size - margin))
+  const side = (left) => ({ left, top: clamp(y, card.height, screen.height) })
+  if (x + w + gap + card.width <= screen.width - margin) return side(x + w + gap)
+  if (x - gap - card.width >= margin) return side(x - gap - card.width)
+  const across = clamp(x, card.width, screen.width)
+  if (y + h + gap + card.height <= screen.height - margin) return { left: across, top: y + h + gap }
+  if (y - gap - card.height >= margin) return { left: across, top: y - gap - card.height }
+  return side(clamp(x + w + gap, card.width, screen.width))
+}
+
+if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }

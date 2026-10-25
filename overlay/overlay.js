@@ -5,7 +5,7 @@ const q = new URLSearchParams(location.search)
 const view = q.get('view') || 'all'
 const shows = (part) => view === 'all' || view === part
 const origin = { x: +q.get('ox') || 0, y: +q.get('oy') || 0 } // the cards window's top-left in screen points
-const CARD = { width: 208, gap: 12 }
+const CARD = { width: 208, gap: 12, open: 150 } // open: room for a name and three bullets
 const KIND_EMOJI = { define: '📘', search: '🌐', places: '📍', events: '📅', recall: '👋', followups: '💬', helpful: '✨' }
 const calm = matchMedia('(prefers-reduced-motion: reduce)')
 
@@ -54,7 +54,7 @@ function handle(e) {
 
 // ---------- name cards (click-through, never show tracking data) ----------
 
-function placeCard({ trackId, screenBox: [x, y, w], person }) {
+function placeCard({ trackId, screenBox: [x, y, w, h], person }) {
   const id = 't' + trackId
   let card = $(id)
   const known = person ? [person.id, ...bulletsOf(person), person.met].join('\n') : 'unknown'
@@ -89,10 +89,10 @@ function placeCard({ trackId, screenBox: [x, y, w], person }) {
   }
   card.dataset.person = known
   syncOpen(card)
-  // beside the face, flipping to the left side near the screen edge
-  let left = x - origin.x + w + CARD.gap
-  if (left + CARD.width > innerWidth) left = x - origin.x - CARD.width - CARD.gap
-  card.style.transform = `translate(${Math.max(8, left)}px, ${Math.max(8, y - origin.y)}px)`
+  // a known card is placed for its open size, so opening it never pushes it over the face
+  const size = person ? { width: CARD.width, height: CARD.open } : { width: card.offsetWidth || CARD.width, height: card.offsetHeight || 40 }
+  const { left, top } = cardPlace({ face: [x - origin.x, y - origin.y, w, h], card: size, screen: { width: innerWidth, height: innerHeight }, gap: CARD.gap })
+  card.style.transform = `translate(${left}px, ${top}px)`
 }
 
 // Speaking brings a quiet card back. Face events repeat while a face is on screen, so only arrivals and
@@ -635,10 +635,21 @@ function personRow(p) {
   return item
 }
 
+let shown = [] // the rows on screen, after search
+let cursor = -1 // the keyboard-highlighted row
+
 function renderPeople() {
-  const found = filterPeople(everyone, $('peopleSearch').value)
-  $('peopleList').replaceChildren(...found.map(personRow))
-  $('peopleEmpty').textContent = found.length ? '' : everyone.length ? 'Nobody matches that.' : 'No one yet. Remember someone from a call.'
+  shown = filterPeople(everyone, $('peopleSearch').value)
+  cursor = Math.min(cursor, shown.length - 1)
+  $('peopleList').replaceChildren(...shown.map(personRow))
+  markCursor()
+  $('peopleEmpty').textContent = shown.length ? '' : everyone.length ? 'Nobody matches that.' : 'No one yet. Remember someone from a call.'
+}
+
+function markCursor() {
+  const rows = $('peopleList').querySelectorAll('.person-row')
+  rows.forEach((row, i) => row.classList.toggle('cursor', i === cursor))
+  rows[cursor]?.scrollIntoView({ block: 'nearest' })
 }
 
 async function loadPeople() {
@@ -740,11 +751,19 @@ if (view === 'people') {
   $('peopleSearch').addEventListener('input', renderPeople)
   $('closePeople').addEventListener('click', () => window.overlay?.togglePeople())
   document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape') return
-    if (current?.step === 'confirm') {
+    if (e.key === 'Enter' && e.target.matches('button')) return // a focused button keeps its own Enter
+    const field = e.target === $('peopleSearch') ? 'search' : e.target.matches('.role-field') ? 'role' : ''
+    const { action, cursor: next } = peopleKey(e.key, { field, count: shown.length, cursor })
+    if (!action) return
+    e.preventDefault()
+    cursor = next
+    if (action === 'move') markCursor()
+    if (action === 'open') openPerson(shown[cursor].id)
+    if (action === 'search') $('peopleSearch').focus()
+    if (action === 'close' && current?.step === 'confirm') {
       current.step = deleteStep('confirm', 'escape')
       openPerson(current.id)
-    } else window.overlay?.togglePeople()
+    } else if (action === 'close') window.overlay?.togglePeople()
   })
   window.overlay?.onPeople(loadPeople)
   loadPeople()
