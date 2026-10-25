@@ -4,6 +4,7 @@ Run: uv run --env-file .env uvicorn memory.app:app --reload
 Keep it on localhost or your LAN; nothing here is authenticated except deleting a person.
 """
 import asyncio
+import math
 import os
 import secrets
 import time
@@ -47,6 +48,7 @@ history: list[str] = []  # lines Muse Spark has already seen, context for the ne
 fresh: list[str] = []  # final lines since the last insights refresh
 listening: dict = {"type": "listening", "on": True, "startedAt": utc_now()}  # latest listening event
 latest_insights: dict | None = None  # latest insights event
+latest_window: dict | None = None  # latest window event: where the followed call window is, for Ask AI placement
 last_refresh: float | None = None  # when the last insights refresh started (monotonic); None = the next one is immediate
 last_transcript_at: str | None = None  # when the last line was accepted, for the control bar's status dot
 actions: dict[str, dict] = {}  # action id -> {kind, label, query, personId}
@@ -168,7 +170,7 @@ async def overlay_socket(ws: WebSocket):
     if not from_this_laptop(ws):  # the http middleware doesn't see WebSockets
         return await ws.close(code=1008)
     await ws.accept()
-    for event in (listening, latest_insights):  # catch up an overlay that starts mid-call
+    for event in (listening, latest_insights, latest_window):  # catch up an overlay that starts mid-call
         if event:
             await ws.send_json(event)
     clients.add(ws)
@@ -225,6 +227,25 @@ async def faces(t: FaceTrack):
     saw_face(tracks[t.trackId])
     await push({"type": "face", "trackId": t.trackId, "screenBox": t.screenBox, "person": tracks[t.trackId]})
     return {"person": tracks[t.trackId]}
+
+
+class Window(BaseModel):
+    rect: list | None  # checked by hand: pydantic's own 422 would echo an infinite number back and fail to serialize it
+
+
+def good_rect(rect: list | None) -> bool:
+    nums = isinstance(rect, list) and len(rect) == 4 and all(type(n) in (int, float) and math.isfinite(n) for n in rect)
+    return rect is None or (nums and rect[2] > 0 and rect[3] > 0)
+
+
+@app.post("/window")
+async def set_window(w: Window):
+    global latest_window
+    if not good_rect(w.rect):
+        raise HTTPException(422, "rect must be null or [x, y, w, h] as finite numbers with w and h above 0")
+    latest_window = {"type": "window", "rect": w.rect}
+    await push(latest_window)
+    return {"ok": True}
 
 
 @app.post("/faces/gone")
