@@ -92,11 +92,13 @@ def write_person(pid: str) -> Path | None:
     path = private_folders() / f"{pid}.md"
     about = next((e["about"] for e in p["encounters"] if e["about"]), "")
     out = [f"# {one_line(p['name'])}", "", f"Who they are to you: {one_line(p['role']) or 'not set'}", "",
-           f"First met {day(p['firstMet'])}.", ""]
+           f"First met {day(p['firstMet'])}." + (f" How we met: {one_line(p['howMet'])}" if p.get("howMet") else ""), ""]
     if about:
         out += ["## About", "", one_line(about), ""]
     out += ["## Conversations", ""]
     out += [f"- {day(e['metAt'].astimezone())}: {one_line(e['lastTime'])}" for e in p["encounters"]] or ["Nothing yet."]
+    if p.get("facts"):
+        out += ["", "## Facts (Muse)", ""] + [f"- {one_line(f['text'])}" for f in p["facts"]]
     if p["notes"]:
         out += ["", "## Notes", ""] + [f"- {one_line(n['text'])}" for n in p["notes"]]
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # about real people: only this user can read it

@@ -36,6 +36,7 @@ OUTBOUND_SECONDS = 45
 THREAD_TURNS = 6  # question/answer turns of an Ask AI chat that follow-ups can see
 LIVE_BULLET_SECONDS = 60  # check what a person has said at most this often
 LIVE_MIN_WORDS = 8  # fewer words than this since the last check is not worth a Muse call
+MAX_BULLETS = 5  # a card past this gets a shorter "Met …" line, then fewer facts
 NOTE_POINTS = 10  # Muse rephrases points every refresh, so the call note keeps only the latest few
 
 
@@ -99,6 +100,8 @@ class Call:
     points: list[str] = field(default_factory=list)  # the latest NOTE_POINTS distinct insight points, in order
     responses: list[dict] = field(default_factory=list)  # finished response events
     lines: list[str] = field(default_factory=list)  # every final transcript line, "who: text"
+    app: str | None = None  # the call app followed while it ran, e.g. "zoom.us"
+    topic: str = ""  # what its insights ended up about
 
 
 call: Call | None = None  # None between calls
@@ -128,6 +131,7 @@ def end_call() -> asyncio.Future:
     live.clear()
     snippets.clear()
     insights = latest_insights
+    ended.topic = (insights or {}).get("topic", "")
     latest_insights = None  # the next call, and overlays connecting later, start clean
     last_refresh = None  # the next call's first insights don't wait out this call's interval
     history.clear()
@@ -154,14 +158,25 @@ async def send_recap(ended: Call, insights: dict | None) -> None:
     await push(recap)
 
 
+APP_NAMES = {"zoom.us": "Zoom", "facetime": "FaceTime", "microsoft teams": "Teams", "google chrome": "Chrome"}
+
+
+def how_met(ended: Call) -> str:
+    """"Oct 25, 2026 on Zoom: <what that call was about>", from facts we already have (no Muse call)."""
+    app = ended.app and APP_NAMES.get(ended.app.casefold(), ended.app)
+    return f"{notes.day(ended.started)} on {app or 'a call'}" + (f": {ended.topic}" if ended.topic else "")
+
+
 def remember_encounters(ended: Call) -> dict[str, str]:
     """Runs in a thread: store Muse Spark's about/last-time summary for each recognized person of a finished call.
     Returns person id -> this call's last-time line (empty when the summary was skipped)."""
     lasts: dict[str, str] = {}
     try:
         # store.person drops anyone who deleted themselves or whose consent ran out; unenrolled faces never got here
-        people = {p["id"]: {"name": p["name"], "role": p["role"], "notes": [n["text"] for n in p["notes"][:5]]}
+        people = {p["id"]: {"name": p["name"], "role": p["role"], "notes": [n["text"] for n in p["notes"][:5]],
+                            "facts": [f["text"] for f in p.get("facts", [])]}
                   for p in map(store.person, ended.people) if p}
+        first_call = {p["id"]: not p["encounters"] for p in map(store.person, ended.people) if p}
         if not people or not ended.lines:
             return  # the finally below still refreshes their files
         for s in picks.summarise(people, ended.lines):
@@ -169,6 +184,9 @@ def remember_encounters(ended: Call) -> dict[str, str]:
             lasts[s["personId"]] = s["lastTime"]
             if s["role"]:
                 store.set_role(s["personId"], s["role"], "muse")  # never replaces a role the user typed
+            store.add_facts(s["personId"], s["facts"])
+            if first_call.get(s["personId"]):
+                store.set_how_met(s["personId"], how_met(ended))
     except Exception as e:  # e.g. no MODEL_API_KEY: the call still ends and its note is still written
         print(f"encounter summaries skipped: {e}")
     finally:
@@ -183,7 +201,10 @@ def remember_encounters(ended: Call) -> dict[str, str]:
 def saw_face(card: dict | None) -> None:
     """Count this face toward the current call and restart the idle countdown that ends it."""
     global idle_timer
-    people = this_call().people
+    current = this_call()
+    people = current.people
+    if latest_window and latest_window["app"]:
+        current.app = latest_window["app"]
     if card:
         people.setdefault(card["id"], [])
     if idle_timer:
@@ -243,15 +264,20 @@ def card(person: dict) -> dict:
     """The face-event card for a store.match or store.person result."""
     met = person["firstMet"]
     last = store.last_time(person["id"])
-    fact = store.key_fact(person["id"])
+    how, facts = store.card_extras(person["id"])
+    last_bullet = f"Last time: {last}" if last else ""
+    live = snippets.get(person["id"], [])
+    met_bullet = f"Met {how}" if how else ""
+    if sum(map(bool, (person["role"], last_bullet, met_bullet))) + len(facts) + len(live) > MAX_BULLETS:
+        met_bullet = f"Met {how.split(':')[0]}" if how else ""  # just the date and app
+        facts = facts[:max(0, MAX_BULLETS - len(live) - sum(map(bool, (person["role"], last_bullet, met_bullet))))]
     return {
         "id": person["id"],
         "name": person["name"],
         "role": person["role"],
         "line": f"Last time: {last}" if last else store.latest_note(person["id"]) or "",
         "met": f"Met {met:%b} {met.day}",
-        "bullets": [b for b in (person["role"], f"Last time: {last}" if last else "", fact) if b]
-        + snippets.get(person["id"], []),
+        "bullets": [b for b in (person["role"], *facts, last_bullet, met_bullet) if b] + live,
     }
 
 

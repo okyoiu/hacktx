@@ -41,7 +41,7 @@ The app creates its tables on first start.
 
 ### 5. Open the app
 
-**Double-click `Hello Again.command`** in the `hacktx` folder (or run `cd overlay && npm start`). The overlay app opens and starts everything else: the local database, the memory server, face capture and transcription. The first run also installs anything missing, so it takes a few minutes.
+Build the app once: `cd overlay && npm run package`. Then **double-click `overlay/dist/Hello Again.app`** (drag it to the Dock if you like). It runs the code in this folder, so `git pull` updates it without rebuilding. `Hello Again.command` in the `hacktx` folder still works as a fallback (or run `cd overlay && npm start`). On Windows: `overlay\dist\Hello Again\Hello Again.exe`. The overlay app opens and starts everything else: the local database, the memory server, face capture and transcription. The first run also installs anything missing, so it takes a few minutes.
 
 You should see a small glass **control bar** at the top right. If one part isn't running, it shows a warning naming it; each part's log is in `logs/<name>.log`.
 
@@ -147,7 +147,7 @@ The look is pinned by [`docs/ui-reference.png`](docs/ui-reference.png): dark smo
 - **Recap at the end.** When the call ends (**End call**, or 60 s after the last face leaves), a **Recap** panel opens: the topic, the key points, one-click actions (places, events, search), and what you talked about with each person. It stays until you close it.
 - **Ask AI places itself and keeps the thread.** `⌘↵` opens a chat panel in the preset's spot, nudged to the largest free area that covers no face and no call controls. It never jumps while you're typing. Enter asks a follow-up in the same conversation (the server keeps the thread); `⌘↵` or the Ask AI button starts a fresh one, and the thread clears when the call ends.
 - **The pop-up stays put.** The card is anchored beside the face and only glides (one smooth motion) when the face has clearly moved; it never jitters with the tracker. ✕ closes it; clicking the name tag reopens it.
-- **The memory pop-up grows during the call.** A known person's card lists bullets in this order: who they are to you, Muse's facts about them ("Loves F1"), what you talked about last time, how you met. While they talk, Muse adds what they said this call ("This call: …") so the card is a live cheat sheet, not just history.
+- **The memory pop-up is a memory jogger.** A known person's card is one quiet panel beside their face: their name and who they are to you; then small labels with the facts that jog a memory (**Last seen**, **Last spoke**, **About**: the topic, and whether it was work or personal); then at most three short bullets (Muse's facts, what you talked about last time, how you met, "This call: …"). Labels small, bullets readable, nothing else. While they talk, Muse adds what they said this call ("This call: …") so the card is a live cheat sheet, not just history.
 - **Debug view (developers only).** In developer mode, a toggle in the control strip (and `⌘⌥D`) draws what the computer sees over the call: each person's box and track number, the face box, the match score against the 0.45 cutoff and the decision (name, or why it stayed "Recalling…"), plus frames per second. It is drawn on the click-through layer and hidden from screen shares like everything else.
 - **A real app.** `Hello Again.app` (built with `cd overlay && npm run package`, into `overlay/dist/`) has its own icon: drag it to the Dock or Applications and double-click to start everything. It runs the code from this repo folder, so `git pull` updates it without rebuilding.
 - **Name cards beside faces stay**, restyled to the same glass. Faces we can't name yet keep the thinking sparkle and "Recalling…", never an "unknown" label.
@@ -164,7 +164,8 @@ On connect the server first sends the latest `listening` and `insights` events, 
 ```jsonc
 {"type": "face", "trackId": 3, "screenBox": [x, y, w, h],          // screen points
  "person": {"id": "p_1a2b", "name": "Jordan Lee", "role": "Your team lead", "line": "Last time: …", "met": "Met Sep 24",
-            "bullets": ["Your team lead", "Last time: talked about his move to Austin", "Starts a fintech job Monday"]}}  // null = can't name them yet (thinking card); role may be ""; bullets has at most 3
+            "lastSeen": "2026-10-18", "lastSpoke": "2026-10-18", "topic": "his move to Austin", "context": "work",   // context: "work" | "personal" | "" (Muse's call)
+            "bullets": ["Your team lead", "Last time: talked about his move to Austin", "Starts a fintech job Monday"]}}  // null = can't name them yet (thinking card); role may be ""; bullets has at most 5; lastSeen/lastSpoke/topic null before a first call together
 {"type": "face_gone", "trackId": 3}
 {"type": "window", "app": "Zoom", "rect": [x, y, w, h]}   // the followed window: its app (as capture/window.py names it; a known call app if one is open, else the frontmost app) and screen points; both null when there is none
 {"type": "recap", "topic": "…", "points": ["…"], "actions": [{"id": "x1", "kind": "places", "label": "…"}],
@@ -200,6 +201,7 @@ On connect the server first sends the latest `listening` and `insights` events, 
 | `POST /faces/{trackId}/remember` | `{name, consent: true, role?}` → `{id, deleteToken}`; saves the print of the face on screen in that track, then pushes its updated `face` event; `409` if that face has left | overlay "Remember them" |
 | `POST /calls/end` | none → `{note}`, the path of the end-of-call note | overlay or you |
 | `GET /people` | none → `[{id, name, role, firstMet, lastMet, lastTime}]`, newest first | overlay People dashboard |
+| `GET /connector/people`, `GET /connector/people/{id}`, `GET /connector/openapi.json` | for a Muse **custom connector** (the Muse app calls these): `Authorization: Bearer <MUSE_CONNECTOR_KEY>` required; read-only; name, role, last seen, last spoke, topic, facts and the last conversation, never prints or tokens. The only routes allowed through the demo tunnel (`tools/tunnel.sh`). | Muse app |
 | `GET /people/{id}` | none → name, role, first met, `howMet` (one line Muse writes at the first encounter: date, app, what that call was about), `facts` (plain things Muse noticed across calls, e.g. "Loves F1", at most 3 new per call, no repeats, never mixed into the user's notes), encounters (about, last time) and notes (the user's own) | overlay dashboard, recall action |
 | `PATCH /people/{id}` | `{role?, name?}` (role ≤ 60, name ≤ 80 characters) → the updated person; a role set here is never replaced by Muse | overlay dashboard |
 | `GET /enroll`, `POST /enroll` | form: `name`, `consent`, `selfie`, optional `role`, and `code` (must match `ENROLL_CODE` when it's set; the invite link carries it as `?code=`) → `{id, deleteToken}` | guest's phone |

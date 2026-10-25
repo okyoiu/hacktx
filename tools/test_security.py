@@ -1,6 +1,7 @@
 """Security checks across the app: consent, unknown faces, deletion, Electron settings and who may reach the server.
 Each xfail is an open finding in docs/security-review.md; it starts failing once fixed, so delete its marker then.
 Run: uv run pytest tools/test_security.py (the deletion test also needs DATABASE_URL)."""
+import json
 import os
 import re
 from datetime import date
@@ -260,3 +261,99 @@ def test_the_notes_folders_are_private(monkeypatch, tmp_path):
     finally:
         os.umask(old)
     assert all((tmp_path / "notes" / d).stat().st_mode & 0o077 == 0 for d in ("", "people"))
+
+
+# --- Round 5: debug view, /window and the packaged app ---
+
+def _face_events(monkeypatch, headers=None, params=None, extra=None):
+    """Post one matched face from this laptop with HELLO_DEBUG unset; returns (every pushed event, the response)."""
+    from datetime import date
+
+    pushed = []
+
+    async def push(event):
+        pushed.append(event)
+
+    monkeypatch.delenv("HELLO_DEBUG", raising=False)
+    monkeypatch.setattr(server, "push", push)
+    monkeypatch.setattr(server, "tracks", {})
+    monkeypatch.setattr(server, "unknown", {})
+    monkeypatch.setattr(server, "saw_face", lambda card: None)
+    monkeypatch.setattr(store, "match", lambda p: {"id": "p_x", "name": "Sam", "role": "", "firstMet": date(2026, 10, 1), "score": 0.62})
+    for name in ("last_time", "key_fact", "latest_note"):  # key_fact is gone since the facts round; patch what exists
+        monkeypatch.setattr(store, name, lambda pid: None, raising=False)
+    body = {"trackId": 1, "screenBox": [0, 0, 10, 10], "facePrint": [0.044] * 512} | (extra or {})
+    r = TestClient(server.app, client=LAPTOP).post("/faces", json=body, headers=headers or {}, params=params or {})
+    return pushed, r
+
+
+def test_without_hello_debug_nothing_debug_reaches_the_overlay(monkeypatch):
+    """HELLO_DEBUG comes from the server's own environment only: no body field, header or query turns it on, and the
+    match score never rides in a face event or a reply."""
+    debug_body = {"debug": {"personBox": [0, 0, 1, 1], "faceBox": None, "fps": 5}, "HELLO_DEBUG": "1"}
+    for kwargs in ({}, {"extra": debug_body}, {"headers": {"X-Hello-Debug": "1"}}, {"params": {"debug": "1", "HELLO_DEBUG": "1"}}):
+        pushed, r = _face_events(monkeypatch, **kwargs)
+        assert r.status_code == 200 and pushed
+        assert all(e["type"] != "debug" for e in pushed)
+        assert "score" not in json.dumps(pushed) and "score" not in r.text
+
+
+def test_the_guest_pages_know_nothing_about_debug():
+    assert "debug" not in (ROOT / "web/enroll.html").read_text().lower()
+
+
+@pytest.mark.xfail(strict=True, reason="POST /window is not built yet; the rect must be null or 4 finite, bounded numbers")
+def test_window_rect_is_validated(monkeypatch):
+    laptop = TestClient(server.app, client=LAPTOP)
+    for bad in ("x", [0, 0, 1], [0, 0, 1, 2, 3], [0, 0, "a", 1], [0, 0, 1, None], [0, 0, 1e9, 1], [0, 0, -5, 10], [float("nan"), 0, 1, 1]):
+        assert laptop.post("/window", json={"rect": bad}).status_code == 422, bad
+    assert laptop.post("/window", json={"rect": [100, 80, 1200, 800]}).status_code == 200
+    assert laptop.post("/window", json={"rect": None}).status_code == 200
+
+
+def test_the_wifi_and_web_pages_cannot_post_the_window():
+    for client, headers in ((WIFI, {}), (LAPTOP, {"origin": "https://example.com"})):
+        r = TestClient(server.app, client=client).post("/window", json={"rect": [0, 0, 10, 10]}, headers=headers)
+        assert r.status_code == 403
+
+
+def test_the_app_build_never_packs_secrets_or_data():
+    """overlay/package.js builds Hello Again.app: Electron plus a shim, never the repo's secrets or data."""
+    script = ROOT / "overlay/package.js"
+    if not script.exists():
+        pytest.skip("no packaging script yet")
+    code = "\n".join(re.sub(r"\s//.*$", "", line) for line in script.read_text().splitlines() if not line.strip().startswith("//"))
+    # nothing from the repo that holds secrets or people's data is named, read or copied
+    assert not re.search(r"['\"/`]\.env|notes|logs|\.git\b|\.pt\b|\bMODEL_API_KEY|SERPAPI|DATABASE_URL|\bfaces\b|memory/|capture/", code)
+    # the only things copied in are Electron itself and the icon
+    for call in re.findall(r"(?:copyFileSync|cpSync|execFileSync\('ditto')\(?,?\s*([^\n]*)", code):
+        assert re.search(r"electron|icon\.(icns|ico)", call), call
+    # the PATH additions are absolute folders, and the signature is ad hoc
+    assert not re.search(r"PATH\s*=\s*\[[^\]]*(process\.cwd|'\.'|\"\.\")", code)
+    assert "codesign" not in code or "'--sign', '-'" in code
+
+
+@pytest.mark.xfail(strict=True, reason="R5-6: the recap kept for a late overlay still names someone who deleted themselves")
+def test_a_deleted_person_leaves_the_stored_recap(monkeypatch):
+    recap = {"type": "recap", "topic": "", "points": [], "actions": [], "people": [{"id": "p_zed", "name": "Zed", "role": "", "lastTime": "x"}]}
+    monkeypatch.setattr(server, "latest_recap", recap, raising=False)
+    monkeypatch.setattr(server, "tracks", {})
+    monkeypatch.setattr(store, "delete_person", lambda pid, token: True)
+    assert TestClient(server.app, client=LAPTOP).delete("/people/p_zed").status_code == 200
+    assert "p_zed" not in json.dumps(server.latest_recap)
+
+
+@pytest.mark.xfail(strict=True, reason="R5-9: a NaN box is accepted, then breaks the push and drops every connected overlay")
+def test_a_nan_box_is_refused_and_does_not_drop_the_overlay(monkeypatch):
+    class Overlay:
+        async def send_json(self, event):
+            json.dumps(event, allow_nan=False)  # what starlette's send_json does
+
+    ws = Overlay()
+    monkeypatch.setattr(server, "clients", {ws})
+    monkeypatch.setattr(server, "tracks", {1: None})
+    monkeypatch.setattr(server, "unknown", {})
+    monkeypatch.setattr(server, "saw_face", lambda card: None)
+    r = TestClient(server.app, client=LAPTOP).post(
+        "/faces", content='{"trackId":1,"screenBox":[NaN,0,1,1]}', headers={"content-type": "application/json"})
+    assert r.status_code == 422 and ws in server.clients
