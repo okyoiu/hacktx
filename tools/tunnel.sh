@@ -10,7 +10,9 @@ banner() {
   echo "Give Muse <public url>/connector/openapi.json and the key. Nothing else is reachable through it."
 }
 
-if command -v cloudflared >/dev/null; then
+# TUNNEL=ngrok picks ngrok even when cloudflared is installed: trycloudflare.com blocks requests from Muse's servers
+# ("Your request was blocked"), ngrok lets API clients through (needs a free account: ngrok config add-authtoken …).
+if [ "${TUNNEL:-}" != ngrok ] && command -v cloudflared >/dev/null; then
   banner
   # print the address on its own line when cloudflared logs it
   cloudflared tunnel --url "$URL" 2>&1 | while IFS= read -r line; do
