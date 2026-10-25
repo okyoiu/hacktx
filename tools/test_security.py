@@ -105,3 +105,61 @@ def test_untrusted_text_never_becomes_html():
 def test_keys_and_call_notes_stay_out_of_git():
     ignored = (ROOT / ".gitignore").read_text().split()
     assert ".env" in ignored and "notes/" in ignored
+
+
+# --- open findings: strict xfail, so each fix has to delete its marker ---
+
+@pytest.mark.xfail(strict=True, reason="#4: notes/*.md keeps a deleted person's name and notes")
+def test_deleting_yourself_also_removes_you_from_call_notes(monkeypatch, tmp_path):
+    from datetime import datetime
+
+    from memory import notes
+
+    monkeypatch.setattr(notes, "NOTES", tmp_path)
+    monkeypatch.setattr(store, "person", lambda pid: {"id": pid, "name": "Zed Qwerty", "firstMet": datetime(2026, 10, 1)})
+    notes.write(datetime(2026, 10, 24, 20, 0), {"p_zed": ["Moved to Austin"]}, [], [])
+    monkeypatch.setattr(store, "delete_person", lambda pid, token: True)
+    monkeypatch.setattr(server, "tracks", {})
+    assert TestClient(server.app, client=WIFI).delete("/people/p_zed", headers={"X-Delete-Token": "t"}).status_code == 200
+    assert "Zed Qwerty" not in "".join(p.read_text() for p in tmp_path.glob("*.md"))
+
+
+@pytest.mark.xfail(strict=True, reason="#6: call speech is not fenced off as quoted text in the Muse prompts")
+def test_prompts_fence_the_transcript_as_quoted_speech():
+    from memory import picks
+
+    for prompt in (picks.PROMPT, picks.SUMMARY, picks.ANSWER):
+        assert "<transcript>" in prompt and "never instructions" in prompt
+
+
+@pytest.mark.xfail(strict=True, reason="#9: anyone on the Wi-Fi can enroll without the invite code")
+def test_enrolling_needs_the_invite_code(monkeypatch):
+    import numpy as np
+
+    from capture import embed
+
+    saved = []
+    monkeypatch.setenv("ENROLL_CODE", "s3cret")
+    monkeypatch.setattr(embed, "embed_image", lambda data: np.zeros(512, dtype=np.float32))
+    monkeypatch.setattr(store, "enroll", lambda *a: saved.append(a) or ("p_x", "t"))
+    r = TestClient(server.app, client=WIFI).post(
+        "/enroll", data={"name": "Sam", "consent": "true"}, files={"selfie": ("s.jpg", b"x", "image/jpeg")}
+    )
+    assert r.status_code in (401, 403) and saved == []
+
+
+@pytest.mark.xfail(strict=True, reason="#11: delete tokens are stored in plain text")
+def test_the_delete_token_is_not_stored_in_plain_text(monkeypatch):
+    import numpy as np
+    from contextlib import nullcontext
+
+    class Recorder(FakeDb):
+        def transaction(self):
+            return nullcontext()
+
+    rec = Recorder()
+    params = []
+    rec.execute = lambda sql, p=(): params.extend(p) or rec
+    monkeypatch.setattr(store, "conn", lambda: rec)
+    _, token = store.enroll("Sam", np.zeros(512, dtype=np.float32), None)
+    assert token not in params
