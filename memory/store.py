@@ -52,7 +52,7 @@ def match(face_print: np.ndarray) -> dict | None:
     return {"id": row[0], "name": row[1], "firstMet": row[2], "score": round(float(row[3]), 3)}
 
 
-def enroll(name: str, face_print: np.ndarray, selfie: bytes) -> tuple[str, str]:
+def enroll(name: str, face_print: np.ndarray, selfie: bytes | None) -> tuple[str, str]:
     """Save a consenting person; returns (personId, deleteToken)."""
     pid, token = "p_" + secrets.token_hex(4), secrets.token_urlsafe(16)
     with conn().transaction():

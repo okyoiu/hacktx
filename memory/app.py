@@ -429,7 +429,7 @@ async def enroll(
     face_print = await asyncio.to_thread(embed_image, data)
     if face_print is None:
         raise HTTPException(422, "No face found in that photo. Try again facing the camera in good light.")
-    pid, token = await asyncio.to_thread(store.enroll, name.strip(), face_print, data)
+    pid, token = await asyncio.to_thread(store.enroll, name.strip(), face_print, None)  # the selfie is never kept
     return {"id": pid, "deleteToken": token}
 
 

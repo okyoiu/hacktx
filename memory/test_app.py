@@ -218,6 +218,15 @@ def test_insights_survive_a_failed_note_and_ignore_a_garbage_reply(http, events,
     assert server.latest_insights is good  # a garbage reply doesn't blank the panel
 
 
+def test_enroll_keeps_the_face_print_but_never_the_selfie(http, monkeypatch):
+    saved = []
+    monkeypatch.setattr("capture.embed.embed_image", lambda data: [0.1] * 512)
+    monkeypatch.setattr(store, "enroll", lambda name, face_print, selfie: saved.append((name, selfie)) or ("p_new", "tok"))
+    form = {"name": " Sam ", "consent": "true"}
+    r = http.post("/enroll", data=form, files={"selfie": ("s.jpg", b"jpeg bytes", "image/jpeg")})
+    assert r.json() == {"id": "p_new", "deleteToken": "tok"} and saved == [("Sam", None)]
+
+
 def test_deleting_yourself_mid_call_removes_your_card_and_keeps_insights_flowing(http, events, monkeypatch):
     server.tracks.update({1: JORDAN, 2: None})
     monkeypatch.setattr(store, "delete_person", lambda pid, token: True)
