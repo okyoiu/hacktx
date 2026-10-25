@@ -14,6 +14,7 @@ from pgvector.psycopg import register_vector
 # shortcut: one fixed cutoff picked by eye; upgrade by measuring enrolled faces on real call video.
 MATCH_MIN = 0.45
 CONSENT_DAYS = 365
+SCOPE = ['facePrint', 'name', 'voice', 'notes', 'facts']  # agreed to by default; `connector` only when ticked
 
 _conn: psycopg.Connection | None = None
 
@@ -76,7 +77,7 @@ def nearest_score(face_print: np.ndarray) -> float | None:
     return None if row is None or row[0] is None else round(float(row[0]), 3)
 
 
-def enroll(name: str, face_print: np.ndarray, selfie: bytes | None, role: str = "") -> tuple[str, str]:
+def enroll(name: str, face_print: np.ndarray, selfie: bytes | None, role: str = "", connector: bool = False) -> tuple[str, str]:
     """Save a consenting person; returns (personId, deleteToken)."""
     pid, token = "p_" + secrets.token_hex(4), secrets.token_urlsafe(16)
     role = " ".join(role.split())
@@ -87,8 +88,8 @@ def enroll(name: str, face_print: np.ndarray, selfie: bytes | None, role: str = 
         )
         conn().execute("insert into faces (person_id, print) values (%s, %s)", (pid, Vector(face_print)))
         conn().execute(
-            "insert into consents (person_id, expires_at) values (%s, current_date + %s::int)",
-            (pid, CONSENT_DAYS),
+            "insert into consents (person_id, expires_at, scope) values (%s, current_date + %s::int, %s)",
+            (pid, CONSENT_DAYS, SCOPE + ["connector"] * connector),
         )
     return pid, token
 
@@ -124,7 +125,7 @@ def is_self(role: str) -> bool:
 def people() -> list[dict]:
     """Everyone with valid consent, most recently met first, for the dashboard."""
     rows = conn().execute(
-        """select p.id, p.name, p.role, p.first_met, p.how_met,
+        """select p.id, p.name, p.role, p.first_met, p.how_met, c.scope,
                   coalesce((select max(met_at) from encounters where person_id = p.id), p.first_met::timestamptz) as last_met,
                   (select last_time from encounters where person_id = p.id order by met_at desc, id desc limit 1)
            from people p join consents c on c.person_id = p.id
@@ -133,8 +134,8 @@ def people() -> list[dict]:
     by_person: dict[str, list] = {}
     for pid, *row in conn().execute("select person_id, met_at, spoke, topic, context from encounters order by met_at desc, id desc").fetchall():
         by_person.setdefault(pid, []).append(tuple(row))
-    return [{"id": i, "name": n, "role": r, "self": is_self(r), "howMet": h, "firstMet": f, "lastMet": m, "lastTime": t, **seen_fields(by_person.get(i, []))}
-            for i, n, r, f, h, m, t in rows]
+    return [{"id": i, "name": n, "role": r, "self": is_self(r), "howMet": h, "scope": sc, "firstMet": f, "lastMet": m, "lastTime": t,
+             **seen_fields(by_person.get(i, []))} for i, n, r, f, h, sc, m, t in rows]
 
 
 def stale(days: int) -> list[dict]:

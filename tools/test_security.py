@@ -402,7 +402,7 @@ def test_the_tunnel_cannot_open_the_overlay_socket():
 @pytest.mark.skipif(not (ROOT / "memory/connector.py").exists(), reason="the connector is not merged yet")
 def test_the_connector_needs_the_key_and_sends_no_prints_or_tokens(monkeypatch):
     monkeypatch.setenv("MUSE_CONNECTOR_KEY", "k" * 32)
-    person = {"id": "p_x", "name": "Sam", "role": "", "lastSeen": None, "lastSpoke": None, "topic": None, "context": None,
+    person = {"id": "p_x", "name": "Sam", "scope": ["facePrint", "connector"], "role": "", "lastSeen": None, "lastSpoke": None, "topic": None, "context": None,
               "facts": [], "encounters": [], "notes": [], "howMet": "", "firstMet": date(2026, 10, 1)}
     monkeypatch.setattr(store, "person", lambda pid: dict(person))
     monkeypatch.setattr(store, "people", lambda: [dict(person)])
