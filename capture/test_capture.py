@@ -1,3 +1,6 @@
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import cv2
@@ -84,3 +87,13 @@ def test_assign_ignores_a_bigger_neighbours_face_in_your_box():
     me, neighbour = SimpleNamespace(bbox=[90, 10, 110, 30]), SimpleNamespace(bbox=[150, 40, 200, 90])
     got = assign([me, neighbour], {1: [50, 0, 200, 300], 2: [120, 30, 260, 400]})
     assert got[1] is me and got[2] is neighbour
+
+
+def test_embed_image_refuses_a_huge_image_instead_of_decoding_it():
+    # a fresh process, because OpenCV reads its pixel cap when it loads
+    code = ("import cv2, numpy as np; from capture.embed import embed_image\n"
+            "png = cv2.imencode('.png', np.zeros((7000, 7000), np.uint8))[1].tobytes()  # 49 MP, a few KB\n"
+            "print(embed_image(png))")
+    root = Path(__file__).resolve().parent.parent
+    out = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True, text=True, timeout=60)
+    assert out.stdout.strip() == "None", out.stderr
