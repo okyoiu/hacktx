@@ -33,6 +33,7 @@ ENROLLS_PER_MINUTE = 5  # POST /enroll attempts per IP address; each one runs th
 # Hard stop for one Muse Spark or SerpApi job: the clients time out per request and retry, so a slow service could
 # otherwise hold a response on "thinking" or stall Live insights for minutes. The abandoned thread finishes on its own.
 OUTBOUND_SECONDS = 45
+THREAD_TURNS = 6  # question/answer turns of an Ask AI chat that follow-ups can see
 NOTE_POINTS = 10  # Muse rephrases points every refresh, so the call note keeps only the latest few
 
 
@@ -48,6 +49,8 @@ history: list[str] = []  # lines Muse Spark has already seen, context for the ne
 fresh: list[str] = []  # final lines since the last insights refresh
 listening: dict = {"type": "listening", "on": True, "startedAt": utc_now()}  # latest listening event
 latest_insights: dict | None = None  # latest insights event
+thread: list[tuple[str, str]] = []  # the Ask AI chat so far: (question, answer), the last THREAD_TURNS turns
+thread_epoch = 0  # bumped whenever the thread is cleared
 latest_recap: dict | None = None  # recap of the call that just ended, until the next call starts
 latest_window: dict | None = None  # latest window event: where the followed call window is, for Ask AI placement
 last_refresh: float | None = None  # when the last insights refresh started (monotonic); None = the next one is immediate
@@ -116,6 +119,7 @@ def end_call() -> asyncio.Future:
     if idle_timer:
         idle_timer.cancel()
     ended, call = call or Call(), None
+    clear_thread()
     insights = latest_insights
     latest_insights = None  # the next call, and overlays connecting later, start clean
     last_refresh = None  # the next call's first insights don't wait out this call's interval
@@ -450,6 +454,7 @@ async def refresh_insights() -> None:
 
 class Ask(BaseModel):
     question: str = Field(min_length=1, max_length=500)
+    new: bool = False  # start a fresh thread instead of following up
 
 
 class NoAnswer(Exception):
@@ -461,6 +466,8 @@ async def ask(q: Ask, tasks: BackgroundTasks):
     question = q.question.strip()
     if not question:
         raise HTTPException(422, "Type a question first.")
+    if q.new:
+        clear_thread()
     return await respond(tasks, question, "ask", question)
 
 
@@ -478,14 +485,24 @@ async def respond(tasks: BackgroundTasks, query: str, kind: str, arg: str | None
              "status": "thinking", "text": "", "sources": []}
     await push(event)
     present = {p["id"]: p["name"] for p in tracks.values() if p}
-    tasks.add_task(finish, event, kind, arg, present, history[-12:] + fresh)
+    tasks.add_task(finish, event, kind, arg, present, history[-12:] + fresh, thread[:], thread_epoch)
     return {"id": event["id"]}
 
 
-async def finish(event: dict, kind: str, arg: str | None, present: dict[str, str], lines: list[str]) -> None:
+def clear_thread() -> None:
+    global thread_epoch
+    thread.clear()
+    thread_epoch += 1  # an answer still on its way belongs to the old thread and is dropped
+
+
+async def finish(event: dict, kind: str, arg: str | None, present: dict[str, str], lines: list[str],
+                 earlier: list[tuple[str, str]], epoch: int) -> None:
     try:
-        text, sources = await asyncio.wait_for(asyncio.to_thread(answer, kind, arg, present, lines), OUTBOUND_SECONDS)
+        text, sources = await asyncio.wait_for(asyncio.to_thread(answer, kind, arg, present, lines, earlier), OUTBOUND_SECONDS)
         event = event | {"status": "done", "text": text, "sources": sources}
+        if kind == "ask" and epoch == thread_epoch:
+            thread.append((event["query"], text))
+            del thread[:-THREAD_TURNS]
         if call and kind != "recall":  # recall only repeats the database, about someone who may delete themselves
             call.responses.append(event)
     except (NoAnswer, picks.MuseError, pipeline.SerpApiError) as e:
@@ -498,7 +515,8 @@ async def finish(event: dict, kind: str, arg: str | None, present: dict[str, str
     await push(event)
 
 
-def answer(kind: str, arg: str | None, present: dict[str, str], lines: list[str]) -> tuple[str, list[dict]]:
+def answer(kind: str, arg: str | None, present: dict[str, str], lines: list[str],
+           earlier: list[tuple[str, str]] | None = None) -> tuple[str, list[dict]]:
     """Runs in a thread: the text and sources for one question or action."""
     if kind == "recall":
         return recall(arg), []
@@ -508,7 +526,7 @@ def answer(kind: str, arg: str | None, present: dict[str, str], lines: list[str]
     people = {pid: {"name": name, "notes": known.get(pid, [])} for pid, name in present.items()}
     if kind == "search":
         return pipeline.search(arg, people, lines)
-    return picks.answer(kind, arg or "", people, lines), []
+    return picks.answer(kind, arg or "", people, lines, thread=earlier if kind == "ask" else None), []
 
 
 def recall(pid: str) -> str:

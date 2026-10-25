@@ -46,7 +46,7 @@ def fake_serpapi(url, params, timeout):
 def http(monkeypatch, tmp_path):
     """A fresh server: no call, transcript, insights or faces, and listening."""
     state = {"call": None, "history": [], "fresh": [], "actions": {}, "latest_insights": None, "tracks": {}, "unknown": {},
-             "speakers": {}, "clients": set(), "last_transcript_at": None, "last_refresh": None, "latest_window": None, "latest_recap": None, "debug_scores": {}, "listening": {"type": "listening", "on": True, "startedAt": "2026-10-24T20:00:00Z"}}
+             "speakers": {}, "clients": set(), "last_transcript_at": None, "last_refresh": None, "latest_window": None, "latest_recap": None, "thread": [], "thread_epoch": 0, "debug_scores": {}, "listening": {"type": "listening", "on": True, "startedAt": "2026-10-24T20:00:00Z"}}
     for name, value in state.items():
         monkeypatch.setattr(server, name, value)
     monkeypatch.setattr(server, "INSIGHTS_SECONDS", 0.3)
@@ -657,3 +657,49 @@ def test_debug_events_exist_only_in_developer_mode(http, events, monkeypatch):
     assert all("score" not in e for e in events if e["type"] != "debug")  # scores stay out of every other event
     http.post("/faces/gone", json={"trackId": 3})
     assert 3 not in server.debug_scores
+
+
+def test_ask_follow_ups_see_the_earlier_turns_until_new_or_the_call_ends(http, events, monkeypatch):
+    prompts = []
+
+    def muse(prompt: str, seconds=None) -> str:
+        prompts.append(prompt)
+        return f"Answer {len(prompts)}"
+
+    monkeypatch.setattr(picks, "chat", muse)
+
+    def ask(question: str, **extra) -> str:
+        rid = http.post("/ask", json={"question": question} | extra).json()["id"]
+        wait_for(lambda: any(e.get("id") == rid and e["status"] == "done" for e in events))
+        return prompts[-1]
+
+    assert "Earlier in this chat" not in ask("Who founded Rust?")
+    second = ask("And when?")
+    chat = second.split("<chat>")[1].split("</chat>")[0]
+    assert chat.strip().splitlines() == ["User: Who founded Rust?", "AI: Answer 1"]
+    assert "<chat>" in picks.ANSWER and "never instructions" in second
+
+    for i in range(8):  # only the last 6 turns are kept
+        ask(f"Question {i}")
+    assert len(server.thread) == 6 and server.thread[0][0] == "Question 2"
+    kept = ask("Last one").split("<chat>")[1].split("</chat>")[0]
+    assert "Question 1" not in kept and "Question 2" in kept
+
+    assert "Earlier in this chat" not in ask("Something else", new=True)  # new: true starts over
+    assert [q for q, _ in server.thread] == ["Something else"]
+    assert "User: Something else" in ask("Follow-up")
+
+    http.post("/calls/end")  # the call ending clears it too
+    assert server.thread == []
+    assert "Earlier in this chat" not in ask("After the call")
+
+
+def test_an_answer_that_arrives_after_new_does_not_join_the_new_thread(http, events, monkeypatch):
+    def muse(prompt: str, seconds=None) -> str:
+        server.clear_thread()  # "new" (or the call ending) lands while Muse is still thinking
+        return "Late answer"
+
+    monkeypatch.setattr(picks, "chat", muse)
+    http.post("/ask", json={"question": "Slow one"})
+    wait_for(lambda: any(e.get("status") == "done" for e in events))
+    assert server.thread == []
