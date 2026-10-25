@@ -60,7 +60,8 @@ function overlayWindow(query, opts) {
   win.setAlwaysOnTop(true, 'screen-saver')
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   // Keeps it out of screen shares on Windows; newer macOS screen sharing can still capture it.
-  win.setContentProtection(true)
+  // HELLO_SHOW_ON_SHARE=1 (set in .env) turns that off so a demo recording shows the overlay too.
+  win.setContentProtection(process.env.HELLO_SHOW_ON_SHARE !== '1')
   // Source links open in the browser; nothing navigates the overlay itself.
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (webUrl(url)) shell.openExternal(url)
