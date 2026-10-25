@@ -138,14 +138,18 @@ To stop everything, press `Ctrl+C` in each terminal.
 
 The look is pinned by [`docs/ui-reference.png`](docs/ui-reference.png): dark smoked glass with real blur, floating over the call.
 
-- **Three glass pieces.** A **control bar** (pause/resume, live waveform, call timer, `Ask AI ⌘↵`, `Show/Hide ⌘\`), a **Live insights** panel (topic, a few points, `Show transcript`, copy, and an **Actions** list), and an **AI response** panel (the question as a chip, copy, close, the answer and its sources).
+- **Fixed spots, little on screen.** One **control strip at the top** (pause/resume, timer, `Ask AI ⌘↵`, **End call**, **People**, `Show/Hide ⌘\`, the status light). **Name cards beside faces.** The **transcript** in a slim strip along the bottom edge, where call apps usually leave space, off until you turn it on. Nothing else stays on screen during the call.
 - **Memory pop-up.** When someone you know appears, their card pops open beside their face with up to 3 bullets (who they are to you, what you talked about last time, a key fact) for about 10 seconds, then shrinks to a name tag. Hovering opens it again. With reduce-motion on, it appears and shrinks without animation.
 - **Who they are to you.** Each person can have a short label ("Your team lead", "Recruiter at Meta"). You can type it when you remember someone or in the dashboard; after a call, Muse suggests one if there isn't one, but never overwrites a label you typed. It shows first on the pop-up.
 - **People dashboard.** A glass **People** window, opened from the control bar or with `⌘⇧P`: search everyone you've met, see who they are to you, every past conversation and notes, edit the label, and delete someone (with a confirm step inside the window). It works without a call running.
 - **One launch.** Opening the overlay app starts the local database, the memory server, face capture and transcription, and stops them all when you quit. The control bar shows if something isn't running. Ports: only `8000`, on this laptop (plus the local database on `5432`, also laptop-only).
+- **Live insights come at the end.** During the call Hello Again only listens and collects; nothing pops up but name cards. When the call ends (**End call**, or 60 s after the last face leaves), a **Recap** panel opens: the topic, the key points, one-click actions (places, events, search), and what you talked about with each person. It stays until you close it.
+- **Ask AI places itself.** `⌘↵` opens a chat panel in the emptiest spot: it knows where the call window and the faces are, and picks the largest free area that covers no face and no call controls (outside the call window when there's room, otherwise the quietest corner). It never jumps while you're typing.
+- **Debug view (developers only).** In developer mode, a toggle in the control strip (and `⌘⌥D`) draws what the computer sees over the call: each person's box and track number, the face box, the match score against the 0.45 cutoff and the decision (name, or why it stayed "Recalling…"), plus frames per second. It is drawn on the click-through layer and hidden from screen shares like everything else.
+- **A real app.** `Hello Again.app` (built with `cd overlay && npm run package`, into `overlay/dist/`) has its own icon: drag it to the Dock or Applications and double-click to start everything. It runs the code from this repo folder, so `git pull` updates it without rebuilding.
 - **Name cards beside faces stay**, restyled to the same glass. Faces we can't name yet keep the thinking sparkle and "Recalling…", never an "unknown" label.
 - **Enroll from the call, no photo needed.** Hovering a "Recalling…" pill reveals **Remember them**: type their name and confirm they said yes, and the face print capture already has from the call is saved. Nothing about an unknown face is stored before that; its print lives only in the server's memory while it's on screen.
-- **Computer vision is never shown to users.** No boxes, track numbers or scores in the product; `tools/cv_check.py` is for debugging only.
+- **Computer vision is never shown to users.** No boxes, track numbers or scores in the product. Developers get a **debug view** only when the app is started in developer mode (`npm run dev`, or `HELLO_DEBUG=1`); it is never reachable from the normal app or the network.
 - **Only the panels and the control bar take clicks.** Name cards are click-through. Actions highlight on hover; everything clickable shows a pointer.
 - **Motion is part of the product.** Panels and cards blur in, the sparkle turns while the AI is thinking, the waveform moves while listening. Everything respects reduce-motion.
 - **Nothing extra on screen.** `⌘\` hides everything; panels fade when the call has been quiet for a while.
@@ -159,6 +163,11 @@ On connect the server first sends the latest `listening` and `insights` events, 
  "person": {"id": "p_1a2b", "name": "Jordan Lee", "role": "Your team lead", "line": "Last time: …", "met": "Met Sep 24",
             "bullets": ["Your team lead", "Last time: talked about his move to Austin", "Starts a fintech job Monday"]}}  // null = can't name them yet (thinking card); role may be ""; bullets has at most 3
 {"type": "face_gone", "trackId": 3}
+{"type": "window", "rect": [x, y, w, h]}   // the followed call window in screen points; null when there is none (for Ask AI placement)
+{"type": "recap", "topic": "…", "points": ["…"], "actions": [{"id": "x1", "kind": "places", "label": "…"}],
+ "people": [{"id": "p_1a2b", "name": "Jordan Lee", "role": "…", "lastTime": "…"}]}   // once per call, when it ends; also sent to an overlay that connects later
+{"type": "debug", "trackId": 3, "personBox": [x, y, w, h], "faceBox": [x, y, w, h] | null, "score": 0.62 | null,
+ "decision": "Jordan Lee" | "below 0.45" | "no face yet", "fps": 4.8}   // developer mode only (HELLO_DEBUG=1 on the server)
 {"type": "caption", "speaker": "Jordan Lee", "text": "We finally finished the move…", "final": false}  // the overlay keeps these for "Show transcript"
 {"type": "listening", "on": true, "startedAt": "2026-10-24T21:40:00Z"}   // pause state; the timer counts from startedAt
 {"type": "insights", "topic": "Jordan's move to Austin",                 // the whole current state, replaces the last one
@@ -171,14 +180,15 @@ On connect the server first sends the latest `listening` and `insights` events, 
  "status": "thinking|done|error", "text": "…", "sources": [{"title": "…", "url": "https://…"}]}  // "thinking" first, then the same id with "done" or "error"
 ```
 
-The old `pick` event is retired: places and events from the conversation become `places`/`events` actions, and facts become insight points.
+`insights` events still arrive during the call; the overlay keeps them for the Recap instead of showing them. The old `pick` event is retired: places and events from the conversation become `places`/`events` actions, and facts become insight points.
 
 ## Memory API (capture, overlay and enrollment → memory)
 
 | Call | Body | Sent by |
 |---|---|---|
-| `POST /faces` | `{trackId, screenBox, facePrint?}`; the 512-number print only for a new track | `capture/faces.py` |
+| `POST /faces` | `{trackId, screenBox, facePrint?, debug?}`; the 512-number print only for a new track; `debug` = `{personBox, faceBox, fps}` only when capture runs with `HELLO_DEBUG=1` | `capture/faces.py` |
 | `POST /faces/gone` | `{trackId}` | `capture/faces.py` |
+| `POST /window` | `{rect}` (screen points, or `null`), sent when the followed window moves, appears or goes away | `capture/faces.py` |
 | `POST /transcript` | `{speaker, text, final}`; ignored while paused | `capture/transcribe.py` |
 | `POST /speakers` | `{label, name}` | `capture/` (names voices from faces) or you |
 | `POST /listening` | `{on: bool}` → emits `listening` | overlay pause button |
