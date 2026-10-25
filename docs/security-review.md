@@ -381,3 +381,17 @@ Checked by applying the commits to a scratch copy of this branch and running `to
 6. **Phones enrolling:** start the server by hand with `--host 0.0.0.0` *before* opening the app, send only the **Copy invite link** (it carries the code), and stop that server when guests are done.
 7. **Screen share:** the overlay hides itself from shares on Windows only; on a newer Mac, test your share first, or share one window instead of the screen.
 8. **After:** delete demo people in the People window, `rm -rf logs/ notes/`, change `ENROLL_CODE`, `docker stop hello-again-db`.
+
+---
+
+## Round 8: requirements for the card fields, `/people/stale`, the hypertable change, the Windows finder and the mockups
+
+2026-10-25, Security agent, after merging `origin/main` (`1a9d7df`; 145 tests pass, and the packaged-app build test now runs against the real `overlay/package.js` and passes). Only the README contract has landed; the code is not in `review-design`, `review-capture` or `review-memory` yet (same tips as my last pass), so these are the checks for the next pass.
+
+| # | Surface | Must hold |
+|---|---|---|
+| R8-1 | Card fields `lastSeen`, `lastSpoke`, `topic`, `context` | `context` is one of `"work"`, `"personal"`, `""`: the server maps anything else Muse says to `""`, never passes it through. `topic` is Muse text: one line (`" ".join(t.split())`), at most about 120 characters, `<>` removed before it goes in another prompt, and drawn with `textContent` only. `lastSeen`/`lastSpoke` are ISO dates built by the server from the database, never from Muse. All four are null/empty for someone with no first call. Only in the `face` event over `/ws`. |
+| R8-2 | `GET /people/stale` | Laptop-only: it must not be added to the guest list in `memory/app.py` (only `/enroll` and `DELETE /people/*` may be). It lists names, so test that the Wi-Fi and a browser page get 403, as for `GET /people`. Route order: declare it before `/people/{pid}` so it is not read as an id. It deletes nothing by itself. |
+| R8-3 | Hypertable change (`memory/schema.sql`) | Runs on an existing database without losing rows: `create_hypertable(..., migrate_data => true, if_not_exists => true)`, or a fresh-table path that copies, verifies the row counts, then swaps. It must be safe to run on every start. The `on delete cascade` from `people` must still reach the table (my cascade test lists every table pointing at `people`; a hypertable cannot be the target of a foreign key, so the rows must be deleted by an explicit statement in `delete_person` and `purge_expired` if that table keeps person data). Take a `pg_dump` before the first run on the shared Tiger database. |
+| R8-4 | Windows window finder | Window titles are read only to match the call list (as `has_call` does on the Mac) and are never logged, stored or sent; only the app name (at most 100 characters) goes in `POST /window`. Uses an argument list or the Win32 API, never `shell=True` or a string built from a title. No new dependency. |
+| R8-5 | Mockup pages | Static HTML: no `<script src>` to another host, no `fetch`, no forms posting out, no fonts or images from a CDN (the overlay's CSP is `default-src 'self'`, and these pages should satisfy the same). Contain only invented people. Not served by the memory server (that would put them on the Wi-Fi). |
