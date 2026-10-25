@@ -2,7 +2,7 @@
 from types import SimpleNamespace
 
 import numpy as np
-from insightface.data import get_image
+import pytest
 
 from capture.embed import mouths_in
 from capture.speakers import UNLABELED, Namer, lip_gap
@@ -60,7 +60,9 @@ def test_never_guesses():
     assert all(line(one_voice_each, "D", 100 + 10 * i, talking=[MAYA], still=[JORDAN]) is None for i in range(6))
 
 
+@pytest.mark.models
 def test_lip_gap_reads_open_mouths_wider_on_the_sample_photo():
+    get_image = pytest.importorskip("insightface.data").get_image
     faces = sorted(mouths_in(get_image("t1")), key=lambda f: f.bbox[0])  # six people, left to right
     assert len(faces) == 6
     assert lip_gap(faces[3]) > 2 * lip_gap(faces[1])  # laughing, mouth open vs. lips closed

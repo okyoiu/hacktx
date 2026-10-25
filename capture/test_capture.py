@@ -3,10 +3,12 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import cv2
+import pytest
+cv2 = pytest.importorskip("cv2", reason="Install capture dependencies to run image tests")
 import numpy as np
 import pytest
-from insightface.data import get_image
+def get_image(name):
+    return pytest.importorskip("insightface.data", reason="Requires face model dependencies").get_image(name)
 
 from capture import faces
 from capture.embed import add_print, faces_in, find_faces
@@ -141,6 +143,7 @@ def test_screen_frames_follows_the_window_and_yields_nothing_while_it_is_gone(mo
     assert next(frames)[1] == (5, 6, 30, "zoom.us", True)
 
 
+@pytest.mark.models
 def test_assign_gives_overlapping_people_their_own_face():
     t1 = get_image("t1")  # InsightFace's group photo: six people around a table, close together
     found = sorted(faces_in(t1), key=lambda f: f.bbox[0])
@@ -214,6 +217,7 @@ def test_screen_frames_says_so_once_when_the_window_cannot_be_captured(monkeypat
         "waiting for a call window"]  # once per change, not per attempt
 
 
+@pytest.mark.models
 def test_a_print_is_only_computed_for_the_face_that_asks_for_one():
     found = find_faces(get_image("t1"))
     assert len(found) == 6 and all(not hasattr(f, "embedding") or f.embedding is None for f in found)
@@ -227,6 +231,7 @@ def test_debug_face_box_is_dropped_once_the_person_has_moved_off_it():
     assert faces.face_in([500, 120, 60, 80], person) is None and faces.face_in(None, person) is None
 
 
+@pytest.mark.models
 def test_a_box_that_never_changes_is_a_picture_until_it_starts_moving():
     t1, box = get_image("t1"), {1: [337, 219, 735, 648]}  # one person on the sample photo
     rng = np.random.default_rng(0)

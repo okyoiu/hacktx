@@ -3,11 +3,15 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-import cv2
+import pytest
+cv2 = pytest.importorskip("cv2", reason="Install capture dependencies to run image tests")
 import numpy as np
 import pytest
 import pytest
+pytest.importorskip("insightface", reason="Face model integration dependencies are optional")
 from insightface.data import get_image
+
+pytestmark = pytest.mark.models
 
 from capture import faces
 from capture.window import Window

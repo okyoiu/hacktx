@@ -54,8 +54,8 @@ def test_partial_or_blank_transcripts_never_schedule_muse(monkeypatch):
 
     monkeypatch.setattr(app, "push", push)
     monkeypatch.setitem(app.listening, "on", True)
-    app.fresh.clear()
-    app.wake.clear()
+    monkeypatch.setattr(app, "fresh", [])
+    monkeypatch.setattr(app, "wake", asyncio.Event())
     for line in [app.Line(speaker="Jordan", text="Climbing", final=False),
                  app.Line(speaker="Jordan", text="  ", final=True)]:
         asyncio.run(app.transcript(line))

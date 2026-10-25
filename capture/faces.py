@@ -20,7 +20,6 @@ import cv2
 import httpx
 import mss
 import numpy as np
-from ultralytics import YOLO
 
 from capture.embed import add_print, find_faces, mouths_in, warm_up
 from capture.speakers import Namer, listen
@@ -174,6 +173,8 @@ def main() -> None:
         ap.error("pass --region or --video")
     else:  # also how the overlay app starts us, before any call: wait for a call window to appear
         frames = screen_frames(None, follow=[args.app] if args.app else list(CALL_APPS))
+
+    from ultralytics import YOLO
 
     model = YOLO("yolo26n.pt")  # downloads on first run
     warm_up()

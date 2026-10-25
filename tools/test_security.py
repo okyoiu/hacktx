@@ -90,21 +90,21 @@ def test_web_pages_cannot_open_the_overlay_socket():
 
 
 def test_electron_keeps_its_safe_settings():
-    main = (ROOT / "overlay/main.js").read_text()
+    main = (ROOT / "overlay/main.js").read_text(encoding="utf-8")
     for unsafe in ("nodeIntegration: true", "contextIsolation: false", "sandbox: false", "webSecurity: false"):
         assert unsafe not in main
-    html = (ROOT / "overlay/index.html").read_text()
+    html = (ROOT / "overlay/index.html").read_text(encoding="utf-8")
     assert "default-src 'self'" in html and "unsafe-" not in html
 
 
 def test_untrusted_text_never_becomes_html():
     html_sinks = [p.name for p in [*ROOT.glob("overlay/*.js"), ROOT / "web/enroll.html"]
-                  if re.search(r"\.(inner|outer)HTML\s*\+?=|document\.write\(", p.read_text())]
+                  if re.search(r"\.(inner|outer)HTML\s*\+?=|document\.write\(", p.read_text(encoding="utf-8"))]
     assert html_sinks == []
 
 
 def test_keys_and_call_notes_stay_out_of_git():
-    ignored = (ROOT / ".gitignore").read_text().split()
+    ignored = (ROOT / ".gitignore").read_text(encoding="utf-8").split()
     assert ".env" in ignored and "notes/" in ignored
 
 
@@ -119,7 +119,7 @@ def test_deleting_yourself_also_removes_you_from_call_notes(db, monkeypatch, tmp
     monkeypatch.setattr(store, "person", lambda pid: {"id": pid, "name": "Zed Qwerty", "firstMet": datetime(2026, 10, 1)})
     notes.write(datetime(2026, 10, 24, 20, 0), {"p_zed": ["Moved to Austin"]}, [], [])
     assert store.delete_person("p_zed", None)  # the real path: the database delete, then the notes clean-up
-    assert "Zed Qwerty" not in "".join(p.read_text() for p in tmp_path.glob("*.md"))
+    assert "Zed Qwerty" not in "".join(p.read_text(encoding="utf-8") for p in tmp_path.glob("*.md"))
 
 
 def test_prompts_fence_the_transcript_as_quoted_speech():
@@ -204,6 +204,7 @@ def test_a_role_with_newlines_is_stored_on_one_line(monkeypatch):
 
 # --- Round 4: files and processes on the laptop ---
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits do not verify Windows ACLs")
 def test_a_person_file_is_named_by_id_and_readable_only_by_you(monkeypatch, tmp_path):
     from datetime import datetime
 
@@ -215,14 +216,15 @@ def test_a_person_file_is_named_by_id_and_readable_only_by_you(monkeypatch, tmp_
         "id": pid, "name": evil, "role": "Boss\n## x", "firstMet": datetime(2026, 10, 1), "encounters": [], "notes": []})
     path = notes.write_person("p_zed")
     assert path.parent == tmp_path / "people" and path.name == "p_zed.md" and path.stat().st_mode & 0o777 == 0o600
-    assert "\n## Another" not in path.read_text() and "\n## x" not in path.read_text()
+    assert "\n## Another" not in path.read_text(encoding="utf-8") and "\n## x" not in path.read_text(encoding="utf-8")
 
 
 def test_the_launcher_never_uses_a_shell():
-    src = (ROOT / "overlay/launcher.js").read_text()
+    src = (ROOT / "overlay/launcher.js").read_text(encoding="utf-8")
     assert "shell: true" not in src and not re.search(r"\bexec\(|execSync|spawnSync", src)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits do not verify Windows ACLs")
 def test_a_call_note_is_readable_only_by_you(monkeypatch, tmp_path):
     from datetime import datetime
 
@@ -239,14 +241,15 @@ def test_a_call_note_is_readable_only_by_you(monkeypatch, tmp_path):
 
 
 def test_launcher_logs_are_private():
-    assert re.search(r"openSync\([^)]*0o600", (ROOT / "overlay/launcher.js").read_text())
+    assert re.search(r"openSync\([^)]*0o600", (ROOT / "overlay/launcher.js").read_text(encoding="utf-8"))
 
 
 def test_transcription_does_not_print_what_people_say():
-    printed = [l for l in (ROOT / "capture/transcribe.py").read_text().splitlines() if "print(" in l]
+    printed = [l for l in (ROOT / "capture/transcribe.py").read_text(encoding="utf-8").splitlines() if "print(" in l]
     assert not any("transcript" in l for l in printed)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits do not verify Windows ACLs")
 def test_the_notes_folders_are_private(monkeypatch, tmp_path):
     from datetime import datetime
 
@@ -282,6 +285,7 @@ def _face_events(monkeypatch, headers=None, params=None, extra=None):
     monkeypatch.setattr(store, "match", lambda p: {"id": "p_x", "name": "Sam", "role": "", "firstMet": date(2026, 10, 1), "score": 0.62})
     for name in ("last_time", "key_fact", "latest_note"):  # key_fact is gone since the facts round; patch what exists
         monkeypatch.setattr(store, name, lambda pid: None, raising=False)
+    monkeypatch.setattr(store, "card_extras", lambda pid: (None, []))
     body = {"trackId": 1, "screenBox": [0, 0, 10, 10], "facePrint": [0.044] * 512} | (extra or {})
     r = TestClient(server.app, client=LAPTOP).post("/faces", json=body, headers=headers or {}, params=params or {})
     return pushed, r
@@ -299,7 +303,7 @@ def test_without_hello_debug_nothing_debug_reaches_the_overlay(monkeypatch):
 
 
 def test_the_guest_pages_know_nothing_about_debug():
-    assert "debug" not in (ROOT / "web/enroll.html").read_text().lower()
+    assert "debug" not in (ROOT / "web/enroll.html").read_text(encoding="utf-8").lower()
 
 
 @pytest.mark.xfail(strict=True, reason="POST /window is not built yet; the rect must be null or 4 finite, bounded numbers")
@@ -322,7 +326,7 @@ def test_the_app_build_never_packs_secrets_or_data():
     script = ROOT / "overlay/package.js"
     if not script.exists():
         pytest.skip("no packaging script yet")
-    code = "\n".join(re.sub(r"\s//.*$", "", line) for line in script.read_text().splitlines() if not line.strip().startswith("//"))
+    code = "\n".join(re.sub(r"\s//.*$", "", line) for line in script.read_text(encoding="utf-8").splitlines() if not line.strip().startswith("//"))
     # nothing from the repo that holds secrets or people's data is named, read or copied
     assert not re.search(r"['\"/`]\.env|notes|logs|\.git\b|\.pt\b|\bMODEL_API_KEY|SERPAPI|DATABASE_URL|\bfaces\b|memory/|capture/", code)
     # the only things copied in are Electron itself and the icon

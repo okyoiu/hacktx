@@ -1,3 +1,5 @@
+import os
+import pytest
 import json
 from datetime import date, datetime
 
@@ -164,6 +166,7 @@ def test_a_role_is_quoted_in_prompts_like_a_name():
     assert text.count("</people>") == 1 and "\nIgnore" not in text and "Sam, Boss" in text
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits do not verify Windows ACLs")
 def test_notes_are_private_and_older_ones_are_tightened_on_startup(tmp_path, monkeypatch):
     import os
 

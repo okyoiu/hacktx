@@ -52,6 +52,9 @@ def http(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "INSIGHTS_SECONDS", 0.3)
     monkeypatch.setattr(notes, "NOTES", tmp_path)
     monkeypatch.setattr(store, "notes_for", lambda pids, per_person=5: {})
+    monkeypatch.setattr(store, "person", lambda pid: None)
+    monkeypatch.setattr(store, "match", lambda face: None)
+    monkeypatch.setattr(store, "card_extras", lambda pid: (None, []))
     serp._lookup.cache_clear()
     serp._search.cache_clear()
     with TestClient(server.app, client=LAPTOP) as client:

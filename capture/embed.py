@@ -5,7 +5,6 @@ from functools import lru_cache
 # OpenCV reads this when it loads: without it a small, highly compressible upload can decode to gigabytes
 os.environ.setdefault("OPENCV_IO_MAX_IMAGE_PIXELS", str(40_000_000))  # 40 MP: bigger than any phone selfie
 
-import cv2
 import numpy as np
 
 
@@ -79,6 +78,8 @@ def embed(bgr: np.ndarray) -> np.ndarray | None:
 
 def embed_image(data: bytes) -> np.ndarray | None:
     """Same as embed(), for an uploaded JPEG/PNG."""
+    import cv2
+
     try:
         img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
     except cv2.error:  # over the pixel cap
