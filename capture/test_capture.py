@@ -22,7 +22,7 @@ def test_video_frames_skips_to_keep_real_speed(tmp_path):
     frames = list(video_frames(cv2.VideoCapture(path), fps=5))
     assert len(frames) == 5  # one second of 30 fps video sampled at 5 fps
     frame, origin = frames[0]
-    assert frame.shape == (48, 64, 3) and origin == (0, 0, 64)
+    assert frame.shape == (48, 64, 3) and origin == (0, 0, 64, None)
 
 
 def window(owner, x, y, w, h):
@@ -65,9 +65,9 @@ def test_screen_frames_follows_the_window_and_yields_nothing_while_it_is_gone(mo
     monkeypatch.setattr(faces, "FOLLOW_EVERY", -1)
     monkeypatch.setattr(faces, "call_window", lambda apps: next(spots))
     frames = faces.screen_frames((0, 0, 30, 20), follow=["zoom.us"])
-    assert next(frames)[1] == (50, 60, 30)
+    assert next(frames)[1] == (50, 60, 30, "zoom.us")
     assert next(frames)[0] is None
-    assert next(frames)[1] == (5, 6, 30)
+    assert next(frames)[1] == (5, 6, 30, "zoom.us")
 
 
 def test_assign_gives_overlapping_people_their_own_face():

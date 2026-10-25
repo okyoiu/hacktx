@@ -66,7 +66,7 @@ def test_video_posts_each_face_once_with_a_print_then_face_gone(tmp_path, monkey
         assert any(b["debug"]["fps"] > 0 for b in seen)
     else:
         assert all("debug" not in b for b in seen)
-    assert [b["rect"] for path, b in posts if path == "/window"] == [[0, 0, t1.shape[1], t1.shape[0]]]  # once, not per frame
+    assert [b for path, b in posts if path == "/window"] == [{"app": None, "rect": [0, 0, t1.shape[1], t1.shape[0]]}]  # once
     kinds = [path for path, _ in posts]
     assert kinds.index("/faces/gone") > max(i for i, k in enumerate(kinds) if k == "/faces")  # gone only after the last face
 
@@ -78,11 +78,12 @@ class Stop(Exception):
 def test_leaving_the_call_clears_the_cards_and_coming_back_brings_them_again(monkeypatch):
     t1 = get_image("t1")
     h, w = t1.shape[:2]
-    checks = iter([True] * 5 + [False] * 4 + [True] * 2 + ["moved"] * 3)  # one look per frame: there, gone, back
+    checks = iter([True] * 5 + [False] * 4 + [True] * 2 + ["moved"] * 2 + ["chrome"] * 2)  # one look per frame: there, gone, back
 
     def call_window(apps):
         try:
-            return {True: ("zoom.us", (0, 0, w, h)), False: None, "moved": ("zoom.us", (5, 6, w, h))}[next(checks)]
+            return {True: ("zoom.us", (0, 0, w, h)), False: None, "moved": ("zoom.us", (5, 6, w, h)),
+                    "chrome": ("Google Chrome", (5, 6, w, h))}[next(checks)]
         except StopIteration:
             raise Stop from None
 
@@ -113,4 +114,5 @@ def test_leaving_the_call_clears_the_cards_and_coming_back_brings_them_again(mon
     first_gone, last_gone = kinds.index("/faces/gone"), len(kinds) - 1 - kinds[::-1].index("/faces/gone")
     assert kinds[:first_gone].count("print") == 6 and kinds[last_gone + 1:].count("print") == 6  # six cards, cleared, six again
     assert kinds.count("/faces/gone") == 6
-    assert [b["rect"] for path, b in server.posts if path == "/window"] == [[0, 0, w, h], None, [0, 0, w, h], [5, 6, w, h]]
+    assert [(b["app"], b["rect"]) for path, b in server.posts if path == "/window"] == [  # only when the app or rect changes
+        ("zoom.us", [0, 0, w, h]), (None, None), ("zoom.us", [0, 0, w, h]), ("zoom.us", [5, 6, w, h]), ("Google Chrome", [5, 6, w, h])]
