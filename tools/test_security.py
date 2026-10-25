@@ -243,7 +243,6 @@ def test_launcher_logs_are_private():
     assert re.search(r"openSync\([^)]*0o600", (ROOT / "overlay/launcher.js").read_text())
 
 
-@pytest.mark.xfail(strict=True, reason="R4-1: capture.transcribe prints every sentence, and the launcher saves its output in logs/")
 def test_transcription_does_not_print_what_people_say():
     printed = [l for l in (ROOT / "capture/transcribe.py").read_text().splitlines() if "print(" in l]
     assert not any("transcript" in l for l in printed)

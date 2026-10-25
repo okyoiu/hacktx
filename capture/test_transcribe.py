@@ -58,7 +58,8 @@ class FakeMic:
         pass
 
 
-def test_keeps_listening_through_no_mic_a_rejection_and_the_end_of_a_session(monkeypatch, capsys):
+@pytest.mark.parametrize("verbose", [False, True])
+def test_keeps_listening_through_no_mic_a_rejection_and_the_end_of_a_session(monkeypatch, capsys, verbose):
     monkeypatch.setenv("MODEL_API_KEY", "fake")
     monkeypatch.setattr(transcribe.sd, "RawInputStream", FakeMic)
     mics = iter([sd.PortAudioError("no input device"), None, None, None, None])
@@ -95,8 +96,9 @@ def test_keeps_listening_through_no_mic_a_rejection_and_the_end_of_a_session(mon
     monkeypatch.setattr(transcribe, "post", post)
     monkeypatch.setattr(transcribe.asyncio, "sleep", sleep)
     with pytest.raises(StopAsyncIteration):
-        asyncio.run(transcribe.keep_listening(None))
+        asyncio.run(transcribe.keep_listening(None, verbose))
     assert waits == [2, 4, 2, 2, 2]  # no mic, rejection (wait doubles), a clean end resets it, network drop, clean end
     assert lines == [{"speaker": "speaker", "text": "hello", "final": True}]
     out = capsys.readouterr().out
     assert "no input device" in out and "bad key" in out and "network down" in out and "starting a new one" in out
+    assert ("[speaker] hello" in out) == verbose  # sentences print only with --verbose
