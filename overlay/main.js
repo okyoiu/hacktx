@@ -9,10 +9,10 @@
 // from logic.js `layoutFor` (a preset per call app) and follows the `window` event.
 // Main owns the event source (the memory service's WebSocket, or the demo replay with `npm run mock`) and
 // forwards every event to every window; panels call the memory API through main.
-const { app, BrowserWindow, clipboard, globalShortcut, ipcMain, screen, shell, systemPreferences } = require('electron')
+const { app, BrowserWindow, clipboard, globalShortcut, ipcMain, Menu, screen, shell, systemPreferences } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
-const { inviteLink, validCall, webUrl, layoutFor, islandBounds, recapFrom, devMode, ISLAND, BAR } = require('./logic')
+const { inviteLink, validCall, webUrl, layoutFor, islandBounds, recapFrom, devMode, menuModel, ISLAND, BAR } = require('./logic')
 const { createLauncher } = require('./launcher')
 
 // The repo's .env supplies ENROLL_CODE, ENROLL_URL and MEMORY_URL; variables already set win.
@@ -385,6 +385,14 @@ on('ask', openAsk)
 on('people-toggle', togglePeople)
 on('transcript-toggle', toggleTranscript)
 on('toggle-all', toggleAll)
+on('quit', () => app.quit()) // will-quit stops what the launcher started
+
+// The ⋯ menu and the pill's right-click: a native menu built from logic.js's model.
+const menuActions = { people: togglePeople, transcript: toggleTranscript, debug: () => toggleDebug(), quit: () => app.quit() }
+on('menu', (e) => {
+  const items = menuModel({ dev: DEV, transcriptShown: showing(windows.transcript), debugOn }).map((item) => (item.id ? { ...item, click: menuActions[item.id] } : item))
+  Menu.buildFromTemplate(items).popup({ window: BrowserWindow.fromWebContents(e.sender) })
+})
 
 // Developer mode only: the toggle, the shortcut and the handler don't exist in the normal app.
 let debugOn = false
@@ -397,6 +405,10 @@ if (DEV) on('debug-toggle', toggleDebug)
 // ---------- start ----------
 
 app.whenReady().then(async () => {
+  // The standard app menu, so ⌘Q and the Dock's Quit work whichever window has focus (Hide ⌘\ stays ours).
+  app.name = 'Hello Again'
+  Menu.setApplicationMenu(Menu.buildFromTemplate(process.platform === 'darwin' ? [{ role: 'appMenu' }, { role: 'editMenu' }] : [{ label: 'File', submenu: [{ role: 'quit' }] }, { role: 'editMenu' }]))
+
   const { bounds, workArea } = screen.getPrimaryDisplay()
   const first = layoutFor(null, null, workArea)
 

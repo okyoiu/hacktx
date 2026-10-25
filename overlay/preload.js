@@ -21,4 +21,6 @@ contextBridge.exposeInMainWorld('overlay', {
   toggleDebug: () => ipcRenderer.send('debug-toggle'), // nobody listens in the normal app
   ask: () => ipcRenderer.send('ask'),
   toggleAll: () => ipcRenderer.send('toggle-all'),
+  menu: () => ipcRenderer.send('menu'), // the ⋯ menu / right-click: People, transcript, Debug (dev), Quit
+  quit: () => ipcRenderer.send('quit'),
 })

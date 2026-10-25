@@ -60,6 +60,7 @@ function handle(e) {
       showInsights(e)
     }
     if (e.type === 'response') showResponse(e)
+    if (e.type === 'window') followed = Boolean(e.app)
     if (e.type === 'recap') showRecap(e)
   }
   if (shows('transcript') && e.type === 'caption') addCaption(e)
@@ -477,17 +478,7 @@ if (DEBUG && shows('cards')) {
   window.overlay?.onDebugShow((on) => (layer.hidden = !on))
 }
 
-if (DEBUG && shows('bar')) {
-  const toggle = el('button', 'tool debug-btn')
-  toggle.type = 'button'
-  toggle.title = 'Debug view ⌘⌥D: what the computer sees'
-  toggle.setAttribute('aria-label', toggle.title)
-  toggle.setAttribute('aria-pressed', 'false')
-  toggle.append(icon('eye'))
-  toggle.addEventListener('click', () => window.overlay?.toggleDebug())
-  window.overlay?.onDebugShow((on) => toggle.setAttribute('aria-pressed', String(on)))
-  $('hideBtn').before(toggle)
-}
+// (developers toggle the debug view from the ⋯ menu or ⌘⌥D; main.js owns both)
 
 // ---------- the island: pill · notice · sheet · recap ----------
 
@@ -666,23 +657,21 @@ if (shows('bar')) {
     $('timer').title = error || ''
     tick()
   })
-  $('peopleBtn').addEventListener('click', () => window.overlay?.togglePeople())
   $('hideBtn').addEventListener('click', () => window.overlay?.toggleAll())
-  $('transcriptBtn').addEventListener('click', () => {
-    if (window.overlay && view !== 'all') window.overlay.toggleTranscript()
-    else setTranscriptShown($('transcriptBtn').getAttribute('aria-pressed') !== 'true')
+  // People, the transcript, Debug (developer mode) and Quit live behind ⋯ and the pill's right-click
+  $('moreBtn').addEventListener('click', () => window.overlay?.menu())
+  $('island').addEventListener('contextmenu', (e) => {
+    e.preventDefault()
+    window.overlay?.menu()
   })
   window.overlay?.onTranscriptShown(setTranscriptShown)
 }
 
-// "Show transcript" opens the strip along the bottom (its own window; the preview shows it in place).
+// The transcript strip is its own window; the preview shows it in place.
 function setTranscriptShown(shown) {
-  $('transcriptBtn').setAttribute('aria-pressed', shown)
-  $('transcriptBtn').setAttribute('aria-label', transcriptToggle(shown).label)
-  if (view === 'all') {
-    $('transcript').hidden = !shown
-    $('captions').scrollTop = $('captions').scrollHeight // lines added while it was hidden couldn't scroll
-  }
+  if (view !== 'all') return
+  $('transcript').hidden = !shown
+  $('captions').scrollTop = $('captions').scrollHeight // lines added while it was hidden couldn't scroll
 }
 
 // ---------- Live insights (in the sheet; a new one shows as the notice while the pill is closed) ----------
@@ -898,8 +887,12 @@ function showRecap(r) {
   $('recapNote').textContent = ''
   $('recapPeopleTitle').hidden = !r.people?.length
   $('recapPeople').replaceChildren(...(r.people || []).map(recapPerson))
+  $('quitBtn').hidden = followed // no call window left to follow: offer to quit
   syncStage()
 }
+
+let followed = false // whether a call window is being followed (the `window` event)
+if (shows('bar')) $('quitBtn').addEventListener('click', () => window.overlay?.quit())
 
 function recapPerson({ name, role, lastTime }) {
   const item = el('li')

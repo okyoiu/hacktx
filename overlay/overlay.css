@@ -180,6 +180,9 @@ a.source:hover { background: var(--hover); color: var(--ink); }
 .ask input::placeholder, .ask input:disabled { color: var(--ink-3); }
 
 /* Recap */
+/* the Recap's footer when no call window was followed: the call is over, so is the app's job */
+.quit { display: block; margin-top: 20px; height: 40px; padding: 0 18px; border: 1px solid var(--rim); border-radius: 999px; background: var(--fill); color: var(--ink); font-size: 14.5px; font-weight: 600; transition: background-color 0.15s ease; }
+.quit:hover { background: var(--hover); }
 .recap-people { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
 .recap-people .who-row { display: flex; align-items: baseline; gap: 8px; }
 .recap-people .who { font-weight: 650; }

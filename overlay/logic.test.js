@@ -439,6 +439,20 @@ test('hover opens, leaving backs off after a grace period, and a pinned thing st
   assert.equal(islandStage({ recap: true, open: false, noticeUntil: 0, now, hover: true }), 'recap', 'the Recap is unaffected')
 })
 
+test('the ⋯ menu: People, the transcript toggle, Debug only in developer mode, then Quit', () => {
+  const { menuModel } = require('./logic')
+  assert.deepEqual(menuModel({ dev: false, transcriptShown: false, debugOn: false }), [
+    { id: 'people', label: 'People' },
+    { id: 'transcript', label: 'Show transcript' },
+    { type: 'separator' },
+    { id: 'quit', label: 'Quit Hello Again' },
+  ])
+  const dev = menuModel({ dev: true, transcriptShown: true, debugOn: true })
+  assert.equal(dev[1].label, 'Hide transcript')
+  assert.deepEqual(dev[2], { id: 'debug', label: 'Debug view', type: 'checkbox', checked: true })
+  assert.equal(dev.at(-1).id, 'quit')
+})
+
 test('the island keeps its centre as it grows (Teams: its left edge) and stays on screen', () => {
   const spot = { x: 440, y: 31, width: BAR.width, height: BAR.height, anchor: 'center' }
   assert.deepEqual(islandBounds(spot, { width: ISLAND.pill, height: 44 }, WORK), { x: 440 + (BAR.width - ISLAND.pill) / 2, y: 31, width: ISLAND.pill, height: 44 })
