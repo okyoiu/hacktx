@@ -70,9 +70,21 @@ function webUrl(url) {
 
 // Control bar: offline wins, then the pause state. The timer shows the call time, "Not sent" after a failed
 // pause or the toast after End call (`flash`), and "Offline" without a connection.
+// `listeningOn` is the server's pause state: true, false, or null before /health has answered (the server
+// starts listening, so unknown is shown as listening, never as paused).
 function barState(connected, listeningOn) {
-  return !connected ? 'offline' : listeningOn ? 'live' : 'paused'
+  return !connected ? 'offline' : listeningOn === false ? 'paused' : 'live'
 }
+
+// The pause control: what it shows and what a click sends, from the server's listening state.
+function pauseControl(on) {
+  if (on === false) return { icon: 'play', label: 'Paused', tip: 'Resume', send: { on: true } }
+  return { icon: 'pause', label: 'Listening', tip: 'Pause Hello Again (stops listening and faces)', send: { on: false } }
+}
+
+// End call ends the call, not the listening: the button says so, and after the Recap the pill says it's ready.
+const END_CALL_TIP = 'End call: save notes and show the Recap. Listening continues for the next call.'
+const READY = { topic: 'Ready', meta: 'Next call starts when a face appears', ms: 5000 }
 function timerText({ connected, flash, startedAt, now }) {
   return flash || (connected ? elapsed(startedAt, now) : 'Offline')
 }
@@ -80,7 +92,7 @@ function timerText({ connected, flash, startedAt, now }) {
 // The mic toggle: muted flattens and dims the waveform (no audio goes to Muse); paused or offline is flat but
 // not dimmed, because that's the pause button's state, not the mic's.
 function micState({ connected, on, muted }) {
-  const live = connected && on && !muted
+  const live = connected && on !== false && !muted
   return { wave: live ? 'live' : 'flat', label: muted ? 'Unmute' : 'Mute', dim: Boolean(muted) }
 }
 
@@ -236,11 +248,16 @@ function inviteLink(base, code) {
 // GET /health: the dot is green, or amber with the reasons. The server may send {problems: [...]} or a map of
 // check -> ok; a server that can't be reached, or a part the launcher lost, counts too.
 // shortcut: the exact /health shape isn't in the README yet, upgrade this once it is.
+const HEALTH_STATES = new Set(['listening', 'muted']) // in /health but they're the user's choices, not failures
 function healthProblems(health, launchWarningText = '') {
   const problems = []
   if (!health || health.error) problems.push('The memory server is not answering')
   else if (Array.isArray(health.problems)) problems.push(...health.problems.filter((p) => typeof p === 'string'))
-  else for (const [check, ok] of Object.entries(health.checks || health)) if (ok === false || ok === 'down' || ok === 'error') problems.push(`${check} is not working`)
+  else {
+    for (const [check, ok] of Object.entries(health.checks || health)) {
+      if (!HEALTH_STATES.has(check) && (ok === false || ok === 'down' || ok === 'error')) problems.push(`${check} is not working`)
+    }
+  }
   if (launchWarningText) problems.push(`${launchWarningText} stopped`)
   return problems
 }
@@ -300,7 +317,7 @@ function shouldMove(prev, next) {
 // Window sizes the layout counts on, in screen points. Panels grow downwards from their spot (main.js `fit`).
 // The strip's spot is the island at its widest (the sheet); as a pill it sits centred in that spot.
 const BAR = { width: 600, height: 44 }
-const ISLAND = { pill: 272, sheet: 600 } // the pill: mic, waveform, timer, sparkle, badge
+const ISLAND = { pill: 288, sheet: 600 } // the pill: mic, waveform, timer, pause, sparkle, badge
 const PANEL = { width: 448, gap: 12, margin: 24 }
 const STRIP = { width: 720, height: 72 } // the transcript strip along the bottom
 const RECAP = { width: 560, height: 440 } // height: a guess for centring; the window fits its content
@@ -445,15 +462,18 @@ function askPlace({ work, spot, faces, blocks, cards = [], panel, fixedX = false
 
 // The sheet header as overlay.css lays it out, in points, so a test can prove the tools fit: the left part
 // (mic, waveform, timer), the island's padding, the tools' inset, their gap and sizes.
-const HEAD = { left: 126, gap: 12, pad: 20, inset: 16, toolGap: 8, icon: 32, iconCompact: 26, endLabel: 70, icons: 3 }
+// left: mic, waveform, timer; pause: the pause control with its "Listening"/"Paused" label (its icon alone
+// when compact); the tools: End call, hide, ⋯.
+const HEAD = { left: 126, gap: 12, pad: 20, inset: 16, toolGap: 8, icon: 32, iconCompact: 26, endLabel: 70, icons: 2, pause: 112, pauseCompact: 38 }
 function toolsWidth(compact = false) {
   const icon = compact ? HEAD.iconCompact : HEAD.icon
   const end = compact ? icon + 10 : icon + HEAD.endLabel // End call: its icon plus the label, or the icon alone
   return HEAD.icons * icon + end + HEAD.toolGap * HEAD.icons + HEAD.inset
 }
-const headerFits = (sheetWidth, compact = false) => HEAD.left + HEAD.gap + toolsWidth(compact) <= sheetWidth - 2 * HEAD.pad
+const headerFits = (sheetWidth, compact = false) =>
+  HEAD.left + HEAD.gap + (compact ? HEAD.pauseCompact : HEAD.pause) + toolsWidth(compact) <= sheetWidth - 2 * HEAD.pad
 // The sheet is as wide as its content minimum, or wider when the measured tools need it.
-const sheetWidthFor = (contentMin, tools) => Math.max(contentMin, tools + HEAD.left + HEAD.gap + 2 * HEAD.pad)
+const sheetWidthFor = (contentMin, tools) => Math.max(contentMin, tools + HEAD.left + HEAD.gap + HEAD.pause + 2 * HEAD.pad)
 
 // One glass object at the top of the call: a pill while you talk, a one-line notice for NOTICE_MS when a new
 // insight arrives, a sheet when opened (⌘↵, a click, an answer), and the Recap when the call ends.
@@ -465,6 +485,11 @@ function islandStage({ recap, open, noticeUntil, now, hover = false }) {
 // Hover opens, leaving backs off: open while the pointer is over, and for `grace` ms after it leaves (so a
 // pointer crossing a gap doesn't flap it shut); pinned (⌘↵, a click) stays open regardless.
 const HOVER_GRACE = { island: 600, card: 800 }
+
+// The island opens itself into the notice for the first insight of a call only; later ones just bump the pill's
+// badge, and the user expands it (hover, a click, ⌘↵). `openedFor` is the call it already opened for, `call`
+// the current one (a recap ends a call).
+const insightAutoOpens = (openedFor, call) => openedFor !== call
 
 // The island's hover comes from where the pointer is (main.js polls it), not from the page's leave events: a
 // point counts as inside within HOVER_MARGIN of the window's edges.
@@ -526,4 +551,4 @@ function debugLabel({ trackId, score, decision }) {
   return `#${trackId} · ${scored} · ${decision}`
 }
 
-if (typeof module !== 'undefined') module.exports = { HOVER_MARGIN, insideBounds, hoverStep, HEAD, toolsWidth, headerFits, sheetWidthFor, micState, itemRows, menuModel, hoverOpen, HOVER_GRACE, REMEMBER_POINTS, cardKind, staleLine, relativeDate, oneLine, cardFacts, cardBullets, presetFor, layoutFor, askPlace, cardRect, recapFrom, debugLabel, devMode, shouldMove, islandStage, islandBounds, ISLAND, NOTICE_MS, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }
+if (typeof module !== 'undefined') module.exports = { pauseControl, END_CALL_TIP, READY, insightAutoOpens, HOVER_MARGIN, insideBounds, hoverStep, HEAD, toolsWidth, headerFits, sheetWidthFor, micState, itemRows, menuModel, hoverOpen, HOVER_GRACE, REMEMBER_POINTS, cardKind, staleLine, relativeDate, oneLine, cardFacts, cardBullets, presetFor, layoutFor, askPlace, cardRect, recapFrom, debugLabel, devMode, shouldMove, islandStage, islandBounds, ISLAND, NOTICE_MS, BAR, PANEL, STRIP, RECAP, MATCH_MIN, ROUTES, elapsed, takesOver, cleanName, peopleKey, cardPlace, healthProblems, insightsEmptyText, inviteLink, launchWarning, cleanRole, filterPeople, shortDate, deleteStep, rememberBody, shouldPop, isOpen, bulletsOf, POP_MS, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }

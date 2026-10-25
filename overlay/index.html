@@ -38,14 +38,15 @@
         <span class="timer" id="timer" role="timer" aria-label="Call time">00:00</span>
         <span class="ended" id="ended"></span>
       </button>
+      <!-- in every stage but the Recap: ⏸ while listening, ▶ while paused; the label shows once the island is open -->
+      <button class="pause-btn" id="pause" type="button" title="Pause Hello Again (stops listening and faces)" aria-label="Pause Hello Again (stops listening and faces)"><svg class="i-pause" aria-hidden="true"><use href="#pause"/></svg><svg class="i-play" aria-hidden="true"><use href="#play"/></svg><span class="pause-label" id="pauseLabel">Listening</span></button>
       <span class="warn" id="warn" role="status" hidden></span>
       <div class="notice" id="notice">
         <p class="t"><b id="noticeTopic"></b><span id="noticePoint"></span><small id="noticeMeta"></small></p>
         <button class="chip-act" id="noticeAction" type="button" hidden><span class="emoji" aria-hidden="true"></span><span class="label"></span></button>
       </div>
       <div class="tools">
-        <button class="tool" id="pause" type="button" aria-label="Pause listening"><svg class="i-pause" aria-hidden="true"><use href="#pause"/></svg><svg class="i-play" aria-hidden="true"><use href="#play"/></svg></button>
-        <button class="tool end" id="endBtn" type="button"><svg aria-hidden="true"><use href="#end"/></svg><span>End call</span></button>
+        <button class="tool end" id="endBtn" type="button" title="End call: save notes and show the Recap. Listening continues for the next call."><svg aria-hidden="true"><use href="#end"/></svg><span>End call</span></button>
         <button class="tool" id="hideBtn" type="button" aria-label="Hide ⌘\" aria-keyshortcuts="Meta+Backslash"><svg aria-hidden="true"><use href="#eye"/></svg></button>
         <button class="tool" id="moreBtn" type="button" aria-label="More: People, transcript, Quit" aria-haspopup="menu"><svg aria-hidden="true"><use href="#more"/></svg></button>
       </div>
