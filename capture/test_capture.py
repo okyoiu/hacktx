@@ -227,19 +227,20 @@ def test_debug_face_box_is_dropped_once_the_person_has_moved_off_it():
     assert faces.face_in([500, 120, 60, 80], person) is None and faces.face_in(None, person) is None
 
 
-def test_a_box_that_never_changes_is_a_picture_until_it_starts_moving():
+def test_a_box_is_a_person_only_while_its_pixels_keep_changing():
     t1, box = get_image("t1"), {1: [337, 219, 735, 648]}  # one person on the sample photo
     rng = np.random.default_rng(0)
     camera = lambda: np.clip(t1 + rng.normal(0, 1, t1.shape), 0, 255).astype(np.uint8)  # live video: a little sensor noise
     pictures = faces.Pictures()
-    assert pictures.update(t1, box, 0.0) == set()  # first look: nothing to compare with yet
-    assert pictures.update(t1, box, 1.0) == set()  # too soon to tell
-    assert pictures.update(t1, box, 3.0) == {1}  # the same picture 3 s later
-    assert pictures.update(t1, {1: [340, 222, 738, 651]}, 6.0) == {1}  # YOLO's box jitters a little: still the same patch
-    assert pictures.update(camera(), box, 9.0) == set()  # the camera came on
-    assert pictures.update(camera(), {}, 12.0) == set() and not pictures.last  # the track ended: forgotten
+    assert pictures.update(t1, box, 0.0) == {1}  # new: not proven live yet, so no print
+    assert pictures.update(camera(), box, 0.2) == set()  # changed: a person
+    assert pictures.update(t1, box, 1.0) == set()  # changed again (noise gone), still a person...
+    assert pictures.update(t1, box, 3.0) == set()  # ...identical now, but only for 2 s
+    assert pictures.update(t1, {1: [340, 222, 738, 651]}, 4.5) == {1}  # frozen 3.5 s: a picture (box jitter doesn't count)
+    assert pictures.update(camera(), box, 5.0) == set()  # the camera came on: a person at once
+    assert pictures.update(camera(), {}, 6.0) == set() and not pictures.last and not pictures.moved  # track ended: forgotten
     live = faces.Pictures()
-    assert all(live.update(camera(), box, t) == set() for t in (0.0, 3.0, 6.0, 9.0))
+    assert [live.update(camera(), box, t) for t in (0.0, 0.2, 3.0, 6.0, 9.0)] == [{1}, set(), set(), set(), set()]
 
 
 def test_windows_windows_take_the_shape_the_mac_list_has_so_picking_works_unchanged():

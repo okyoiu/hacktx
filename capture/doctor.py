@@ -111,8 +111,11 @@ def checks() -> list[Result]:
 
 
 def main() -> None:
+    from capture import tuning
+
     results = checks()
     print(report(results))
+    print("tunables (capture/tuning.py): " + ", ".join(f"{n}={getattr(tuning, n)}" for n in dir(tuning) if n.isupper()))
     raise SystemExit(0 if all(ok for _, ok, _, _ in results) else 1)
 
 
