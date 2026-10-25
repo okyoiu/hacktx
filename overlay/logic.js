@@ -45,4 +45,44 @@ function webUrl(url) {
   }
 }
 
-if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver, cleanName, validCall, webUrl, isQuiet, BIG_CALL, QUIET_MS }
+// ---------- what each panel shows ----------
+
+// Control bar: offline wins, then the pause state. The timer shows the call time, "Not sent" after a failed
+// pause, and "Offline" without a connection.
+function barState(connected, listeningOn) {
+  return !connected ? 'offline' : listeningOn ? 'live' : 'paused'
+}
+function timerText({ connected, notSent, startedAt, now }) {
+  return notSent ? 'Not sent' : connected ? elapsed(startedAt, now) : 'Offline'
+}
+
+// Live insights: at most 3 points and 4 actions, whatever the service sends.
+const shownPoints = (points) => points.slice(0, 3)
+const shownActions = (actions) => actions.slice(0, 4)
+
+// "Show transcript" swaps the summary for the captions, and back.
+function transcriptToggle(transcriptHidden) {
+  return { open: transcriptHidden, label: transcriptHidden ? 'Hide transcript' : 'Show transcript' }
+}
+
+// AI response: the paragraphs the panel draws for a state ("thinking" and "ask" draw none).
+function answerLines(state, text) {
+  if (state === 'done') return text.split('\n').filter((l) => l.trim())
+  if (state === 'error') return ["Couldn't get an answer.", (text ? text + ' ' : '') + 'Try again in a moment.']
+  return []
+}
+
+// "Remember them": Enter saves once the name and the yes are in, Escape cancels.
+function rememberKey(key, canSave) {
+  return key === 'Escape' ? 'cancel' : key === 'Enter' && canSave ? 'save' : null
+}
+const canSave = (name, consent) => Boolean(cleanName(name) && consent)
+
+// What a save's answer means for the form. `gone` is true when the face left while it was saving.
+function rememberResult({ error, status }, gone) {
+  if (status === 409) return { kind: 'left', text: 'They left the call before saving.' }
+  if (gone) return { kind: 'left', text: error ? undefined : 'Saved. They have left the call.' }
+  return error ? { kind: 'error', text: error } : { kind: 'saved' }
+}
+
+if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver, cleanName, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS }

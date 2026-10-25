@@ -138,7 +138,7 @@ function openRemember(card) {
   form.append(name, yes, actions, note)
   card.replaceChildren(head, form)
 
-  const ready = () => (save.disabled = !(cleanName(name.value) && consent.checked))
+  const ready = () => (save.disabled = !canSave(name.value, consent.checked))
   name.addEventListener('input', ready)
   consent.addEventListener('change', ready)
   close.addEventListener('click', () => closeRemember(card))
@@ -156,10 +156,10 @@ function openRemember(card) {
     const { error, status } = await api(`/faces/${Number(card.dataset.track)}/remember`, { name: cleanName(name.value), consent: true })
     delete card.dataset.saving
     if (!card.classList.contains('remembering')) return // already their name card
-    if (status === 409) return leftCall(card)
-    if (card.dataset.gone) return leftCall(card, error ? undefined : 'Saved. They have left the call.') // left while saving
-    if (error) {
-      note.textContent = error
+    const result = rememberResult({ error, status }, card.dataset.gone)
+    if (result.kind === 'left') return leftCall(card, result.text)
+    if (result.kind === 'error') {
+      note.textContent = result.text
       save.textContent = 'Save'
       name.disabled = consent.disabled = false
       return ready()
@@ -224,7 +224,11 @@ function removeCard(trackId) {
 if (shows('cards')) {
   document.addEventListener('keydown', (e) => {
     const open = document.querySelector('.card.remembering')
-    if (e.key === 'Escape' && open) closeRemember(open)
+    if (!open) return
+    const act = rememberKey(e.key, !open.querySelector('.save').disabled)
+    if (act) e.preventDefault() // Enter must not also submit natively
+    if (act === 'cancel') closeRemember(open)
+    if (act === 'save') open.querySelector('form').requestSubmit()
   })
 }
 
@@ -272,7 +276,7 @@ function setListening({ on, startedAt }) {
 
 function renderBar() {
   const live = connected && listening.on
-  $('bar').dataset.state = !connected ? 'offline' : live ? 'live' : 'paused'
+  $('bar').dataset.state = barState(connected, listening.on)
   $('pause').disabled = !connected
   $('pause').setAttribute('aria-label', listening.on ? 'Pause listening' : 'Resume listening')
   tick()
@@ -283,7 +287,7 @@ function renderBar() {
 let notSentUntil = 0 // a failed pause shows "Not sent" in the timer's place for a few seconds
 
 function tick() {
-  $('timer').textContent = Date.now() < notSentUntil ? 'Not sent' : connected ? elapsed(listening.startedAt, Date.now()) : 'Offline'
+  $('timer').textContent = timerText({ connected, notSent: Date.now() < notSentUntil, startedAt: listening.startedAt, now: Date.now() })
 }
 
 const BARS = [...$('wave').children]
@@ -345,10 +349,10 @@ function showInsights(next) {
   if (next.topic !== prev?.topic) fresh($('topic'))
   $('topic').textContent = next.topic
   const seen = new Set(prev?.points)
-  $('points').replaceChildren(...next.points.slice(0, 3).map((p) => fresh(el('li', null, p), seen.has(p))))
+  $('points').replaceChildren(...shownPoints(next.points).map((p) => fresh(el('li', null, p), seen.has(p))))
   const had = new Set(prev?.actions.map((a) => a.id))
   $('actionsTitle').hidden = !next.actions.length
-  $('actions').replaceChildren(...next.actions.slice(0, 4).map((a) => fresh(actionRow(a), had.has(a.id))))
+  $('actions').replaceChildren(...shownActions(next.actions).map((a) => fresh(actionRow(a), had.has(a.id))))
 }
 
 // new lines blur in; lines that were already there stay still
@@ -406,11 +410,11 @@ for (const button of document.querySelectorAll('.copy-btn')) button.dataset.labe
 
 if (shows('insights')) {
   $('transcriptBtn').addEventListener('click', () => {
-    const open = $('transcript').hidden
+    const { open, label } = transcriptToggle($('transcript').hidden)
     $('transcript').hidden = !open
     $('insightsBody').hidden = open
     $('transcriptBtn').setAttribute('aria-pressed', open)
-    $('transcriptBtn').lastElementChild.textContent = open ? 'Hide transcript' : 'Show transcript'
+    $('transcriptBtn').lastElementChild.textContent = label
     if (open) $('transcript').scrollTop = $('transcript').scrollHeight
   })
   $('copyInsights').addEventListener('click', (e) => {
@@ -449,10 +453,7 @@ function renderResponse() {
   $('copyAnswer').hidden = state === 'ask'
   $('copyAnswer').disabled = state !== 'done'
   $('thinking').hidden = state !== 'thinking'
-  const lines = state === 'done' ? text.split('\n').filter((l) => l.trim())
-    : state === 'error' ? ["Couldn't get an answer.", (text ? text + ' ' : '') + 'Try again in a moment.']
-    : []
-  $('answer').replaceChildren(...lines.map((line, i) => {
+  $('answer').replaceChildren(...answerLines(state, text).map((line, i) => {
     const p = el('p', null, line)
     p.style.animationDelay = i * 70 + 'ms'
     return p

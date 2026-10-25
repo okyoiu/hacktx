@@ -1,7 +1,7 @@
 // node --test (npm test in overlay/)
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { ROUTES, elapsed, takesOver, cleanName, validCall, webUrl, isQuiet, BIG_CALL, QUIET_MS } = require('./logic')
+const { ROUTES, elapsed, takesOver, cleanName, validCall, webUrl, barState, timerText, shownPoints, shownActions, transcriptToggle, answerLines, rememberKey, canSave, rememberResult, isQuiet, BIG_CALL, QUIET_MS } = require('./logic')
 
 test('main only forwards the memory API calls the overlay makes', () => {
   for (const route of ['/listening', '/ask', '/actions/x1', '/actions/act_2-b']) assert.ok(ROUTES.test(route), route)
@@ -62,4 +62,47 @@ test('only http(s) links open in the browser', () => {
   assert.ok(webUrl('https://example.com/a'))
   assert.ok(webUrl('http://example.com'))
   for (const url of ['file:///etc/passwd', 'javascript:alert(1)', 'smb://host/share', 'not a url', undefined]) assert.ok(!webUrl(url), String(url))
+})
+
+test('the bar shows offline, live or paused, and the timer follows', () => {
+  assert.equal(barState(false, true), 'offline')
+  assert.equal(barState(true, true), 'live')
+  assert.equal(barState(true, false), 'paused')
+  const start = '2026-10-24T21:40:00Z'
+  const now = Date.parse(start) + 65_000
+  assert.equal(timerText({ connected: true, startedAt: start, now }), '01:05')
+  assert.equal(timerText({ connected: true, notSent: true, startedAt: start, now }), 'Not sent')
+  assert.equal(timerText({ connected: false, startedAt: start, now }), 'Offline')
+})
+
+test('Live insights shows at most 3 points and 4 actions, and the transcript toggle flips', () => {
+  assert.equal(shownPoints(['a', 'b', 'c', 'd']).length, 3)
+  assert.equal(shownActions([1, 2, 3, 4, 5]).length, 4)
+  assert.deepEqual(transcriptToggle(true), { open: true, label: 'Hide transcript' })
+  assert.deepEqual(transcriptToggle(false), { open: false, label: 'Show transcript' })
+})
+
+test('the AI response draws paragraphs only for done and error', () => {
+  assert.deepEqual(answerLines('done', 'One.\n\n  \nTwo.'), ['One.', 'Two.'])
+  assert.deepEqual(answerLines('error', ''), ["Couldn't get an answer.", 'Try again in a moment.'])
+  assert.deepEqual(answerLines('error', 'Timed out.'), ["Couldn't get an answer.", 'Timed out. Try again in a moment.'])
+  for (const state of ['thinking', 'ask', 'idle']) assert.deepEqual(answerLines(state, 'x'), [])
+})
+
+test('Remember them: Enter saves only when ready, Escape always cancels', () => {
+  assert.equal(rememberKey('Enter', true), 'save')
+  assert.equal(rememberKey('Enter', false), null)
+  assert.equal(rememberKey('Escape', false), 'cancel')
+  assert.equal(rememberKey('a', true), null)
+  assert.ok(canSave(' Maya ', true))
+  assert.ok(!canSave('   ', true), 'a blank name')
+  assert.ok(!canSave('Maya', false), 'no yes yet')
+})
+
+test('Remember them: a 409 says they left, a failure keeps the form, a late save is still honest', () => {
+  assert.deepEqual(rememberResult({ error: 'x', status: 409 }), { kind: 'left', text: 'They left the call before saving.' })
+  assert.deepEqual(rememberResult({ error: 'Try again.', status: 500 }), { kind: 'error', text: 'Try again.' })
+  assert.deepEqual(rememberResult({}), { kind: 'saved' })
+  assert.equal(rememberResult({}, 'true').text, 'Saved. They have left the call.')
+  assert.equal(rememberResult({ error: 'x' }, 'true').text, undefined, 'unsaved and gone: the default sentence')
 })
