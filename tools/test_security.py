@@ -550,7 +550,6 @@ def test_deleting_a_person_leaves_nothing_of_them(someone):
     assert pid not in server.call.people and pid not in json.dumps(server.latest_recap) and name not in json.dumps(server.latest_recap)
 
 
-@pytest.mark.xfail(strict=True, reason="R11-1: the Ask AI thread keeps questions and answers that name a deleted person until the call ends")
 def test_deleting_a_person_also_clears_them_from_the_ask_ai_thread(someone, monkeypatch):
     pid, name, _ = someone
     monkeypatch.setattr(server, "thread", [(f"Who is {name}?", f"{name} is a test person.")])
