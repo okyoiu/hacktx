@@ -120,6 +120,8 @@ def from_this_laptop(conn: HTTPConnection) -> bool:
 @app.middleware("http")
 async def guests_only_enroll(request: Request, call_next):
     """Phones on the Wi-Fi may enroll and delete themselves; every other route is for this laptop only."""
+    if any(h in request.headers for h in FORWARDED) and not request.url.path.startswith("/connector/"):
+        return JSONResponse({"detail": "Not available through the tunnel."}, 403)  # the tunnel gets the connector, nothing else
     guest = request.url.path.startswith("/connector/") or request.url.path == "/enroll" or (request.method == "DELETE" and request.url.path.startswith("/people/"))
     if not guest and not from_this_laptop(request):
         return JSONResponse({"detail": "Only the laptop running Hello Again can use that."}, 403)

@@ -378,7 +378,6 @@ def test_a_laptop_request_without_forwarding_headers_still_works():
     assert TestClient(server.app, client=LAPTOP).get("/enroll").status_code == 200
 
 
-@pytest.mark.xfail(strict=True, reason="R9-1: the tunnel still reaches /enroll and DELETE /people/*, the guest paths; it must get only /connector/*")
 def test_the_tunnel_reaches_nothing_but_the_connector(monkeypatch):
     monkeypatch.setattr(store, "people", lambda: [])
     deleted = []
