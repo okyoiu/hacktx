@@ -547,17 +547,30 @@ if (shows('bar')) {
   // hover grows the pill into the notice (with its tools); leaving lets it back off after a moment.
   // Nothing here takes keyboard focus: the call keeps it until ⌘↵ or a click.
   $('island').addEventListener('mouseenter', () => {
-    islandOver = true
     wakePanel()
+    if (islandOver) return
+    islandOver = true
+    window.overlay?.islandHover(true) // from here main watches the pointer and says when it has really left
     syncStage()
   })
-  $('island').addEventListener('mouseleave', () => {
+  // In the app the page's own mouseleave is ignored: it fires at the old pill's edges while the window grows.
+  window.overlay?.onIslandHover(() => {
+    const typing = document.activeElement?.matches?.('#island input')
+    if (typing) return window.overlay.islandHover(true) // a field being typed in keeps it open
     islandOver = false
-    islandLeftAt = Date.now()
-    clearTimeout(hoverTimer)
-    hoverTimer = setTimeout(syncStage, HOVER_GRACE.island + 20)
+    islandLeftAt = null // main already waited the grace period
     syncStage()
   })
+  // the browser preview has no main.js to watch the pointer: it backs off on the page's leave event
+  if (!window.overlay) {
+    $('island').addEventListener('mouseleave', () => {
+      islandOver = false
+      islandLeftAt = Date.now()
+      clearTimeout(hoverTimer)
+      hoverTimer = setTimeout(syncStage, HOVER_GRACE.island + 20)
+      syncStage()
+    })
+  }
 }
 
 // ---------- the head: waveform, timer, tools ----------
@@ -970,6 +983,7 @@ function wakePanel() {
   if (document.body.classList.contains('idle')) setIdle(false)
   clearTimeout(idleTimer)
   idleTimer = setTimeout(() => {
+    if (islandOver) return wakePanel() // the pointer is still on the island: staying a while isn't being idle
     // quiet for a while: an open sheet folds back into the pill, unless a question is being typed
     if (open && !recapOn && document.activeElement !== $('question') && !$('question').value) setOpen(false)
     setIdle(true)

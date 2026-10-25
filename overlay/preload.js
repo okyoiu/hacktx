@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('overlay', {
   onTranscriptShown: (fn) => ipcRenderer.on('transcript-shown', (_e, shown) => fn(shown)),
   onDebugShow: (fn) => ipcRenderer.on('debug-show', (_e, on) => fn(on)), // main only sends this in developer mode
   onIslandBounds: (fn) => ipcRenderer.on('island-bounds', (_e, bounds) => fn(bounds)),
+  islandHover: (on) => ipcRenderer.send('island-hover', on), // the pointer came onto the island: main watches it
+  onIslandHover: (fn) => ipcRenderer.on('island-hover', (_e, on) => fn(on)), // main: it has really left
   api: (route, body, method) => ipcRenderer.invoke('api', route, body, method),
   fit: (size) => ipcRenderer.send('fit', size), // a height, or { width, height } for the island
   setIdle: (idle) => ipcRenderer.send('panel-idle', idle),
