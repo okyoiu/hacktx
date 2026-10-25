@@ -15,6 +15,7 @@ The database is Postgres. By default it is a Docker container on the host's lapt
 | table `consents` | when you agreed, when it ends, and what you agreed to: your face print, name, voice, notes and facts, and the Muse app only if you ticked it | one year of memory, then deletion |
 | table `notes` | short notes Muse wrote from what was said on calls | the "last time" memory |
 | table `encounters` | for each call: the date, what you talked about, a topic, whether you spoke, "work" or "personal" | "last seen / last spoke" on your card |
+| table `calls` | for each finished call: when, the app, its topic, the key points and the suggested actions Muse wrote, and who was there (names and labels). The key points can mention people who were **not** remembered. **Today these rows are never deleted automatically and are not removed when you delete yourself** (finding R15-2) | the Recap history and the Muse app's "what happened in my last meeting?" |
 | table `facts` | plain facts Muse noticed you said about yourself ("Loves F1"), at most 3 new per call | your card and the dashboard |
 | `notes/<date-time>.md` on the laptop | one note per call: who was there, what Muse noted, key points, AI answers | a readable copy for the host |
 | `notes/people/<id>.md` on the laptop | one readable file per person | the same, per person |
