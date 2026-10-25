@@ -643,3 +643,28 @@ Run with `ponytail:ponytail-audit` on main `253d438`, plus what the security rou
 **Not checked:** how it looks and behaves on a Mac (animation, focus, the pill at the screen edge), the reduce-motion path, and the mock demo.
 
 **Finished build `025bbcb` (checked after the first pass):** the only change since `e3f5c2e` is two CSS lines and a timer in `wakePanel()` (`overlay.js:826-833`): after 20 seconds of quiet an open sheet folds back into the pill, unless a question is being typed or the Recap is showing. It adds no IPC channel, no text sink and no network use; `node --check` passes, and in a scratch merge with main the security tests give 40 passed and 5 expected xfails, and `node --test` 54 of 54. A small plus: a sheet that shows insights and names no longer stays open on the screen when nobody touches it. The verdict above stands.
+
+---
+
+## Fresh-clone check again, and the README mismatches (main `75c3e70`, R9-1 landed)
+
+**Fresh clone in `/tmp/fresh2`, no `.env`, no keys:** with the database, **176 passed, 2 skipped, 5 expected xfails**; `node --test` passed. Without `DATABASE_URL`: 151 passed, 25 skipped, **2 failed**, both in `memory/test_app.py` (`test_call_ends_by_itself_when_no_face_has_been_seen_for_the_idle_time`, `test_the_call_remembers_the_followed_app_and_its_last_topic_for_how_we_met`): they call the real database and die with `KeyError: 'DATABASE_URL'`. My own failure from last time is fixed, and the clock-based capture test passed this time. The two memory tests are the memory owner's: patch `store.match`/`store.person` or skip without `DATABASE_URL`. R9-1 is closed (the tunnel test now passes).
+
+**README mismatches from last time:**
+
+| # | Was | Now |
+|---|---|---|
+| 1, 2 | line 232 "never tunnel" and "`/connector/*` only" | **Fixed** (lines 142 and 236) |
+| 3 | line 69: add `/connector/*` to "only enroll and delete-my-data answer to other devices" | **Still open.** Line 69 does not mention the connector (line 236 does). Add: ", plus `/connector/*` when `MUSE_CONNECTOR_KEY` is set". |
+| 4 | line 121 `--verbose` | **Fixed** |
+| 5 | End call and Recap missing from the walkthrough | **Fixed** (step 5) |
+| 6 | "control bar at the top right" | **Mostly fixed;** one left at **line 119** (hand-run row 2): "A small glass control bar at the top right of your screen". Say: "The island, a small black glass pill at the top of your call window". |
+| 7 | card bullets text | **Fixed** |
+| 8 | `/people/stale`, `/health` missing | **Fixed** (lines 213-214) |
+| 9 | `logs/` in "Files" | **Fixed** (line 226) |
+| 10 | `ENROLL_CODE`, `MUSE_CONNECTOR_KEY` | **Fixed** (line 14) |
+| 11 | model downloads | **Fixed** (line 20) |
+| 12 | "The first run also installs anything missing" | **Still there** (optional wording; `uv` syncs Python packages but Docker, `uv` and Node must already be installed) |
+| 13 | `Start-Hello-Again.bat` | **Fixed** (line 44 names it) |
+
+Left: **3** (line 69), **6** (line 119), and the optional **12** (line 44).
