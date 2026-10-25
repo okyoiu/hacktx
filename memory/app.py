@@ -792,6 +792,7 @@ async def forget(pid: str, request: Request, x_delete_token: str | None = Header
         latest_recap["people"] = [p for p in latest_recap["people"] if p["id"] != pid]
     snippets.pop(pid, None)
     live.pop(pid, None)
+    clear_thread()  # an Ask AI answer may name them, and follow-ups would send that to Muse again
     for t, card in list(tracks.items()):  # their card comes off the screen, and nothing about them goes to Muse again
         if card and card["id"] == pid:
             for state in (tracks, unknown, boxes, debug_scores):

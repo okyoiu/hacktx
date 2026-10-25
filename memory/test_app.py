@@ -929,3 +929,17 @@ def test_ten_people_talking_cost_one_muse_request_a_minute_for_live_bullets(http
     time.sleep(0.35)
     http.post("/transcript", json=line("speaker_1", "Closing remark with enough words in it to count."))
     wait_for(lambda: len(asked) == 2)  # ten more people talking: still one request
+
+
+def test_deleting_someone_clears_the_ask_ai_thread_that_may_name_them(http, events, monkeypatch):
+    prompts = []
+    monkeypatch.setattr(picks, "chat", lambda prompt, seconds=None: prompts.append(prompt) or "Jordan Lee works at Acme.")
+    rid = http.post("/ask", json={"question": "Who is Jordan Lee?"}).json()["id"]
+    wait_for(lambda: any(e.get("id") == rid and e["status"] == "done" for e in events))
+    assert server.thread
+    monkeypatch.setattr(store, "delete_person", lambda pid, token: True)
+    assert http.delete("/people/p_jordan").status_code == 200
+    assert server.thread == []
+    rid = http.post("/ask", json={"question": "And their job?"}).json()["id"]
+    wait_for(lambda: any(e.get("id") == rid and e["status"] == "done" for e in events))
+    assert "Jordan Lee" not in prompts[-1] and "Earlier in this chat" not in prompts[-1]
