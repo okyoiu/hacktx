@@ -46,7 +46,7 @@ def fake_serpapi(url, params, timeout):
 def http(monkeypatch, tmp_path):
     """A fresh server: no call, transcript, insights or faces, and listening."""
     state = {"call": None, "history": [], "fresh": [], "actions": {}, "latest_insights": None, "tracks": {}, "unknown": {},
-             "speakers": {}, "clients": set(), "last_transcript_at": None, "last_refresh": None, "latest_window": None, "latest_recap": None, "listening": {"type": "listening", "on": True, "startedAt": "2026-10-24T20:00:00Z"}}
+             "speakers": {}, "clients": set(), "last_transcript_at": None, "last_refresh": None, "latest_window": None, "latest_recap": None, "debug_scores": {}, "listening": {"type": "listening", "on": True, "startedAt": "2026-10-24T20:00:00Z"}}
     for name, value in state.items():
         monkeypatch.setattr(server, name, value)
     monkeypatch.setattr(server, "INSIGHTS_SECONDS", 0.3)
@@ -616,3 +616,39 @@ def test_no_recap_when_there_was_no_call_or_nothing_happened_in_it(http, events,
     assert http.post("/calls/end").status_code == 200
     time.sleep(0.2)
     assert not any(e["type"] == "recap" for e in events) and server.latest_recap is None
+
+
+def test_debug_events_exist_only_in_developer_mode(http, events, monkeypatch):
+    lookups = []
+    monkeypatch.setattr(store, "match", lambda p: {"id": "p_jordan", "name": "Jordan Lee", "firstMet": date(2026, 10, 1), "role": "", "score": 0.7}
+                        if p[0] > 0.5 else None)
+    monkeypatch.setattr(store, "nearest_score", lambda p: lookups.append(1) or (0.7 if p[0] > 0.5 else 0.31))
+    monkeypatch.setattr(store, "last_time", lambda pid: None)
+    monkeypatch.setattr(store, "latest_note", lambda pid: None)
+    monkeypatch.setattr(store, "key_fact", lambda pid: None)
+    debug = {"personBox": [0, 0, 50, 90], "faceBox": [10, 5, 20, 20], "fps": 4.8}
+    known, stranger = [1.0] + [0.0] * 511, [0.0] * 511 + [1.0]
+
+    monkeypatch.delenv("HELLO_DEBUG", raising=False)  # normal mode first: debug is ignored, and nothing shows a score
+    http.post("/faces", json={"trackId": 1, "screenBox": [0, 0, 5, 5], "facePrint": known, "debug": debug})
+    assert not any(e["type"] == "debug" for e in events) and lookups == []
+    assert all("score" not in json.dumps(e) for e in events)
+    monkeypatch.setenv("HELLO_DEBUG", "0")
+    http.post("/faces", json={"trackId": 1, "screenBox": [0, 0, 5, 5], "debug": debug})
+    assert not any(e["type"] == "debug" for e in events)
+
+    monkeypatch.setenv("HELLO_DEBUG", "1")
+    http.post("/faces", json={"trackId": 2, "screenBox": [0, 0, 5, 5], "facePrint": stranger})  # no debug sent: no event
+    assert not any(e["type"] == "debug" for e in events)
+    http.post("/faces", json={"trackId": 1, "screenBox": [0, 0, 5, 5], "facePrint": known, "debug": debug})
+    http.post("/faces", json={"trackId": 3, "screenBox": [0, 0, 5, 5], "facePrint": stranger, "debug": debug})
+    http.post("/faces", json={"trackId": 3, "screenBox": [1, 0, 5, 5], "debug": debug | {"faceBox": None}})  # later frame, no print
+    assert http.post("/faces", json={"trackId": 9, "screenBox": [0, 0, 5, 5], "debug": debug}).json() == {"needPrint": True}
+    got = [e for e in events if e["type"] == "debug"]
+    assert [(e["trackId"], e["score"], e["decision"]) for e in got] == [
+        (1, 0.7, "Jordan Lee"), (3, 0.31, "below 0.45"), (3, 0.31, "below 0.45"), (9, None, "no face yet")]
+    assert got[0] == {"type": "debug", "trackId": 1, "personBox": [0, 0, 50, 90], "faceBox": [10, 5, 20, 20], "score": 0.7,
+                      "decision": "Jordan Lee", "fps": 4.8} and got[2]["faceBox"] is None
+    assert all("score" not in e for e in events if e["type"] != "debug")  # scores stay out of every other event
+    http.post("/faces/gone", json={"trackId": 3})
+    assert 3 not in server.debug_scores

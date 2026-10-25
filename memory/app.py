@@ -206,10 +206,17 @@ async def overlay_socket(ws: WebSocket):
 
 # --- faces (from capture/faces.py) ---
 
+class Debug(BaseModel):
+    personBox: list[float] = Field(min_length=4, max_length=4)
+    faceBox: list[float] | None = Field(default=None, min_length=4, max_length=4)
+    fps: float
+
+
 class FaceTrack(BaseModel):
     trackId: int
     screenBox: list[float] = Field(min_length=4, max_length=4)  # x, y, width, height in screen points
     facePrint: list[float] | None = Field(default=None, min_length=512, max_length=512)
+    debug: Debug | None = None  # only sent by capture in developer mode
 
 
 class Gone(BaseModel):
@@ -236,11 +243,30 @@ def card(person: dict) -> dict:
     }
 
 
+debug_scores: dict[int, float | None] = {}  # trackId -> best similarity of its print; filled only in developer mode
+
+
+async def send_debug(t: FaceTrack) -> None:
+    """Developer mode (HELLO_DEBUG=1 on the server): tell the debug view what the matcher thinks of this track."""
+    if t.facePrint is not None:
+        try:
+            debug_scores[t.trackId] = await asyncio.to_thread(store.nearest_score, np.asarray(t.facePrint, dtype=np.float32))
+        except Exception:  # the debug view must never break face tracking
+            debug_scores[t.trackId] = None
+    shown = tracks.get(t.trackId)
+    decision = shown["name"] if shown else f"below {store.MATCH_MIN}" if t.trackId in debug_scores else "no face yet"
+    await push({"type": "debug", "trackId": t.trackId, "personBox": t.debug.personBox, "faceBox": t.debug.faceBox,
+                "score": debug_scores.get(t.trackId), "decision": decision, "fps": t.debug.fps})
+
+
 @app.post("/faces")
 async def faces(t: FaceTrack):
+    debugging = t.debug is not None and os.getenv("HELLO_DEBUG") == "1"  # otherwise `debug` is ignored
     if t.facePrint is not None:
         tracks[t.trackId] = await asyncio.to_thread(card_for, t.facePrint)
     elif t.trackId not in tracks:
+        if debugging:
+            await send_debug(t)
         return {"needPrint": True}  # we restarted and lost this track; capture resends its print
     if tracks[t.trackId] is None:  # can't name them: hold the print in RAM in case they agree to be remembered
         if t.facePrint is not None:
@@ -249,6 +275,8 @@ async def faces(t: FaceTrack):
             unknown[t.trackId]["box"] = t.screenBox
     saw_face(tracks[t.trackId])
     await push({"type": "face", "trackId": t.trackId, "screenBox": t.screenBox, "person": tracks[t.trackId]})
+    if debugging:
+        await send_debug(t)
     return {"person": tracks[t.trackId]}
 
 
@@ -275,6 +303,7 @@ async def set_window(w: Window):
 async def face_gone(g: Gone):
     tracks.pop(g.trackId, None)
     unknown.pop(g.trackId, None)
+    debug_scores.pop(g.trackId, None)
     await push({"type": "face_gone", "trackId": g.trackId})
     return {"ok": True}
 

@@ -62,6 +62,16 @@ def digest(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def nearest_score(face_print: np.ndarray) -> float | None:
+    """Best cosine similarity to any consenting person, even below MATCH_MIN. Developer mode only."""
+    row = conn().execute(
+        """select max(1 - (f.print <=> %s)) from faces f join consents c on c.person_id = f.person_id
+           where c.expires_at >= current_date""",
+        (face_print,),
+    ).fetchone()
+    return None if row is None or row[0] is None else round(float(row[0]), 3)
+
+
 def enroll(name: str, face_print: np.ndarray, selfie: bytes | None, role: str = "") -> tuple[str, str]:
     """Save a consenting person; returns (personId, deleteToken)."""
     pid, token = "p_" + secrets.token_hex(4), secrets.token_urlsafe(16)
