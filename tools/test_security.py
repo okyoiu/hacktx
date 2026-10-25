@@ -584,3 +584,19 @@ def test_the_consent_scope_never_claims_more_than_the_person_saw():
     for line in sql.splitlines():
         if line.strip().startswith("update consents"):
             assert not re.search(r"facts|voice", line.split("where")[0]), line
+
+
+@pytest.mark.xfail(strict=True, reason="R13-2: the consent scope is recorded but not enforced; facts are written for people who never agreed to them")
+def test_facts_are_written_only_for_people_whose_scope_includes_them():
+    import secrets as _secrets
+
+    import numpy as np
+
+    _db_or_skip()
+    pid, _ = store.enroll("Zed Scope" + _secrets.token_hex(3), np.random.default_rng().normal(size=512).astype(np.float32), None)
+    try:
+        store.conn().execute("update consents set scope = '{facePrint,notes}' where person_id = %s", (pid,))  # an old row
+        store.add_facts(pid, ["Loves F1"])
+        assert store.conn().execute("select count(*) from facts where person_id = %s", (pid,)).fetchone()[0] == 0
+    finally:
+        store.conn().execute("delete from people where id = %s", (pid,))
