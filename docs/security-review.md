@@ -668,3 +668,60 @@ Run with `ponytail:ponytail-audit` on main `253d438`, plus what the security rou
 | 13 | `Start-Hello-Again.bat` | **Fixed** (line 44 names it) |
 
 Left: **3** (line 69), **6** (line 119), and the optional **12** (line 44).
+
+---
+
+## Consent, round 11
+
+2026-10-25, Security agent. For the coordinator: `web/enroll.html` and the Remember form are the design agent's, and the schema default is the memory agent's. The test for this is `test_the_enroll_page_names_every_use_of_what_it_keeps` (strict xfail; delete its marker once the page says all of the below).
+
+### What a person agreed to, against what is kept and sent now
+
+The enroll page says: a face print (photo not kept); notes from calls you are both in, written by Meta's Muse from what is said; deleted after one year or when you ask. The checkbox says "recognize my face and keep notes about our calls". The Remember form says only "They said yes". The database says `consents.scope = {facePrint,selfie,notes}` for everyone, and nothing reads that column.
+
+What is true now and **not** told:
+
+| Data use | Where it happens | Told? |
+|---|---|---|
+| Their **voice** goes live to Meta's Muse Voice Transcribe to become text (for everyone on the call, enrolled or not) | `capture/transcribe.py` | No |
+| What they **say** goes to Muse Spark during the call, with their name, for insights and for the "This call: …" lines on their card | `memory/picks.py` | Partly ("written by Meta's Muse") |
+| **Facts** ("Loves F1"), **how we met**, a **topic** and **work or personal** for each call, and a **summary** of each call | `facts`, `encounters`, `people.how_met` | No |
+| A **label** of who they are to the host, which Muse may suggest | `people.role` | No |
+| A readable **file** about them on the host's laptop | `notes/people/<id>.md` | No |
+| If the host turns the **Muse connector** on, the Muse app can read their name, label, dates, topic, facts, how we met and notes through a tunnel | `memory/connector.py` | No |
+| The selfie | not kept (fixed in round 1) | The old scope still lists `selfie` |
+
+Also: the page says "Nobody else in the call sees anything". `README` Known limits says newer macOS screen sharing can still capture the overlay, so that sentence can be false. Say "Only the host sees this on their screen; a screen share can show it".
+
+### The exact text to show (enroll page, and read aloud for Remember them)
+
+> **Remember each other?** Hello Again runs on the host's laptop. It will remember you for one year, or until you delete it.
+> - **Your face:** it saves numbers made from your face so it can recognise you on calls. It does not keep your photo.
+> - **Your name** and, if the host adds one, who you are to them.
+> - **Your voice:** on a call, the audio is sent to Meta's Muse to turn it into text. This happens for everyone on the call.
+> - **What you say:** Meta's Muse reads it and writes notes, short facts (like "Loves F1"), how you met, and a summary and topic for each call. The host sees these next to your face and in their People list.
+> - **Delete:** you can delete all of it at any time with the link you get after you agree.
+>
+> ☐ I agree to all of the above.
+> ☐ *(optional)* The host may let their Muse app read my name, notes and facts from their laptop.
+
+For the Remember form the host reads out the same four bullets and asks "Is that okay?" before ticking "They said yes"; a second optional tick covers the Muse app.
+
+### Scope values to store
+
+Replace the default `{facePrint,selfie,notes}` with these words, one per line above: `facePrint`, `name`, `voice`, `notes` (covers notes, facts, how we met, summaries, topic, work or personal), and `connector` **only when the second box was ticked**. Default for a new person: `{facePrint,name,voice,notes}`.
+
+- `memory/schema.sql`: change the default and drop `selfie`; add `update consents set scope = array_remove(scope, 'selfie') where 'selfie' = any(scope)`.
+- **Make the optional one real:** `memory/connector.py` should list and return only people whose scope has `connector` (`join consents c ... where 'connector' = any(c.scope)`). Today everyone who ever enrolled is sent to Muse's servers. People already in the database never saw this text, so they stay out of the connector until they re-consent. Add a test for it when it lands.
+- People enrolled before this text also never agreed to facts, summaries and how-we-met. For the demo they are teammates: tell them the text above, and run one `update consents set scope = '{facePrint,name,voice,notes}'` for those who said yes; for anyone else, delete them.
+- `web/enroll.html` and `overlay/overlay.js` (Remember form) send the second tick as `connector: true` in the body; `POST /enroll` and `POST /faces/{id}/remember` store it in `scope`.
+
+Not covered by any consent text: people on the call who are **not** enrolled. Their voice still goes to Meta's Muse and their words still go into the live prompts and the transcript (it is not stored for them, and no face print is kept). The host is responsible for telling the call; say so in the README.
+
+---
+
+## Deletion is complete (round 11)
+
+`test_deleting_a_person_leaves_nothing_of_them` creates a real person in the local database (own rows, removed afterwards; it skips without `DATABASE_URL`), with a note, a fact, an encounter, how-we-met, a call note, a per-person file, a stored recap and live call state that all name them. After `DELETE /people/{id}` it asserts that nothing remains in `people` and every table that points at it (found in the catalog, so a table added later counts), no mention of the id or the name in any file under `notes/` (including the key-points and AI-answer text), and nothing in the cards, boxes, snippets, live lines, call people or stored recap. **It passes.**
+
+**R11-1, Low: the Ask AI thread keeps a deleted person's name.** `server.thread` holds the last 6 questions and answers until the call ends and they are sent to Muse in follow-ups ("Who is Zed?"). `forget` in `memory/app.py` clears everything else. Smallest fix, one line after the delete: `clear_thread()`. Strict xfail `test_deleting_a_person_also_clears_them_from_the_ask_ai_thread`.

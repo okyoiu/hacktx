@@ -481,3 +481,96 @@ def test_the_fit_handler_only_accepts_finite_sizes():
     main = (ROOT / "overlay/main.js").read_text()
     handler = main.split("on('fit'")[1].split("\non(")[0]
     assert "isFinite" in handler
+
+
+# --- deletion is complete ---
+
+def _db_or_skip():
+    if not os.getenv("DATABASE_URL"):
+        pytest.skip("DATABASE_URL not set")
+    try:
+        store.conn().execute("select 1")
+    except psycopg.OperationalError as e:
+        pytest.skip(f"database unreachable: {e}")
+
+
+def _rows_about(pid):
+    """Rows left about a person in every table that points at people (found in the catalog, so a table added later counts)."""
+    refs = store.conn().execute(
+        """select c.conrelid::regclass::text, a.attname from pg_constraint c
+           join pg_attribute a on a.attrelid = c.conrelid and a.attnum = any(c.conkey)
+           where c.contype = 'f' and c.confrelid = 'people'::regclass""").fetchall()
+    left = {"people": store.conn().execute("select count(*) from people where id = %s", (pid,)).fetchone()[0]}
+    for table, column in refs:
+        left[table] = store.conn().execute(f"select count(*) from {table} where {column} = %s", (pid,)).fetchone()[0]
+    return {t: n for t, n in left.items() if n}
+
+
+@pytest.fixture
+def someone(monkeypatch, tmp_path):
+    """A real enrolled person with a note, a fact, an encounter and how-we-met, plus a call note, a person file, a stored
+    recap and live call state that all name them. Created and removed by this test only (never wipes tables)."""
+    import secrets as _secrets
+    from datetime import datetime
+
+    import numpy as np
+
+    from memory import notes
+
+    _db_or_skip()
+    name = "Zed Delete" + _secrets.token_hex(3)
+    pid, token = store.enroll(name, np.random.default_rng().normal(size=512).astype(np.float32), None, "Test role")
+    store.add_note(pid, f"{name} likes tests")
+    store.add_facts(pid, ["Loves deleting"])
+    store.add_encounter(pid, datetime(2026, 10, 24, 20, 0).astimezone(), "about", "last time", "a topic", True, "work")
+    store.set_how_met(pid, "Oct 24 on Zoom")
+    monkeypatch.setattr(notes, "NOTES", tmp_path / "notes")
+    started = datetime(2026, 10, 24, 20, 0)
+    notes.write(started, {pid: ["learned"]}, [f"{name} moved"], [{"query": f"Who is {name}?", "text": f"{name} is a test", "sources": []}])
+    notes.write_person(pid)
+    monkeypatch.setattr(server, "tracks", {7: {"id": pid, "name": name}})
+    monkeypatch.setattr(server, "boxes", {7: [0, 0, 1, 1]})
+    monkeypatch.setattr(server, "snippets", {pid: ["This call: x"]})
+    monkeypatch.setattr(server, "live", {pid: {"since": 0, "lines": ["hello"]}})
+    monkeypatch.setattr(server, "call", server.Call(people={pid: ["learned"]}))
+    monkeypatch.setattr(server, "latest_recap", {"type": "recap", "topic": "", "points": [], "actions": [], "people": [
+        {"id": pid, "name": name, "role": "", "lastTime": "x"}]}, raising=False)
+    yield pid, name, tmp_path / "notes"
+    store.conn().execute("delete from people where id = %s", (pid,))
+
+
+def test_deleting_a_person_leaves_nothing_of_them(someone):
+    pid, name, notes_dir = someone
+    assert _rows_about(pid)["people"] == 1 and len(_rows_about(pid)) >= 5  # the fixture really made rows in several tables
+    assert TestClient(server.app, client=LAPTOP).delete(f"/people/{pid}").status_code == 200
+    assert _rows_about(pid) == {}
+    files = sorted(notes_dir.rglob("*.md"))
+    assert files and not any(pid in f.read_text() or name in f.read_text() or pid in f.name for f in files)
+    assert 7 not in server.tracks and 7 not in server.boxes and pid not in server.snippets and pid not in server.live
+    assert pid not in server.call.people and pid not in json.dumps(server.latest_recap) and name not in json.dumps(server.latest_recap)
+
+
+@pytest.mark.xfail(strict=True, reason="R11-1: the Ask AI thread keeps questions and answers that name a deleted person until the call ends")
+def test_deleting_a_person_also_clears_them_from_the_ask_ai_thread(someone, monkeypatch):
+    pid, name, _ = someone
+    monkeypatch.setattr(server, "thread", [(f"Who is {name}?", f"{name} is a test person.")])
+    assert TestClient(server.app, client=LAPTOP).delete(f"/people/{pid}").status_code == 200
+    assert name not in json.dumps(server.thread)
+
+
+# --- consent text: what the enroll page tells a guest (docs/security-review.md "Consent, round 11") ---
+
+def _enroll_page_text():
+    import html
+
+    page = (ROOT / "web/enroll.html").read_text()
+    page = re.sub(r"<script.*?</script>|<style.*?</style>", " ", page, flags=re.S)
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", page))).lower()
+
+
+@pytest.mark.xfail(strict=True, reason="R11-2: the enroll page does not name the Muse connector, the facts, the per-call summaries or the voice")
+def test_the_enroll_page_names_every_use_of_what_it_keeps():
+    text = _enroll_page_text()
+    for word in ("connector", "facts", "voice"):
+        assert word in text, word
+    assert re.search(r"(each|every|per) call", text) or "summar" in text
