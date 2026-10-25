@@ -402,6 +402,12 @@ async def name_speaker(s: SpeakerName):
     return {"ok": True}
 
 
+def serp_status() -> str | None:
+    from memory import serp  # last failure of a SerpApi call
+
+    return serp.last_error
+
+
 @app.get("/health")
 async def health():
     """What the control bar's status dot shows: is the database up, are the keys set, is the mic feeding us."""
@@ -410,7 +416,8 @@ async def health():
         db = "ok"
     except Exception:  # down, unreachable or slow: all the same to the dot
         db = "error"
-    return {"db": db, "muse": bool(os.getenv("MODEL_API_KEY")), "serpapi": bool(os.getenv("SERPAPI_KEY")),
+    return {"db": db, "muse": bool(os.getenv("MODEL_API_KEY")) and picks.status.error is None, "museError": picks.status.error,
+            "serpapi": bool(os.getenv("SERPAPI_KEY")) and serp_status() is None, "serpapiError": serp_status(),
             "listening": listening["on"], "lastTranscriptAt": last_transcript_at}
 
 
@@ -476,6 +483,7 @@ async def live_bullets(pid: str, name: str, lines: list[str], owner: Call | None
 
 async def insights_worker() -> None:
     global last_refresh
+    muse_down = False
     while True:
         await wake.wait()
         wake.clear()
@@ -484,7 +492,15 @@ async def insights_worker() -> None:
         last_refresh = time.monotonic()  # paced from the start, so Muse's own delay doesn't add to the wait
         try:
             await refresh_insights()
-        except Exception as e:  # a failed model call or note insert must not stop the stream
+            if picks.status.error is None:
+                muse_down = False
+        except (picks.MuseError, TimeoutError) as e:  # an outage or a missing key: say so once, keep listening
+            print(f"insights failed: {type(e).__name__}")
+            if not muse_down:
+                muse_down = True
+                line = "Muse is unreachable; still listening" if os.getenv("MODEL_API_KEY") else "Add MODEL_API_KEY to .env; still listening"
+                await push({"type": "insights", "topic": line, "points": [], "actions": []})
+        except Exception as e:  # a failed note insert must not stop the stream
             print(f"insights failed: {e!r}")
 
 

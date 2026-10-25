@@ -71,7 +71,7 @@ def test_errors_are_safe_and_not_cached(monkeypatch, failure):
         with pytest.raises(serp.SerpApiError) as error:
             serp.lookup("place", "gym")
         assert "test-secret" not in str(error.value)
-    assert len(calls) == 2
+    assert len(calls) == (4 if failure == "timeout" else 2)  # a timeout is tried twice per lookup, a bad key or reply once
 
 
 def test_missing_key_and_bad_inputs(monkeypatch):
@@ -119,3 +119,22 @@ def test_empty_and_single_place_results():
     assert serp.first("event", {"events_results": []}) is None
     assert serp.first("place", {"place_results": {"title": "Gym"}}) == {"title": "Gym", "detail": ""}
     assert serp.first("place", {"local_results": [{"address": "No name"}]}) is None
+
+
+def test_a_failed_request_is_retried_once_and_last_error_tracks_health(monkeypatch):
+    monkeypatch.setenv("SERPAPI_KEY", "k")
+    serp._lookup.cache_clear()
+    replies = iter([httpx.ConnectTimeout("slow"), httpx.Response(503), httpx.Response(200, json={"local_results": [{"title": "Ledge"}]})])
+
+    def get(url, **kwargs):
+        reply = next(replies)
+        if isinstance(reply, Exception):
+            raise reply
+        reply.request = httpx.Request("GET", url)
+        return reply
+
+    monkeypatch.setattr(serp.httpx, "get", get)
+    with pytest.raises(serp.SerpApiError):
+        serp.lookup("place", "gym")  # both tries failed: timeout, then 503
+    assert serp.last_error == "HTTPStatusError"
+    assert serp.lookup("place", "gym")["title"] == "Ledge" and serp.last_error is None  # recovered
