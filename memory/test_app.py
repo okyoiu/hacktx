@@ -165,7 +165,7 @@ def test_remember_saves_the_face_on_screen_only_with_consent(http, events, monke
                         if enrolled else None)
     monkeypatch.setattr(store, "last_time", lambda pid: None)
     monkeypatch.setattr(store, "latest_note", lambda pid: None)
-    monkeypatch.setattr(store, "key_fact", lambda pid: None)
+    monkeypatch.setattr(store, "card_extras", lambda pid, facts=2: ("", []))
     monkeypatch.setattr(store, "person", lambda pid: None)  # read by the call note at /calls/end
     face = [0.0] * 511 + [1.0]
     box = [10.0, 20.0, 100.0, 120.0]
@@ -630,7 +630,7 @@ def test_debug_events_exist_only_in_developer_mode(http, events, monkeypatch):
     monkeypatch.setattr(store, "nearest_score", lambda p: lookups.append(1) or (0.7 if p[0] > 0.5 else 0.31))
     monkeypatch.setattr(store, "last_time", lambda pid: None)
     monkeypatch.setattr(store, "latest_note", lambda pid: None)
-    monkeypatch.setattr(store, "key_fact", lambda pid: None)
+    monkeypatch.setattr(store, "card_extras", lambda pid, facts=2: ("", []))
     debug = {"personBox": [0, 0, 50, 90], "faceBox": [10, 5, 20, 20], "fps": 4.8}
     known, stranger = [1.0] + [0.0] * 511, [0.0] * 511 + [1.0]
 
@@ -711,7 +711,7 @@ def test_live_bullets_add_this_calls_facts_to_the_card_and_skip_when_nothing_is_
                                                        "firstMet": date(2026, 10, 1)} if pid == "p_jordan" else None)
     monkeypatch.setattr(store, "last_time", lambda pid: "Talked about his move.")
     monkeypatch.setattr(store, "latest_note", lambda pid: None)
-    monkeypatch.setattr(store, "key_fact", lambda pid: "Starts a fintech job Monday")
+    monkeypatch.setattr(store, "card_extras", lambda pid, facts=2: ("", ["Starts a fintech job Monday"]))
     replies, live_prompts = [], []
 
     def muse(prompt: str, seconds=None) -> str:
@@ -721,7 +721,7 @@ def test_live_bullets_add_this_calls_facts_to_the_card_and_skip_when_nothing_is_
         return json.dumps({"topic": "", "points": [], "actions": []})
 
     monkeypatch.setattr(picks, "chat", muse)
-    base = ["Your team lead", "Last time: Talked about his move.", "Starts a fintech job Monday"]
+    base = ["Your team lead", "Starts a fintech job Monday", "Last time: Talked about his move."]
     server.tracks[1] = JORDAN
     http.post("/faces", json={"trackId": 1, "screenBox": [5, 6, 70, 80]})
     http.post("/speakers", json={"label": "speaker_0", "name": "Jordan Lee"})
@@ -759,3 +759,18 @@ def test_live_bullets_add_this_calls_facts_to_the_card_and_skip_when_nothing_is_
 
     http.post("/calls/end")
     assert server.snippets == {}
+
+
+def test_the_call_remembers_the_followed_app_and_its_last_topic_for_how_we_met(http, events, monkeypatch):
+    seen = []
+    monkeypatch.setattr(server, "remember_encounters", lambda ended: seen.append((ended.app, ended.topic)) or {})
+    monkeypatch.setattr(picks, "chat", FakeMuse({"topic": "A HackTX demo", "points": ["x"], "actions": []}))
+    http.post("/window", json={"app": "zoom.us", "rect": [0, 0, 800, 600]})
+    server.tracks[1] = JORDAN
+    http.post("/faces", json={"trackId": 1, "screenBox": [0, 0, 5, 5]})
+    http.post("/transcript", json=line("speaker_0", "We are demoing Hello Again today."))
+    wait_for(lambda: server.latest_insights is not None)
+    http.post("/window", json={"app": None, "rect": None})  # the window closes before the call is ended
+    http.post("/calls/end")
+    wait_for(lambda: seen)
+    assert seen == [("zoom.us", "A HackTX demo")]

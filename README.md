@@ -41,7 +41,7 @@ The app creates its tables on first start.
 
 ### 5. Open the app
 
-**Double-click `Hello Again.command`** in the `hacktx` folder (or run `cd overlay && npm start`). The overlay app opens and starts everything else: the local database, the memory server, face capture and transcription. The first run also installs anything missing, so it takes a few minutes.
+Build the app once: `cd overlay && npm run package`. Then **double-click `overlay/dist/Hello Again.app`** (drag it to the Dock if you like). It runs the code in this folder, so `git pull` updates it without rebuilding. `Hello Again.command` in the `hacktx` folder still works as a fallback (or run `cd overlay && npm start`). On Windows: `overlay\dist\Hello Again\Hello Again.exe`. The overlay app opens and starts everything else: the local database, the memory server, face capture and transcription. The first run also installs anything missing, so it takes a few minutes.
 
 You should see a small glass **control bar** at the top right. If one part isn't running, it shows a warning naming it; each part's log is in `logs/<name>.log`.
 

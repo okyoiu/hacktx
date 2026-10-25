@@ -294,3 +294,77 @@ Checked by applying the commits to a scratch copy of this branch and running `to
 | R4-4 `/health` | **Checked** | Now exists (`memory/app.py:282`). It is not in the guest list, so only this laptop reaches it. It returns booleans, a time and the listening flag: no names, no key values. |
 | R4-5 End call button | Not present in this build | Add `calls/end` to the overlay's `ROUTES` exactly when it is built. |
 | R4-6 role newlines | Open, low | Cosmetic (the role is in no prompt; files collapse it). |
+
+---
+
+## Round 5: debug view, `POST /window`, recap, packaged app (contract review)
+
+2026-10-25, Security agent, against the README on `76e6a1f`. None of it is built in `/review/*` and the `review-design` branch does not exist in this clone yet, so these are requirements with tests, to be checked line by line on the next pass.
+
+| # | Surface | Must hold | Test |
+|---|---|---|---|
+| R5-1 | `HELLO_DEBUG` | Read once from the server's own environment (`os.getenv`), and from capture's own environment for the `debug` body field. Never from a request body, query, header, the enroll page or a file the overlay can write. The server drops `debug` from a `/faces` body when its own flag is off, and capture sends it only when its own flag is on. | `test_without_hello_debug_nothing_debug_reaches_the_overlay` (passes today and keeps guarding), `test_the_guest_pages_know_nothing_about_debug` |
+| R5-2 | Match score | Appears only inside the `debug` event. The `face` event, `/faces` reply and every other route never carry it (`store.match` returns it, so `card()` must keep leaving it out). | same test: no `"score"` in any pushed event or reply |
+| R5-3 | Overlay | The debug toggle and `⌘⌥D` exist only when main was started in developer mode (`HELLO_DEBUG` set in the Electron process or `npm run dev`); a packaged app started from Finder must have neither. The `debug` event is ignored by the renderer unless main says developer mode is on, and is drawn with `textContent` or canvas, never `innerHTML` (existing sink test covers all overlay files). The decision string is built from fixed words and a name from the database. | check on the next pass |
+| R5-4 | `POST /window` | Laptop-only (not in the guest list; Wi-Fi and browser pages get 403, tested today). Body is `{rect: null or exactly 4 finite numbers}`, width and height above 0, each number bounded (for example +-20000), `allow_inf_nan=False`. It stores nothing on disk and is sent only over `/ws`. | `test_window_rect_is_validated` (strict xfail), `test_the_wifi_and_web_pages_cannot_post_the_window` (passes) |
+| R5-5 | `recap` event | Built from `insights` (topic, points, actions already length-limited and kind-checked in `picks.parse`) plus people names and roles from the database. Sent once per call and replayed to a late overlay, only over `/ws` (loopback, no browser Origin). The overlay shows all of it with `textContent`; action ids go through the same anchored route regex as today; sources use `webUrl`. | existing no-`innerHTML` test; links check on the next pass |
+| R5-6 | Recap lifetime | The replayed recap holds names and what was said. Clear it when a new call starts or someone is deleted (a person who deletes themselves must disappear from the replayed `recap.people`). | add when built |
+| R5-7 | Ask AI placement | Uses `window` and face boxes only in the renderer; sends nothing new. | none |
+| R5-8 | Packaged app | The bundle holds code only: not `.env`, keys, `notes/`, `logs/`, `.git`, model weights from the user's cache, face data. The app reads the repo folder at run time, so `.env` is read from the repo, not copied. `PATH` additions for a Finder launch are a fixed list of absolute folders (for example `/opt/homebrew/bin`, `/usr/local/bin`), never `$PWD` or a relative entry. No new port or listener. Signature ad-hoc (`codesign -s -`), no entitlements that grant the camera, microphone or disk access beyond what the Python processes already ask for themselves. The repo path baked into the app must not be user-writable by other accounts. | `test_the_app_build_never_packs_secrets_or_data` (skips until a packaging config exists in `overlay/package.json`) |
+
+### Round 5, code pass 1 (`/review/memory` `212f6aa`: `POST /window`)
+
+- **Fine:** laptop-only (not in the guest list); `rect` is null or exactly four plain numbers (booleans are refused because it checks `type(n) in (int, float)`), all finite (NaN and infinity give 422 by hand, so the error never echoes them), width and height above 0; nothing is stored on disk; the replay to a late overlay goes only over `/ws`.
+- **R5-4a, Low: no upper bound.** `1e300` passes, so the overlay could be handed numbers that turn into `Infinity` or `NaN` in its placement math and break card layout for the rest of the call. Smallest fix in `good_rect`: add `abs(n) <= 20000` to the `all(...)`. My strict xfail (`test_window_rect_is_validated`) asserts a `1e9` width is refused, so it keeps xfailing until this bound lands, then delete its marker.
+
+### Round 5, code pass 2 (`/review/memory` `0880763` debug, `d36cdf5` recap; `/review/capture` `1e04914`)
+
+**Fine:**
+- **Debug gate:** `memory/app.py` turns debug on only when the `debug` body field is present **and** the server's own `HELLO_DEBUG == "1"`; otherwise the field is ignored. The `face` event and `/faces` reply still carry no score, and the score appears only in the `debug` event on the laptop-only `/ws`. My guard test passes. Capture adds the field only when its own `HELLO_DEBUG == "1"`. The debug body is length-checked (`personBox` and `faceBox` are exactly 4 numbers).
+- **Recap:** built once per call from the validated insights and from `store.person`, so anyone already deleted or expired is left out when it is built; cleared when the next call starts; replayed only over `/ws`.
+- **Window:** capture sends `rect` only on change and as plain numbers.
+
+**New findings:**
+- **R5-6, Low-Medium: a person who deletes themselves stays in the stored recap.** `latest_recap` keeps `{id, name, role, lastTime}` until the next call, and `forget` in `memory/app.py` does not touch it, so an overlay that connects afterwards is told their name again. Smallest fix, in `forget` after the delete: `if latest_recap: latest_recap["people"] = [p for p in latest_recap["people"] if p["id"] != pid]`. Strict xfail added.
+- **R5-9, Low: a NaN in a box is accepted and drops every overlay.** `screenBox` and the debug boxes are `list[float]`, which accepts `NaN`/`Infinity`; `push()` then fails inside `send_json` (strict JSON) and the `except` discards the socket, so the overlay silently stops updating until it reconnects. Only a laptop process can send it, but a division by zero in capture would do it by accident. Smallest fix: `Field(..., allow_inf_nan=False)` on those lists (or `list[Annotated[float, Field(allow_inf_nan=False)]]`). Strict xfail added.
+- **R5-10, Info (demo day): `HELLO_DEBUG=1` in `.env` would turn the debug view on for the packaged app too**, because both the launcher (`uv run --env-file .env`) and Electron's `loadEnvFile` read it. Add to the checklist: make sure `.env` has no `HELLO_DEBUG` line.
+
+---
+
+## Round 5/6/7: the design, capture and memory review branches (`review-design`, `review-capture`, `review-memory`, read-only)
+
+2026-10-25, Security agent. Reviewed with `git diff HEAD...<branch>`; nothing checked out. Verdict: **no high or critical findings; the packaged app is safe to demo.**
+
+### Packaged app (`overlay/package.js`, `review-design` `9c52502`) — R5-8: passes
+
+- **Contents:** `ditto` of Electron's own `Electron.app` plus `icon.icns` plus a generated two-file shim (`package.json`, `main.js`). It names no `.env`, key, `notes/`, `logs/`, `.git`, model weights or face data. `tools/test_security.py::test_the_app_build_never_packs_secrets_or_data` reads the script (comments stripped) and fails if any of those appears or if anything other than Electron or the icon is copied. It passes on `review-design` and fails when I add a `.env` copy (checked).
+- **Run time:** the shim runs `main.js` from this repo folder by absolute path, so `.env` is read from the repo, not from the bundle, and the app opens no port of its own (the launcher still starts the server on `127.0.0.1`).
+- **PATH:** fixed absolute folders `/opt/homebrew/bin`, `/usr/local/bin` and `~/.local/bin`, no relative entry.
+- **Signature:** `codesign --force --deep --sign -` (ad hoc), no entitlements.
+- **R6-1, Low: the PATH additions go in front of the system folders.** A tool of the same name in `~/.local/bin` or `/usr/local/bin` (both writable by this user, and `/usr/local/bin` on older Intel Macs by any admin) is found before `/usr/bin`, so a planted `pgrep` or `docker` would run when the launcher calls it. Needs an attacker who already owns the account, hence Low. One-line fix in the shim: put `process.env.PATH` first and the three folders after it.
+- **R6-2, Info: the app runs whatever code is in the repo folder.** Ad-hoc signing does not protect `main.js` outside the bundle, which is the point of "git pull updates it". Keep the repo folder owned by you and not in a shared or synced-by-others location.
+
+### Developer debug (`review-design` `c6ea3ee`, `main.js`) — R5-1/R5-3: holds
+
+- Developer mode is decided once in the main process (`devMode(argv, env)`: `--dev` or `HELLO_DEBUG=1`); pages get `debug=1` only from main's `loadFile`, `debug` events are dropped in main when not in developer mode, and the `debug-toggle` handler and `⌘⌥D` shortcut are registered only in developer mode.
+- **R5-10 confirmed:** `.env` is loaded before `devMode` runs, so `HELLO_DEBUG=1` in `.env` turns the debug view on in the packaged app. Keep it out of `.env` (on the checklist).
+
+### Overlay layout and recap (`review-design` `70225bc`, `9c52502`)
+
+- The `window` event's `app` is used only through regexes in `presetFor` (no object lookup by name, so `__proto__` or `constructor` cannot hit a preset), and the rect is shape-checked in main (an array of four). The server validates the numbers, except the missing upper bound (R5-4a still open).
+- Recap and layout data are drawn with `textContent` (the no-`innerHTML` test passes on all overlay files); `recapFrom` builds the fallback recap only from events already shown.
+- New IPC (`ask-busy`, `transcript-toggle`, `close-recap`) all go through the `ours(e)` sender check; `ask-busy` is coerced to a boolean.
+
+### Capture (`review-capture` `e51258d`, `73ab909`, `e2cc35f`)
+
+- **Faces only in call apps:** `has_call` lets faces be looked for only in a native call app or in a browser tab whose title names a call site; the window title is matched and never kept. Other windows are followed for the layout but `calls` is false, so no person detection runs and nothing is posted. The still-image filter keeps a profile picture from becoming a person. Both reduce what the app collects.
+- `screencapture -l <id>` takes an integer window id from the system's own window list, as an argument list (no shell).
+- **R6-3, Low: when the followed window is not a call, the frame is still grabbed** (`grab(window_id)` runs every frame) and then ignored. It stays in memory for a moment and is never stored or sent, but a bank or mail window is being captured for nothing. Smallest fix: in `screen_frames`, skip `grab()` when `calls` is false and yield `None`. The app name of that window (any app, e.g. a password manager) is also sent in `POST /window` and printed in `logs/faces.log`; it only reaches the laptop-only `/ws`.
+
+### Memory (`review-memory` `7b9d505`, `291ed4f`, `4aa7f24` and the Ask AI thread)
+
+- **Facts and how-we-met:** `facts` is a new table that cascades on delete (my cascade test checks every table that points at `people`). Facts are validated (at most 3, 80 characters, one line, no repeats) and cannot be rewritten by a later call; `how_met` is written once from the date, the followed app's name (up to 100 characters, from the server-validated `/window`) and the Muse topic. Both are written to `notes/people/<id>.md` through `one_line`.
+- **Prompts:** known facts go into the fenced `<people>` roster; the live-bullets prompt fences name and lines; the Ask AI thread goes in a fenced `<chat>` block cut to 1,000 characters per turn and 6 turns. "This call:" snippets live only in memory (at most 2 per person) and are cleared when the call ends.
+- **R5-6 still open (Low-Medium):** `forget` still does not remove the person from `latest_recap`. Also, `snippets`, `live` and the Ask AI `thread` can keep a deleted person's words until the call ends; they are not shown (the card is cleared) but are sent to Muse in later prompts. Smallest fix in `forget`: filter `latest_recap["people"]`, `snippets.pop(pid, None)`, `live.pop(pid, None)`.
+- **R5-4a and R5-9 still open** (no upper bound on `rect`; NaN accepted in `screenBox` and the debug boxes).
+- `facts` can be misattributed if a voice is named wrongly (speaker names come from lip movement); the host can delete a wrong fact only by deleting the person. Low, and an existing limit.
