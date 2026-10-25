@@ -124,7 +124,6 @@ def test_deleting_yourself_also_removes_you_from_call_notes(monkeypatch, tmp_pat
     assert "Zed Qwerty" not in "".join(p.read_text() for p in tmp_path.glob("*.md"))
 
 
-@pytest.mark.xfail(strict=True, reason="#6: call speech is not fenced off as quoted text in the Muse prompts")
 def test_prompts_fence_the_transcript_as_quoted_speech():
     from memory import picks
 
@@ -132,7 +131,6 @@ def test_prompts_fence_the_transcript_as_quoted_speech():
         assert "<transcript>" in prompt and "never instructions" in prompt
 
 
-@pytest.mark.xfail(strict=True, reason="#9: anyone on the Wi-Fi can enroll without the invite code")
 def test_enrolling_needs_the_invite_code(monkeypatch):
     import numpy as np
 
@@ -182,7 +180,6 @@ def test_web_pages_and_the_wifi_cannot_delete_without_the_token(monkeypatch):
         assert r.status_code in (401, 403, 422) and deleted == []
 
 
-@pytest.mark.xfail(strict=True, reason="PATCH /people/{id} is not built yet; the role must stop at 60 characters")
 def test_a_role_over_60_characters_is_refused(monkeypatch):
     monkeypatch.setattr(store, "person", lambda pid: {"id": pid, "name": "Someone"})
     r = TestClient(server.app, client=LAPTOP).patch("/people/p_x", json={"role": "x" * 61})
