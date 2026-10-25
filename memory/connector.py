@@ -1,10 +1,12 @@
 """Read-only routes for a Muse custom connector. The Muse app calls them through a tunnel with a bearer key, so these are the
 only routes that skip the laptop-only rule. They return names, labels and what was learned, never face prints or tokens."""
+import json
 import os
 import secrets
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 
 from memory import store
 
@@ -106,3 +108,85 @@ OPENAPI = {
 @router.get("/openapi.json", dependencies=[Depends(require_key)])
 def openapi_document():
     return OPENAPI
+
+
+# --- MCP: the same three reads as a JSON-RPC 2.0 tool server, so an MCP client (the Muse app) can use them ---
+
+MCP_VERSION = "2025-06-18"
+TOOLS = {
+    "list_people": ("Everyone the user remembers, with when they last met and spoke, what it was about and whether it was work or personal.",
+                    {"type": "object", "properties": {}}),
+    "get_person": ("One person in full: facts, how they met, the last conversation and the user's notes.",
+                   {"type": "object", "properties": {"id": {"type": "string", "description": "A person id from list_people"}}, "required": ["id"]}),
+    "recent_calls": ("The user's last meetings, newest first: topic, key points, suggested actions and who was there. Use it for "
+                     "\"what happened in my last meeting?\".",
+                     {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5}}}),
+}
+
+
+class RpcError(Exception):
+    def __init__(self, code: int, message: str):
+        self.code, self.message = code, message
+
+
+def call_tool(name: object, args: object) -> dict:
+    if name not in TOOLS or not isinstance(args, dict):
+        raise RpcError(-32602, "Unknown tool or bad arguments")
+    if name == "list_people":
+        data = people()
+    elif name == "get_person":
+        if not isinstance(args.get("id"), str) or not args["id"]:
+            raise RpcError(-32602, "get_person needs a string id")
+        try:
+            data = one_person(args["id"])
+        except HTTPException:  # unknown, expired or not agreed: a tool error the model can read, not a protocol error
+            return {"content": [{"type": "text", "text": "Nobody with that id."}], "isError": True}
+    else:
+        limit = args.get("limit", 5)
+        if type(limit) is not int or not 1 <= limit <= 20:
+            raise RpcError(-32602, "limit must be a whole number from 1 to 20")
+        data = recent_calls(limit)
+    return {"content": [{"type": "text", "text": json.dumps(data, default=str)}]}
+
+
+def handle(message: object) -> dict | None:
+    """One JSON-RPC message: the response object, or None for a notification."""
+    if not isinstance(message, dict) or message.get("jsonrpc") != "2.0" or not isinstance(message.get("method"), str):
+        return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid request"}}
+    method, params, rid = message["method"], message.get("params") or {}, message.get("id")
+    if "id" not in message:
+        return None  # notifications/initialized and any other notification: nothing to answer
+    try:
+        if method == "initialize":
+            result = {"protocolVersion": MCP_VERSION, "serverInfo": {"name": "hello-again", "version": "1.0.0"}, "capabilities": {"tools": {}}}
+        elif method == "tools/list":
+            result = {"tools": [{"name": n, "description": d, "inputSchema": s} for n, (d, s) in TOOLS.items()]}
+        elif method == "tools/call":
+            if not isinstance(params, dict):
+                raise RpcError(-32602, "params must be an object")
+            result = call_tool(params.get("name"), params.get("arguments") or {})
+        elif method == "ping":
+            result = {}
+        else:
+            raise RpcError(-32601, "Method not found")
+    except RpcError as e:
+        return {"jsonrpc": "2.0", "id": rid, "error": {"code": e.code, "message": e.message}}
+    return {"jsonrpc": "2.0", "id": rid, "result": result}
+
+
+@router.post("/mcp", dependencies=[Depends(require_key)])
+async def mcp(request: Request):
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
+    replies = [r for r in map(handle, body)] if isinstance(body, list) and body else [handle(body)]
+    replies = [r for r in replies if r is not None]
+    if not replies:
+        return Response(status_code=202)  # only notifications
+    return JSONResponse(replies if isinstance(body, list) else replies[0])
+
+
+@router.get("/mcp", dependencies=[Depends(require_key)])
+def mcp_get():
+    return JSONResponse({"error": "POST JSON-RPC here"}, status_code=405, headers={"Allow": "POST"})
