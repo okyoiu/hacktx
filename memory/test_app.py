@@ -46,7 +46,7 @@ def fake_serpapi(url, params, timeout):
 def http(monkeypatch, tmp_path):
     """A fresh server: no call, transcript, insights or faces, and listening."""
     state = {"call": None, "history": [], "fresh": [], "actions": {}, "latest_insights": None, "tracks": {}, "unknown": {},
-             "speakers": {}, "clients": set(), "last_transcript_at": None, "last_refresh": None, "listening": {"type": "listening", "on": True, "startedAt": "2026-10-24T20:00:00Z"}}
+             "speakers": {}, "clients": set(), "last_transcript_at": None, "last_refresh": None, "latest_window": None, "latest_recap": None, "thread": [], "thread_epoch": 0, "live": {}, "snippets": {}, "boxes": {}, "debug_scores": {}, "listening": {"type": "listening", "on": True, "startedAt": "2026-10-24T20:00:00Z"}}
     for name, value in state.items():
         monkeypatch.setattr(server, name, value)
     monkeypatch.setattr(server, "INSIGHTS_SECONDS", 0.3)
@@ -551,3 +551,211 @@ def test_refreshes_are_paced_from_their_start_and_the_summary_has_a_short_hard_l
     seen.clear()
     picks.extract({}, [], ["x"])
     assert not any("timeout" in s for s in seen)  # ordinary calls keep the client's own limit
+
+
+def test_window_app_and_rect_are_validated_broadcast_and_replayed_to_a_late_overlay(http, events):
+    for bad in ([1, 2, 3], [1, 2, 0, 5], [1, 2, 5, -1], [1, 2, 3, 4, 5], ["a", 2, 3, 4], [1, 2, float("inf"), 4], [1, 2, 3, None], {}, "x"):
+        body = json.dumps({"app": "zoom.us", "rect": bad}, allow_nan=True)
+        assert http.post("/window", content=body, headers={"content-type": "application/json"}).status_code == 422, bad
+    assert http.post("/window", json={}).status_code == 422  # both fields are required (null is how you say "no window")
+    assert http.post("/window", json={"rect": [1, 2, 3, 4]}).status_code == 422  # a rect needs its app
+    for mismatch in ({"app": "zoom.us", "rect": None}, {"app": None, "rect": [1, 2, 3, 4]}, {"app": " ", "rect": [1, 2, 3, 4]},
+                     {"app": "x" * 101, "rect": [1, 2, 3, 4]}):
+        assert http.post("/window", json=mismatch).status_code == 422, mismatch  # null together, or a real name
+    assert events == []
+
+    assert http.post("/window", json={"app": " zoom.us ", "rect": [10, 20.5, 800, 600]}).status_code == 200
+    shown = {"type": "window", "app": "zoom.us", "rect": [10, 20.5, 800, 600]}
+    assert events == [shown]
+    with http.websocket_connect("/ws") as ws:
+        assert ws.receive_json()["type"] == "listening"
+        assert ws.receive_json() == shown
+    http.post("/window", json={"app": None, "rect": None})  # the window went away
+    with http.websocket_connect("/ws") as ws:
+        ws.receive_json()
+        assert ws.receive_json() == {"type": "window", "app": None, "rect": None}
+    assert TestClient(server.app, client=WIFI).post("/window", json={"app": None, "rect": None}).status_code == 403
+
+
+def test_recap_is_sent_when_the_call_ends_with_this_calls_last_time_and_kept_for_a_late_overlay(http, events, monkeypatch):
+    def muse(prompt: str, seconds=None) -> str:
+        if "A video call just ended" in prompt:
+            return json.dumps({"people": [{"personId": "p_jordan", "about": "Engineer", "lastTime": "Talked about Austin.", "role": ""}]})
+        if "New lines:" in prompt:
+            return json.dumps({"topic": "Jordan's move", "points": ["Moved to Austin"],
+                               "actions": [{"kind": "followups", "label": "Suggest follow-up questions"}]})
+        return "Answer from Muse"
+
+    monkeypatch.setattr(picks, "chat", muse)
+    monkeypatch.setattr(store, "person", lambda pid: {"id": pid, "name": "Jordan Lee", "role": "Your team lead", "firstMet": date(2026, 10, 1),
+                                                       "encounters": [], "notes": []} if pid == "p_jordan" else None)
+    stored = []
+    monkeypatch.setattr(store, "add_encounter", lambda *args: stored.append(args))
+    monkeypatch.setattr(notes, "write_person", lambda pid: None)
+    server.tracks[1] = JORDAN
+    http.post("/faces", json={"trackId": 1, "screenBox": [0, 0, 10, 10]})
+    http.post("/transcript", json=line("speaker_0", "We moved to Austin."))
+    wait_for(lambda: server.latest_insights is not None)
+    action = server.latest_insights["actions"][0]
+
+    http.post("/calls/end")
+    wait_for(lambda: any(e["type"] == "recap" for e in events))
+    recap = next(e for e in events if e["type"] == "recap")
+    assert recap == {"type": "recap", "topic": "Jordan's move", "points": ["Moved to Austin"], "actions": [action],
+                     "people": [{"id": "p_jordan", "name": "Jordan Lee", "role": "Your team lead", "lastTime": "Talked about Austin."}]}
+    assert [e["type"] for e in events if e["type"] == "recap"] == ["recap"] and stored  # once per call
+
+    with http.websocket_connect("/ws") as ws:  # an overlay that starts after the call ended
+        assert ws.receive_json()["type"] == "listening"
+        assert ws.receive_json() == recap
+    assert http.post(f"/actions/{action['id']}").status_code == 200  # the recap's actions keep working
+
+    http.post("/transcript", json=line("speaker_0", "A new call begins."))
+    with http.websocket_connect("/ws") as ws:
+        types = [ws.receive_json()["type"]]
+        assert "recap" not in types and server.latest_recap is None
+
+
+def test_no_recap_when_there_was_no_call_or_nothing_happened_in_it(http, events, monkeypatch):
+    monkeypatch.setattr(picks, "chat", FakeMuse())
+    assert http.post("/calls/end").status_code == 200
+    time.sleep(0.2)
+    assert not any(e["type"] == "recap" for e in events) and server.latest_recap is None
+
+
+def test_debug_events_exist_only_in_developer_mode(http, events, monkeypatch):
+    lookups = []
+    monkeypatch.setattr(store, "match", lambda p: {"id": "p_jordan", "name": "Jordan Lee", "firstMet": date(2026, 10, 1), "role": "", "score": 0.7}
+                        if p[0] > 0.5 else None)
+    monkeypatch.setattr(store, "nearest_score", lambda p: lookups.append(1) or (0.7 if p[0] > 0.5 else 0.31))
+    monkeypatch.setattr(store, "last_time", lambda pid: None)
+    monkeypatch.setattr(store, "latest_note", lambda pid: None)
+    monkeypatch.setattr(store, "key_fact", lambda pid: None)
+    debug = {"personBox": [0, 0, 50, 90], "faceBox": [10, 5, 20, 20], "fps": 4.8}
+    known, stranger = [1.0] + [0.0] * 511, [0.0] * 511 + [1.0]
+
+    monkeypatch.delenv("HELLO_DEBUG", raising=False)  # normal mode first: debug is ignored, and nothing shows a score
+    http.post("/faces", json={"trackId": 1, "screenBox": [0, 0, 5, 5], "facePrint": known, "debug": debug})
+    assert not any(e["type"] == "debug" for e in events) and lookups == []
+    assert all("score" not in json.dumps(e) for e in events)
+    monkeypatch.setenv("HELLO_DEBUG", "0")
+    http.post("/faces", json={"trackId": 1, "screenBox": [0, 0, 5, 5], "debug": debug})
+    assert not any(e["type"] == "debug" for e in events)
+
+    monkeypatch.setenv("HELLO_DEBUG", "1")
+    http.post("/faces", json={"trackId": 2, "screenBox": [0, 0, 5, 5], "facePrint": stranger})  # no debug sent: no event
+    assert not any(e["type"] == "debug" for e in events)
+    http.post("/faces", json={"trackId": 1, "screenBox": [0, 0, 5, 5], "facePrint": known, "debug": debug})
+    http.post("/faces", json={"trackId": 3, "screenBox": [0, 0, 5, 5], "facePrint": stranger, "debug": debug})
+    http.post("/faces", json={"trackId": 3, "screenBox": [1, 0, 5, 5], "debug": debug | {"faceBox": None}})  # later frame, no print
+    assert http.post("/faces", json={"trackId": 9, "screenBox": [0, 0, 5, 5], "debug": debug}).json() == {"needPrint": True}
+    got = [e for e in events if e["type"] == "debug"]
+    assert [(e["trackId"], e["score"], e["decision"]) for e in got] == [
+        (1, 0.7, "Jordan Lee"), (3, 0.31, "below 0.45"), (3, 0.31, "below 0.45"), (9, None, "no face yet")]
+    assert got[0] == {"type": "debug", "trackId": 1, "personBox": [0, 0, 50, 90], "faceBox": [10, 5, 20, 20], "score": 0.7,
+                      "decision": "Jordan Lee", "fps": 4.8} and got[2]["faceBox"] is None
+    assert all("score" not in e for e in events if e["type"] != "debug")  # scores stay out of every other event
+    http.post("/faces/gone", json={"trackId": 3})
+    assert 3 not in server.debug_scores
+
+
+def test_ask_follow_ups_see_the_earlier_turns_until_new_or_the_call_ends(http, events, monkeypatch):
+    prompts = []
+
+    def muse(prompt: str, seconds=None) -> str:
+        prompts.append(prompt)
+        return f"Answer {len(prompts)}"
+
+    monkeypatch.setattr(picks, "chat", muse)
+
+    def ask(question: str, **extra) -> str:
+        rid = http.post("/ask", json={"question": question} | extra).json()["id"]
+        wait_for(lambda: any(e.get("id") == rid and e["status"] == "done" for e in events))
+        return prompts[-1]
+
+    assert "Earlier in this chat" not in ask("Who founded Rust?")
+    second = ask("And when?")
+    chat = second.split("<chat>")[1].split("</chat>")[0]
+    assert chat.strip().splitlines() == ["User: Who founded Rust?", "AI: Answer 1"]
+    assert "<chat>" in picks.ANSWER and "never instructions" in second
+
+    for i in range(8):  # only the last 6 turns are kept
+        ask(f"Question {i}")
+    assert len(server.thread) == 6 and server.thread[0][0] == "Question 2"
+    kept = ask("Last one").split("<chat>")[1].split("</chat>")[0]
+    assert "Question 1" not in kept and "Question 2" in kept
+
+    assert "Earlier in this chat" not in ask("Something else", new=True)  # new: true starts over
+    assert [q for q, _ in server.thread] == ["Something else"]
+    assert "User: Something else" in ask("Follow-up")
+
+    http.post("/calls/end")  # the call ending clears it too
+    assert server.thread == []
+    assert "Earlier in this chat" not in ask("After the call")
+
+
+def test_an_answer_that_arrives_after_new_does_not_join_the_new_thread(http, events, monkeypatch):
+    def muse(prompt: str, seconds=None) -> str:
+        server.clear_thread()  # "new" (or the call ending) lands while Muse is still thinking
+        return "Late answer"
+
+    monkeypatch.setattr(picks, "chat", muse)
+    http.post("/ask", json={"question": "Slow one"})
+    wait_for(lambda: any(e.get("status") == "done" for e in events))
+    assert server.thread == []
+
+
+def test_live_bullets_add_this_calls_facts_to_the_card_and_skip_when_nothing_is_new(http, events, monkeypatch):
+    monkeypatch.setattr(server, "LIVE_BULLET_SECONDS", 0.2)
+    monkeypatch.setattr(store, "person", lambda pid: {"id": pid, "name": "Jordan Lee", "role": "Your team lead",
+                                                       "firstMet": date(2026, 10, 1)} if pid == "p_jordan" else None)
+    monkeypatch.setattr(store, "last_time", lambda pid: "Talked about his move.")
+    monkeypatch.setattr(store, "latest_note", lambda pid: None)
+    monkeypatch.setattr(store, "key_fact", lambda pid: "Starts a fintech job Monday")
+    replies, live_prompts = [], []
+
+    def muse(prompt: str, seconds=None) -> str:
+        if "just spoke" in prompt:
+            live_prompts.append(prompt)
+            return json.dumps({"snippets": replies.pop(0)})
+        return json.dumps({"topic": "", "points": [], "actions": []})
+
+    monkeypatch.setattr(picks, "chat", muse)
+    base = ["Your team lead", "Last time: Talked about his move.", "Starts a fintech job Monday"]
+    server.tracks[1] = JORDAN
+    http.post("/faces", json={"trackId": 1, "screenBox": [5, 6, 70, 80]})
+    http.post("/speakers", json={"label": "speaker_0", "name": "Jordan Lee"})
+    faces = lambda: [e for e in events if e["type"] == "face" and e["person"] and len(e["person"].get("bullets", [])) > 3]
+
+    def say(label: str, text: str) -> None:
+        http.post("/transcript", json=line(label, text))
+
+    replies.append(["This call: Took up climbing", "this call: Lives in Austin", "This call: Third one is too many"])
+    say("speaker_0", "I just took up climbing and I live in Austin now.")
+    say("speaker_1", "Somebody unrecognised talks a lot as well, many many words here.")  # not a known person: never checked
+    time.sleep(0.25)
+    say("speaker_0", "Mostly bouldering on the weekends with friends.")
+    wait_for(lambda: len(faces()) == 1)
+    shown = faces()[0]
+    assert shown["screenBox"] == [5, 6, 70, 80] and shown["trackId"] == 1
+    assert shown["person"]["bullets"] == base + ["This call: Took up climbing", "This call: Lives in Austin"]  # 5 at most
+    assert len(live_prompts) == 1 and "Somebody unrecognised" not in live_prompts[0] and "bouldering" in live_prompts[0]
+    assert server.tracks[1]["bullets"] == shown["person"]["bullets"]  # later frames keep them
+
+    replies.append([])  # said nothing new: no snippet, no new face event
+    say("speaker_0", "Okay.")
+    time.sleep(0.25)
+    say("speaker_0", "Yes, sure.")  # too few words since the last check: Muse isn't even asked
+    time.sleep(0.1)
+    assert len(live_prompts) == 1 and len(faces()) == 1
+
+    say("speaker_0", "We are planning a long road trip to Colorado this summer, then.")
+    time.sleep(0.25)
+    say("speaker_0", "It should take about two weeks in total, I think so.")
+    wait_for(lambda: len(live_prompts) == 2)
+    time.sleep(0.2)
+    assert len(faces()) == 1  # Muse had nothing new
+    assert "This call: Took up climbing" in live_prompts[1]  # it is told what is already noted
+
+    http.post("/calls/end")
+    assert server.snippets == {}
