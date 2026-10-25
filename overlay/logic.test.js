@@ -1,13 +1,26 @@
 // node --test (npm test in overlay/)
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { ROUTES, elapsed, takesOver } = require('./logic')
+const { ROUTES, elapsed, takesOver, cleanName } = require('./logic')
 
-test('main only forwards the three memory API calls the overlay makes', () => {
+test('main only forwards the memory API calls the overlay makes', () => {
   for (const route of ['/listening', '/ask', '/actions/x1', '/actions/act_2-b']) assert.ok(ROUTES.test(route), route)
   for (const route of ['/people/p_1', '/enroll', '/actions/', '/actions/..', '/actions/a%2Fb', '/ask?x=1', '//evil.test/ask']) {
     assert.ok(!ROUTES.test(route), route)
   }
+})
+
+test('"Remember them" only posts for a numeric face track', () => {
+  assert.ok(ROUTES.test('/faces/3/remember'))
+  for (const route of ['/faces/x/remember', '/faces/NaN/remember', '/faces//remember', '/faces/3/remember/..', '/faces/3']) {
+    assert.ok(!ROUTES.test(route), route)
+  }
+})
+
+test('a typed name is trimmed, single-spaced and at most 80 characters, like the enroll page', () => {
+  assert.equal(cleanName('  Maya   Chen \n'), 'Maya Chen')
+  assert.equal(cleanName('   '), '')
+  assert.equal(cleanName('x'.repeat(200)).length, 80)
 })
 
 test('the call timer counts from startedAt', () => {

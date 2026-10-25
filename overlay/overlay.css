@@ -213,8 +213,55 @@ a.source:hover { background: var(--hover); color: var(--ink); }
 .card .name { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
 .card .line { margin-top: 3px; color: var(--ink-2); font-size: 13px; text-wrap: pretty; }
 .card .met { margin-top: 2px; color: var(--ink-2); font-size: 12px; font-variant-numeric: tabular-nums; }
-.card.thinking { width: auto; display: flex; align-items: center; gap: 8px; padding: 8px 14px 8px 10px; border-radius: 999px; }
+.card.thinking { width: auto; display: grid; grid-template-columns: 16px auto; align-items: center; gap: 8px; padding: 8px 14px 8px 10px; border-radius: 999px; }
 .card .mark { width: 16px; height: 16px; }
+
+/* Thinking pills are the one card that takes the mouse: a ring and a pointer on hover reveal "Remember them". */
+.card:is(.thinking, .remembering) { pointer-events: auto; }
+.card.thinking { cursor: pointer; transition: transform 0.35s var(--ease), box-shadow 0.2s ease; }
+.card.thinking:is(:hover, :focus-within) {
+  border-radius: 14px;
+  box-shadow: inset 0 1px 0 var(--rim-top), 0 0 0 2px rgba(255, 255, 255, 0.5), 0 14px 32px -14px rgba(0, 0, 0, 0.6);
+}
+.card .remember {
+  display: none; grid-column: 2; justify-self: start; margin-bottom: 2px; height: 28px; padding: 0 10px;
+  border: 0; border-radius: 8px; background: var(--fill); font-size: 13px; font-weight: 650;
+  transition: background-color 0.15s ease;
+}
+.card.thinking:is(:hover, :focus-within) .remember { display: block; }
+.card .remember:hover { background: var(--hover); }
+
+/* the inline "Remember them" form, the same 208px as the name card it becomes */
+.card.remembering { display: grid; gap: 10px; padding: 10px 12px 12px; }
+.remember-head { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 650; }
+.remember-head .mark { width: 14px; height: 14px; animation: none; }
+.remember-head .icon-btn { width: 24px; height: 24px; margin: -4px -6px -4px auto; }
+.remember-head .icon-btn svg { width: 16px; height: 16px; }
+.remember-form { display: grid; gap: 10px; }
+.name-field {
+  height: 34px; padding: 0 10px; box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 10px; background: var(--fill);
+  color: var(--ink); caret-color: var(--ink); font: inherit; font-size: 14px; outline: none;
+  transition: border-color 0.15s ease;
+}
+.name-field:focus { border-color: rgba(255, 255, 255, 0.45); }
+.name-field::placeholder, .name-field:disabled { color: var(--ink-2); }
+.yes { display: flex; align-items: center; gap: 8px; min-height: 24px; font-size: 13px; color: var(--ink-2); cursor: pointer; user-select: none; }
+.yes input { flex: none; width: 16px; height: 16px; margin: 0; accent-color: var(--ink); cursor: pointer; }
+.remember-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.save {
+  height: 30px; padding: 0 16px; border: 0; border-radius: 999px;
+  background: var(--ink); color: #15171C; font-size: 13px; font-weight: 650;
+  transition: opacity 0.15s ease, transform 0.2s var(--ease);
+}
+.save:not(:disabled):hover { transform: scale(1.04); }
+.save:disabled { opacity: 0.35; }
+.invite {
+  padding: 4px 0; border: 0; background: none; color: var(--ink-2); font-size: 13px;
+  text-decoration: underline; text-decoration-color: rgba(255, 255, 255, 0.35); text-underline-offset: 3px;
+}
+.invite:hover { color: var(--ink); text-decoration-color: currentColor; }
+.card .note { margin-top: 0; font-size: 12.5px; }
 .card.leaving { animation: card-out 0.25s ease-in both; }
 
 /* ---------- motion ---------- */

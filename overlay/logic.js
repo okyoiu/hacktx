@@ -1,7 +1,12 @@
 // Small rules shared by main.js and the renderer (loaded as a plain script), tested in logic.test.js.
 
 // The only memory API calls the overlay makes; main refuses anything else. Action ids are short words.
-const ROUTES = /^\/(listening|ask|actions\/[\w-]+)$/
+const ROUTES = /^\/(listening|ask|actions\/[\w-]+|faces\/\d+\/remember)$/
+
+// A name typed into "Remember them": trimmed, single-spaced, at most 80 characters like the enroll page.
+function cleanName(raw) {
+  return String(raw).trim().replace(/\s+/g, ' ').slice(0, 80)
+}
 
 // Call time since startedAt: "mm:ss", or "h:mm:ss" past an hour; "00:00" while unknown.
 function elapsed(startedAt, now) {
@@ -17,4 +22,4 @@ function takesOver(shown, event, closedId) {
   return event.status === 'thinking' || !shown.id || event.id === shown.id // a late answer to an older question loses
 }
 
-if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver }
+if (typeof module !== 'undefined') module.exports = { ROUTES, elapsed, takesOver, cleanName }
