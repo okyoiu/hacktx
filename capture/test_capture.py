@@ -207,10 +207,11 @@ def test_screen_frames_says_so_once_when_the_window_cannot_be_captured(monkeypat
     monkeypatch.setattr(faces, "call_window", lambda apps: next(looks))
     monkeypatch.setattr(faces, "grab", lambda window_id: None)  # screencapture gave nothing: closed, or no permission
     frames = faces.screen_frames(None, follow=["Zoom"])
-    assert next(frames)[0] is None and next(looks, "all looked") == "all looked"
+    first, second = next(frames)[0], next(frames)[0]  # the screen is grabbed there instead (Zoom blocks window capture)
+    assert first is not None and second is not None and next(frames)[0] is None and next(looks, "all looked") == "all looked"
     assert capsys.readouterr().out.splitlines() == [
         "following the Zoom window",
-        "couldn't capture the Zoom window; if it is still open, allow Screen Recording for this app",
+        "the Zoom window blocks window capture; grabbing the screen there instead (keep it uncovered)",
         "waiting for a call window"]  # once per change, not per attempt
 
 

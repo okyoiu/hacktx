@@ -73,13 +73,13 @@ def screen_frames(region: tuple[int, int, int, int] | None, follow: list[str] | 
             x, y, w, h = region
             if window_id is not None:
                 frame = grab(window_id)
-                if frame is None:  # it closed since the last look, or this app may not record the screen: say so once
+                if frame is None:  # Zoom marks its meeting window "no sharing", so window capture gives nothing: use the screen
                     if window_id != failed:
-                        print(f"couldn't capture the {app} window; if it is still open, allow Screen Recording for this app")
+                        print(f"the {app} window blocks window capture; grabbing the screen there instead (keep it uncovered)")
                         failed = window_id
-                    region = None  # no frames until the next look (FOLLOW_EVERY)
-                    continue
-                failed = None
+                    frame = cv2.cvtColor(np.array(screen.grab({"left": x, "top": y, "width": w, "height": h})), cv2.COLOR_BGRA2BGR)
+                else:
+                    failed = None
             else:
                 frame = cv2.cvtColor(np.array(screen.grab({"left": x, "top": y, "width": w, "height": h})), cv2.COLOR_BGRA2BGR)
             yield frame, (x, y, w, app, calls)
