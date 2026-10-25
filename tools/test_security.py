@@ -365,3 +365,68 @@ def test_a_muse_topic_is_one_line():
 
     out = picks.parse('{"notes": [], "topic": "Move to Austin\\n## Other <!-- p_y -->", "points": [], "actions": []}', set())
     assert "\n" not in out["topic"]
+
+
+# --- Muse connector and the demo tunnel (tools/tunnel.sh) ---
+# The tunnel reaches the server over loopback, with forwarding headers; only /connector/* may answer to it.
+
+TUNNEL = {"cf-connecting-ip": "203.0.113.9", "x-forwarded-for": "203.0.113.9"}
+
+
+def test_a_laptop_request_without_forwarding_headers_still_works():
+    assert TestClient(server.app, client=LAPTOP).get("/enroll").status_code == 200
+
+
+@pytest.mark.xfail(strict=True, reason="tunnelled requests (loopback + forwarding headers) must get only /connector/*")
+def test_the_tunnel_reaches_nothing_but_the_connector(monkeypatch):
+    monkeypatch.setattr(store, "people", lambda: [])
+    deleted = []
+    monkeypatch.setattr(store, "delete_person", lambda *a: deleted.append(a) or True)
+    c = TestClient(server.app, client=LAPTOP)
+    for method, path in (("GET", "/people"), ("GET", "/people/p_x"), ("GET", "/enroll"), ("POST", "/enroll"),
+                         ("POST", "/calls/end"), ("DELETE", "/people/p_x"), ("POST", "/ask"), ("GET", "/health")):
+        r = c.request(method, path, headers=TUNNEL)
+        assert r.status_code == 403, (method, path, r.status_code)
+    assert deleted == []
+
+
+@pytest.mark.xfail(strict=True, reason="a tunnelled web socket must be refused like a Wi-Fi one")
+def test_the_tunnel_cannot_open_the_overlay_socket():
+    with pytest.raises(WebSocketDisconnect):
+        with TestClient(server.app, client=LAPTOP).websocket_connect("/ws", headers=dict(TUNNEL)):
+            pass
+
+
+@pytest.mark.xfail(strict=True, reason="the connector routes are not built yet: no key, no data")
+def test_the_connector_needs_the_key_and_sends_no_prints_or_tokens(monkeypatch):
+    monkeypatch.setenv("MUSE_CONNECTOR_KEY", "k" * 32)
+    person = {"id": "p_x", "name": "Sam", "role": "", "lastSeen": None, "lastSpoke": None, "topic": None,
+              "facts": [], "encounters": [], "notes": [], "howMet": "", "firstMet": date(2026, 10, 1)}
+    monkeypatch.setattr(store, "person", lambda pid: dict(person))
+    monkeypatch.setattr(store, "people", lambda: [dict(person)])
+    c = TestClient(server.app, client=LAPTOP)
+    for headers in ({**TUNNEL}, {**TUNNEL, "authorization": "Bearer wrong"}, {**TUNNEL, "authorization": "Basic " + "k" * 32}):
+        assert c.get("/connector/people", headers=headers).status_code == 401
+    ok = c.get("/connector/people/p_x", headers={**TUNNEL, "authorization": "Bearer " + "k" * 32})
+    assert ok.status_code == 200
+    assert not re.search(r"print|token|embedding|selfie", ok.text, re.I)
+    for method in ("POST", "PATCH", "DELETE"):  # read-only
+        assert c.request(method, "/connector/people/p_x", headers={**TUNNEL, "authorization": "Bearer " + "k" * 32}).status_code in (404, 405)
+
+
+@pytest.mark.xfail(strict=True, reason="the connector key must be compared in constant time")
+def test_the_connector_key_is_compared_in_constant_time():
+    src = (ROOT / "memory/app.py").read_text()
+    assert "MUSE_CONNECTOR_KEY" in src and src.count("compare_digest") >= 2
+
+
+def test_tunnel_script_says_what_to_do_when_no_tunnel_tool_is_installed():
+    import subprocess
+
+    script = ROOT / "tools/tunnel.sh"
+    assert subprocess.run(["bash", "-n", str(script)]).returncode == 0
+    r = subprocess.run(["/bin/bash", str(script)], env={"PATH": "/nonexistent"}, capture_output=True, text=True)
+    assert r.returncode != 0 and "install" in r.stderr.lower()
+    text = script.read_text()
+    assert "127.0.0.1:8000" in text and "MUSE_CONNECTOR_KEY" in text and "0.0.0.0" not in text
+    assert not re.search(r"\bcat\b.*\.env|source .*\.env|echo .*\$MUSE", text)  # never prints the key

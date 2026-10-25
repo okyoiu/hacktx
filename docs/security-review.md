@@ -401,3 +401,48 @@ Checked by applying the commits to a scratch copy of this branch and running `to
 - **Fine:** `context` is checked against `("work", "personal")` in `picks.parse_summary` and anything else becomes `""`; `lastSeen`, `lastSpoke` and the encounter dates come from the database (`store.seen_fields`, ISO dates built on the server), never from Muse; all four are `None` before a first call together; the new `encounters` columns are added with `add column if not exists` (safe on an existing database) and are removed with the person by the existing cascade; the fields travel only in the `face` event (`/ws`) and the laptop-only people routes.
 - **R8-1a, Low: the Muse topic keeps its newlines.** `picks.parse` uses `topic.strip()[:80]`, and `d60af70` stores the first 60 characters, which then show on the card and in the how-we-met line. Overlay text uses `textContent` and the person file collapses lines, so nothing breaks, but a multi-line topic gives a multi-line bullet. Smallest fix: `" ".join(topic.split())[:80]` (strict xfail `test_a_muse_topic_is_one_line` added).
 - **Not yet in any branch:** `/people/stale` (R8-2), the hypertable change (R8-3), the Windows finder (R8-4) and the mockup pages (R8-5).
+
+---
+
+## Muse connector and the demo tunnel
+
+2026-10-25, Security agent. The contract is in the README (`GET /connector/people`, `/connector/people/{id}`, `/connector/openapi.json`, `Authorization: Bearer <MUSE_CONNECTOR_KEY>`); the routes are not in any review branch yet, so the route review waits. What is ready: `tools/tunnel.sh` and the tests.
+
+**The tunnel is for the demo only.** It puts the laptop's server on a public https address. Start it just before you show the connector, stop it (Ctrl+C) right after, and change `MUSE_CONNECTOR_KEY` in `.env` afterwards, because the key was typed into the Muse app and the public address was shared.
+
+### The risk, and the change the coordinator must make in `memory/app.py`
+
+The tunnel (cloudflared or ngrok) connects to `127.0.0.1:8000`, so today `from_this_laptop` is **true for every request that comes through it**. Anyone on the internet who learns the address could then call `/people`, `/ws`, `/calls/end`, and `DELETE /people/*` as if they were at the laptop, and `/enroll` as a guest. The tunnels add forwarding headers (`X-Forwarded-For`, `Cf-Connecting-Ip`), and nothing on this laptop sends them. So:
+
+```python
+TUNNEL_HEADERS = ("x-forwarded-for", "cf-connecting-ip", "x-real-ip", "forwarded")
+
+
+def tunnelled(conn: HTTPConnection) -> bool:
+    """cloudflared and ngrok reach us over loopback but add these headers; nothing on this laptop sends them."""
+    return any(h in conn.headers for h in TUNNEL_HEADERS)
+
+# in from_this_laptop: add   and not tunnelled(conn)    (this also closes /ws)
+
+# at the top of guests_only_enroll, before the guest check:
+    if tunnelled(request):  # the demo tunnel: only the key-protected connector, never enroll, delete or the rest
+        if not request.url.path.startswith("/connector/"):
+            return JSONResponse({"detail": "Not available through the tunnel."}, 403)
+        return await call_next(request)
+```
+
+The `/connector/*` routes must then do their own check: the bearer key (below), because the middleware lets tunnelled `/connector/` requests through to them.
+
+**Verified:** I applied exactly this to a scratch copy of this branch. `test_the_tunnel_reaches_nothing_but_the_connector` and `test_the_tunnel_cannot_open_the_overlay_socket` flipped to passing and the 62 other tests in `tools/test_security.py` and `memory/test_app.py` still passed. Both are strict xfails until it lands; delete their markers then.
+
+### What the connector routes must do (checked on the next pass)
+
+- `Authorization: Bearer <MUSE_CONNECTOR_KEY>` compared with `secrets.compare_digest` on encoded bytes; the key is read from the environment, at least 32 random characters, never logged, never in a URL. If the key is unset, the routes answer 404 (the feature is off), not 200. A missing or wrong key gives 401, and 401 is the same for "no such person" and "wrong key" so ids cannot be probed.
+- Read-only: GET only (POST/PATCH/DELETE give 404/405).
+- The answer holds only: id, name, role, `lastSeen`, `lastSpoke`, `topic`, facts, the last conversation. Never face prints, delete tokens, `selfie`, notes the user typed, or the person file path. People with expired consent are left out (use `store.person` / `store.people`, which already skip them).
+- A rate limit like `/enroll`'s (a leaked key plus a public address is a scraping door).
+- Tests: `test_the_connector_needs_the_key_and_sends_no_prints_or_tokens` and `test_the_connector_key_is_compared_in_constant_time` (strict xfails), and `test_tunnel_script_says_what_to_do_when_no_tunnel_tool_is_installed` (passes).
+
+### What leaves the laptop through the connector
+
+Muse (and anyone holding the key) can read names, roles, dates, facts and conversation summaries of every consenting person. That is more than a guest agreed to at enrollment ("notes are kept on this laptop"). Before the demo: tell guests, or use the connector only with sample people.
