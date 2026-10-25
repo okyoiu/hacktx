@@ -10,4 +10,5 @@ STILL_DIFF = 0.25  # mean grey change (0-255, 64x64 sampled) that counts as live
 RECENT_SECONDS = 30.0  # s a face that left is remembered, so a view switch (new track ids) keeps the person; raise if cards reset after long freezes
 SAME_FACE = 0.1  # cosine distance under which a new print is a remembered face; lower if two different people get merged after a view switch
 YOLO_LONG_SIDE = None  # px to shrink a frame to before YOLO, None = off (measured as a loss: YOLO resizes to 640 itself); try 960 on a slow laptop and compare the capture: line
+DARK_LUMA = 60  # mean grey (0-255) under which a frame or a person box is dark and gets lifted (gamma 0.5 + CLAHE) before YOLO and InsightFace; raise if dim rooms lose faces, lower if the debug view looks washed out
 REPORT_EVERY = 60  # s between `capture: N fps, YOLO x ms, InsightFace y ms, cpu z%` log lines

@@ -56,12 +56,12 @@ def test_parse_summary_gives_every_known_person_one_last_time_line():
     ]})
     together = "You were on a call together."
     assert parse_summary(reply, {"p_jordan", "p_maya", "p_sam", "p_kai"}) == [
-        {"personId": "p_jordan", "about": "Engineer, just moved to Austin", "lastTime": "Talked about finding a climbing gym.", "role": "Your team lead", "facts": ["Loves F1", "has two kids", "x" * 80], "context": "work"},  # cleaned, deduped, capped at 3
-        {"personId": "p_maya", "about": "", "lastTime": "Asked Jordan about climbing gyms.", "role": "", "facts": [], "context": ""},  # about may be empty
-        {"personId": "p_sam", "about": "Nurse", "lastTime": together, "role": "", "facts": [], "context": ""},
-        {"personId": "p_kai", "about": "", "lastTime": together, "role": "", "facts": [], "context": ""},  # Muse left them out
+        {"personId": "p_jordan", "about": "Engineer, just moved to Austin", "lastTime": "Talked about finding a climbing gym.", "role": "Your team lead", "facts": ["Loves F1", "has two kids", "x" * 80], "places": [], "context": "work"},  # cleaned, deduped, capped at 3
+        {"personId": "p_maya", "about": "", "lastTime": "Asked Jordan about climbing gyms.", "role": "", "facts": [], "places": [], "context": ""},  # about may be empty
+        {"personId": "p_sam", "about": "Nurse", "lastTime": together, "role": "", "facts": [], "places": [], "context": ""},
+        {"personId": "p_kai", "about": "", "lastTime": together, "role": "", "facts": [], "places": [], "context": ""},  # Muse left them out
     ]
-    assert parse_summary("no json", KNOWN) == [{"personId": "p_jordan", "about": "", "lastTime": together, "role": "", "facts": [], "context": ""}]
+    assert parse_summary("no json", KNOWN) == [{"personId": "p_jordan", "about": "", "lastTime": together, "role": "", "facts": [], "places": [], "context": ""}]
     assert parse_summary('{"people": "nope"}', set()) == []
 
 
@@ -101,7 +101,7 @@ Nothing new this call.
 
 - Both of you climb
 
-## AI responses
+## Asked during the call
 
 ### Find climbing gyms
 
@@ -226,3 +226,20 @@ def test_person_file_starts_with_the_cards_header_then_facts_conversations_and_t
     assert "- Who they are to you: not set" in bare and "- Last seen: not yet" in bare and "- About: unknown" in bare
     assert "- Context: unknown" in bare and "- How we met: unknown" in bare and "Nothing yet." in bare
     assert "## Facts" not in bare and "## Notes" not in bare
+
+
+def test_the_call_note_keeps_what_was_asked_and_a_recall_goes_when_its_person_is_deleted(tmp_path, monkeypatch):
+    monkeypatch.setattr(notes, "NOTES", tmp_path)
+    answers = [{"query": "Find climbing\ngyms", "text": "Ledge\n# Not a heading\n## Nor this", "sources": [], "kind": "places"},
+               {"query": "Remind me who Jordan is", "text": "Jordan Lee, first met Oct 1.\nAbout: Engineer", "sources": [], "kind": "recall", "personId": "p_j"},
+               {"query": "Who is Maya?", "text": "Maya Chen, first met Oct 2.", "sources": [], "kind": "recall", "personId": "p_m"}]
+    text = render(datetime(2026, 10, 24, 15, 30), [], [], answers)
+    assert "## Asked during the call" in text and "### Find climbing gyms\n" in text
+    assert "\n\\# Not a heading" in text and "\n\\## Nor this" in text and "\n# Not" not in text  # answers can't start headings
+    assert "### Remind me who Jordan is <!-- p_j -->" in text
+    path = tmp_path / "call.md"
+    path.write_text(text)
+    notes.forget("p_j", "Jordan Lee")
+    after = path.read_text()
+    assert "Remind me who Jordan is" not in after and "Engineer" not in after and "Jordan Lee" not in after
+    assert "### Who is Maya? <!-- p_m -->" in after and "Maya Chen, first met Oct 2." in after and "### Find climbing gyms" in after

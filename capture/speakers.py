@@ -88,8 +88,9 @@ class Namer:
         return None
 
 
-def listen(url: str, captions: deque) -> None:
-    """Forever: append (arrival time, speaker, final) for each caption memory pushes on /ws. Run it in a thread."""
+def listen(url: str, captions: deque, state: dict | None = None) -> None:
+    """Forever: append (arrival time, speaker, final) for each caption memory pushes on /ws, and keep the pill's state up to
+    date in state: "on" (pause, memory sends the latest on connect) and "muted" (the mic). Run it in a thread."""
     while True:
         try:
             with connect(url) as ws:
@@ -97,5 +98,9 @@ def listen(url: str, captions: deque) -> None:
                     event = json.loads(raw)
                     if event.get("type") == "caption":
                         captions.append((time.monotonic(), event["speaker"], bool(event.get("final"))))
+                    elif event.get("type") == "listening" and state is not None:
+                        state["on"] = bool(event.get("on"))
+                    elif event.get("type") == "mute" and state is not None:
+                        state["muted"] = bool(event.get("on"))
         except (OSError, WebSocketException):
             time.sleep(2)  # memory isn't up yet or restarted

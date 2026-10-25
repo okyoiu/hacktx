@@ -20,6 +20,9 @@
     <symbol id="end" viewBox="0 0 20 20"><path d="M2.5 12c4.2-4.2 10.8-4.2 15 0l-2 2.2-3.2-1.5v-2c-1.4-.5-3.2-.5-4.6 0v2l-3.2 1.5z"/></symbol>
     <symbol id="pause" viewBox="0 0 20 20"><path d="M7 4.5v11M13 4.5v11"/></symbol>
     <symbol id="play" viewBox="0 0 20 20"><path d="M6.5 4.5v11l9-5.5z"/></symbol>
+    <symbol id="mic" viewBox="0 0 20 20"><rect x="7" y="2.5" width="6" height="10" rx="3"/><path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5M7 17.5h6"/></symbol>
+    <symbol id="mic-off" viewBox="0 0 20 20"><rect x="7" y="2.5" width="6" height="10" rx="3"/><path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5M7 17.5h6M3 3l14 14"/></symbol>
+    <symbol id="more" viewBox="0 0 20 20"><circle cx="4.5" cy="10" r="1.6"/><circle cx="10" cy="10" r="1.6"/><circle cx="15.5" cy="10" r="1.6"/></symbol>
   </svg>
 
   <div id="cards" aria-live="polite"></div>
@@ -28,6 +31,7 @@
   <!-- The island: one object at the top of the call. data-stage: pill · notice · sheet · recap -->
   <section id="island" class="island glass" data-stage="pill" hidden>
     <header id="bar" class="head">
+      <button class="tool mic" id="micBtn" type="button" aria-label="Mute" aria-pressed="false" aria-keyshortcuts="Meta+M"><svg class="i-mic" aria-hidden="true"><use href="#mic"/></svg><svg class="i-mic-off" aria-hidden="true"><use href="#mic-off"/></svg></button>
       <button class="pill-main" id="pillBtn" type="button" aria-label="Open Hello Again">
         <span class="wave" id="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
         <span class="health" id="health" data-state="ok" role="img" aria-label="Everything is running"></span>
@@ -41,10 +45,9 @@
       </div>
       <div class="tools">
         <button class="tool" id="pause" type="button" aria-label="Pause listening"><svg class="i-pause" aria-hidden="true"><use href="#pause"/></svg><svg class="i-play" aria-hidden="true"><use href="#play"/></svg></button>
-        <button class="tool" id="transcriptBtn" type="button" aria-pressed="false" aria-label="Show transcript"><svg aria-hidden="true"><use href="#lines"/></svg></button>
-        <button class="tool" id="peopleBtn" type="button" aria-label="People ⌘⇧P" aria-keyshortcuts="Meta+Shift+P"><svg aria-hidden="true"><use href="#people-icon"/></svg></button>
-        <button class="tool end" id="endBtn" type="button" aria-label="End call"><svg aria-hidden="true"><use href="#end"/></svg></button>
+        <button class="tool end" id="endBtn" type="button"><svg aria-hidden="true"><use href="#end"/></svg><span>End call</span></button>
         <button class="tool" id="hideBtn" type="button" aria-label="Hide ⌘\" aria-keyshortcuts="Meta+Backslash"><svg aria-hidden="true"><use href="#eye"/></svg></button>
+        <button class="tool" id="moreBtn" type="button" aria-label="More: People, transcript, Quit" aria-haspopup="menu"><svg aria-hidden="true"><use href="#more"/></svg></button>
       </div>
       <button class="spark-btn" id="askBtn" type="button" aria-label="Ask AI ⌘↵" aria-keyshortcuts="Meta+Enter"><svg class="mark" aria-hidden="true"><use href="#sparkle"/></svg></button>
       <span class="badge" id="badge" aria-label="New notes" hidden></span>
@@ -75,6 +78,7 @@
       <p class="note" id="recapNote" role="status"></p>
       <h3 class="sub-title" id="recapPeopleTitle" hidden>Who was there</h3>
       <ul class="recap-people" id="recapPeople"></ul>
+      <button class="quit" id="quitBtn" type="button" hidden>Quit Hello Again</button>
     </div>
   </section>
 

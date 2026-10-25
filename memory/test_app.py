@@ -48,7 +48,7 @@ def fake_serpapi(url, params, timeout):
 def http(monkeypatch, tmp_path):
     """A fresh server: no call, transcript, insights or faces, and listening."""
     state = {"call": None, "history": [], "fresh": [], "actions": {}, "latest_insights": None, "tracks": {}, "unknown": {},
-             "speakers": {}, "clients": set(), "last_transcript_at": None, "last_refresh": None, "latest_window": None, "latest_recap": None, "thread": [], "thread_epoch": 0, "live": {}, "live_since": None, "snippets": {}, "boxes": {}, "debug_scores": {}, "listening": {"type": "listening", "on": True, "startedAt": "2026-10-24T20:00:00Z"}}
+             "speakers": {}, "clients": set(), "last_transcript_at": None, "last_refresh": None, "latest_window": None, "latest_recap": None, "thread": [], "thread_epoch": 0, "live": {}, "live_since": None, "snippets": {}, "boxes": {}, "debug_scores": {}, "muted": {"type": "mute", "on": False}, "listening": {"type": "listening", "on": True, "startedAt": "2026-10-24T20:00:00Z"}}
     for name, value in state.items():
         monkeypatch.setattr(server, name, value)
     monkeypatch.setattr(server, "INSIGHTS_SECONDS", 0.3)
@@ -375,9 +375,9 @@ def test_every_action_kind_and_ask_answer_and_land_in_the_call_note(http, events
 
     note = http.post("/calls/end").json()["note"]
     text = open(note).read()
-    assert "## AI responses" in text and "### Where should we eat?" in text
+    assert "## Asked during the call" in text and "### Where should we eat?" in text
     assert "Sources: [Ledge](https://www.google.com/maps/search/?api=1&query=Ledge)" in text
-    assert "Remind me who Jordan is" not in text  # recall only repeats the database, and its person may delete themselves
+    assert "### Remind me who Jordan is <!-- p_jordan -->" in text  # kept, tagged with its person so deleting them removes it
 
 
 def test_missing_keys_end_as_errors_and_never_crash(http, events, monkeypatch):
@@ -501,7 +501,7 @@ def test_health_reports_database_keys_pause_and_last_line_for_this_laptop_only(h
     monkeypatch.setenv("MODEL_API_KEY", "secret-muse")
     monkeypatch.delenv("SERPAPI_KEY", raising=False)
     body = http.get("/health").json()
-    assert body == {"db": "ok", "muse": True, "museError": None, "serpapi": False, "serpapiError": None, "listening": True,
+    assert body == {"db": "ok", "muse": True, "museError": None, "serpapi": False, "serpapiError": None, "listening": True, "muted": False,
                     "lastTranscriptAt": None}
     assert "secret-muse" not in http.get("/health").text  # key presence only, never the key
 
@@ -594,8 +594,9 @@ def test_recap_is_sent_when_the_call_ends_with_this_calls_last_time_and_kept_for
     monkeypatch.setattr(picks, "chat", muse)
     monkeypatch.setattr(store, "person", lambda pid: {"id": pid, "name": "Jordan Lee", "role": "Your team lead", "firstMet": date(2026, 10, 1),
                                                        "encounters": [], "notes": []} if pid == "p_jordan" else None)
-    stored = []
+    stored, kept_calls = [], []
     monkeypatch.setattr(store, "add_encounter", lambda *args: stored.append(args))
+    monkeypatch.setattr(store, "add_call", lambda *args: kept_calls.append(args))
     monkeypatch.setattr(notes, "write_person", lambda pid: None)
     server.tracks[1] = JORDAN
     http.post("/faces", json={"trackId": 1, "screenBox": [0, 0, 10, 10]})
@@ -609,6 +610,7 @@ def test_recap_is_sent_when_the_call_ends_with_this_calls_last_time_and_kept_for
     assert recap == {"type": "recap", "topic": "Jordan's move", "points": ["Moved to Austin"], "actions": [action],
                      "people": [{"id": "p_jordan", "name": "Jordan Lee", "role": "Your team lead", "lastTime": "Talked about Austin."}]}
     assert [e["type"] for e in events if e["type"] == "recap"] == ["recap"] and stored  # once per call
+    assert kept_calls == [(None, "Jordan's move", ["Moved to Austin"], ["Suggest follow-up questions"], recap["people"])]  # kept for the connector
 
     with http.websocket_connect("/ws") as ws:  # an overlay that starts after the call ended
         assert ws.receive_json()["type"] == "listening"
@@ -943,3 +945,52 @@ def test_deleting_someone_clears_the_ask_ai_thread_that_may_name_them(http, even
     rid = http.post("/ask", json={"question": "And their job?"}).json()["id"]
     wait_for(lambda: any(e.get("id") == rid and e["status"] == "done" for e in events))
     assert "Jordan Lee" not in prompts[-1] and "Earlier in this chat" not in prompts[-1]
+
+
+def test_mute_is_broadcast_kept_for_a_late_overlay_shown_in_health_and_drops_transcript_lines(http, events):
+    assert http.post("/mute", json={"on": True}).json() == {"type": "mute", "on": True}
+    assert events == [{"type": "mute", "on": True}]
+    http.post("/transcript", json=line("speaker_0", "Spoken while muted, many words here."))
+    assert [e for e in events if e["type"] == "caption"] == [] and server.fresh == [] and server.call is None  # dropped, not stored
+    assert server.last_transcript_at is None
+    with http.websocket_connect("/ws") as ws:
+        assert [ws.receive_json() for _ in range(2)] == [server.listening, {"type": "mute", "on": True}]
+    health = http.get("/health")
+    assert health.json()["muted"] is True and health.json()["listening"] is True  # muting is not pausing
+
+    http.post("/mute", json={"on": False})
+    http.post("/transcript", json=line("speaker_0", "Spoken after unmuting."))
+    assert [e["text"] for e in events if e["type"] == "caption"] == ["Spoken after unmuting."]
+    with http.websocket_connect("/ws") as ws:
+        assert ws.receive_json()["type"] == "listening"  # nothing to replay once unmuted
+    assert http.post("/mute", json={}).status_code == 422
+    assert TestClient(server.app, client=WIFI).post("/mute", json={"on": True}).status_code == 403
+
+
+def test_places_events_and_search_responses_carry_result_rows_and_nothing_else_does(http, events, monkeypatch):
+    monkeypatch.setenv("SERPAPI_KEY", "k")
+    serp._lookup.cache_clear()
+    serp._search.cache_clear()
+    monkeypatch.setattr(serp.httpx, "get", fake_serpapi)
+    monkeypatch.setattr(picks, "chat", FakeMuse())
+    server.actions.update({
+        "a_places": {"kind": "places", "label": "Find gyms", "query": "gyms", "personId": None},
+        "a_events": {"kind": "events", "label": "Find events", "query": "events", "personId": None},
+        "a_search": {"kind": "search", "label": "Search gyms", "query": "gyms", "personId": None},
+        "a_follow": {"kind": "followups", "label": "Follow-ups", "query": None, "personId": None},
+        "a_recall": {"kind": "recall", "label": "Remind me", "query": None, "personId": "p_nobody"}})
+
+    def done(aid):
+        rid = http.post(f"/actions/{aid}").json()["id"]
+        wait_for(lambda: any(e.get("id") == rid and e["status"] != "thinking" for e in events))
+        return [e for e in events if e.get("id") == rid]
+
+    thinking, final = done("a_places")
+    assert "items" not in thinking and final["items"] == [{"title": "Ledge", "detail": "Climbing gym \u00b7 1 Main St",
+                                                           "url": "https://www.google.com/maps/search/?api=1&query=Ledge"}]
+    events_done = done("a_events")[1]
+    assert events_done["status"] == "done" and events_done["items"] == []  # fake_serpapi has no events: nothing found, no rows
+    rows = done("a_search")[1]["items"]
+    assert [r["title"] for r in rows] == ["Result 0", "Result 1", "Result 2"] and len(rows) <= 5 and rows[0]["url"] == "https://example.com/0"
+    for aid in ("a_follow", "a_recall"):
+        assert all("items" not in e for e in done(aid))

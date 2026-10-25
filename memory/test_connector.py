@@ -62,7 +62,7 @@ def test_people_and_one_person_are_read_only_and_never_hold_prints_or_tokens(web
 def test_the_document_describes_both_routes_and_health_needs_no_key(web):
     doc = web.get("/connector/openapi.json", headers=auth()).json()
     assert doc["openapi"].startswith("3.1") and doc["info"]["title"] == "Hello Again memory" and "Read-only" in doc["info"]["description"]
-    assert set(doc["paths"]) == {"/connector/people", "/connector/people/{id}"} and doc["security"] == [{"bearer": []}]
+    assert set(doc["paths"]) == {"/connector/people", "/connector/people/{id}", "/connector/calls"} and doc["security"] == [{"bearer": []}]
     assert web.get("/connector/health").json() == {"ok": True}
 
 
@@ -106,3 +106,23 @@ def test_only_people_who_ticked_the_connector_are_listed_or_readable(web, monkey
     assert web.get("/connector/people/p_private", headers=auth()).status_code == 404
     assert "Private Pat" not in web.get("/connector/people", headers=auth()).text
     assert web.get("/connector/people/p_jordan", headers=auth()).status_code == 200
+
+
+def test_calls_route_needs_the_key_asks_the_store_for_connector_people_only_and_is_documented(web, monkeypatch):
+    asked = []
+    monkeypatch.setattr(store, "calls", lambda limit, scope=None: asked.append((limit, scope)) or [
+        {"endedAt": "2026-10-25T20:00:00Z", "app": "zoom.us", "topic": "Demo", "points": ["p"], "actions": ["Find gyms"],
+         "people": [{"id": "p_jordan", "name": "Jordan Lee", "role": "", "lastTime": "Chat."}]}])
+    assert web.get("/connector/calls").status_code == 401 and web.get("/connector/calls", headers=auth("wrong")).status_code == 401
+    assert asked == []
+    got = web.get("/connector/calls", headers=auth()).json()
+    assert got[0]["topic"] == "Demo" and got[0]["actions"] == ["Find gyms"] and asked == [(5, "connector")]
+    web.get("/connector/calls?limit=12", headers=auth())
+    assert asked[-1] == (12, "connector")
+    assert web.get("/connector/calls?limit=0", headers=auth()).status_code == 422 and web.get("/connector/calls?limit=99", headers=auth()).status_code == 422
+    assert web.post("/connector/calls", headers=auth()).status_code == 405
+    monkeypatch.delenv("MUSE_CONNECTOR_KEY")
+    assert web.get("/connector/calls", headers=auth()).status_code == 404
+    monkeypatch.setenv("MUSE_CONNECTOR_KEY", KEY)
+    doc = web.get("/connector/openapi.json", headers=auth()).json()["paths"]["/connector/calls"]["get"]
+    assert "last meeting" in doc["description"] and "recap" in doc["summary"]

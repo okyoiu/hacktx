@@ -3,6 +3,8 @@ import os
 from functools import lru_cache
 from threading import Lock
 
+from urllib.parse import quote_plus
+
 import httpx
 
 URL = "https://serpapi.com/search.json"
@@ -32,7 +34,7 @@ def lookup(kind: str, query: str) -> dict | None:
     # Coalesce concurrent repeated queries instead of spending credits twice.
     with _lock:
         hit = _lookup(kind, query.casefold(), key, ll, location)
-        return dict(hit) if hit else None
+        return {**hit, "items": [dict(i) for i in hit["items"]]} if hit else None
 
 
 def search(query: str) -> list[dict]:
@@ -63,7 +65,9 @@ def _lookup(kind: str, query: str, key: str, ll: str, location: str) -> dict | N
         params["engine"] = "google_events"
         if location:
             params["location"] = location
-    return first(kind, _get(params))
+    data = _get(params)
+    top = first(kind, data)
+    return top and {**top, "items": items(kind, data)}
 
 
 @lru_cache(maxsize=256)
@@ -100,6 +104,33 @@ def _get(params: dict) -> dict:
     if data.get("error") and (data.get("search_metadata") or {}).get("status") != "Success":
         raise SerpApiError("SerpApi could not complete the search; check key, quota and query")
     return data
+
+
+MAX_ITEMS = 5
+
+
+def items(kind: str, data: dict) -> list[dict]:
+    """Up to MAX_ITEMS result rows {title, detail, url} for the overlay: name; rating, hours or date; venue; a link."""
+    hits = (data.get("local_results") if kind == "place" else data.get("events_results")) or []
+    if kind == "place" and not hits and data.get("place_results"):
+        hits = [data["place_results"]]  # one place named exactly
+    rows = []
+    for hit in hits[:MAX_ITEMS]:
+        if not isinstance(hit, dict) or not hit.get("title"):
+            continue
+        if kind == "place":
+            rating = hit.get("rating")
+            parts = [rating and f"{rating}\u2605", hit.get("open_state") or hit.get("hours"), hit.get("type"), hit.get("address")]
+            link = f"https://www.google.com/maps/search/?api=1&query={quote_plus(str(hit['title']))}" + (
+                f"&query_place_id={quote_plus(str(hit['place_id']))}" if hit.get("place_id") else "")
+        else:
+            venue = (hit.get("venue") or {}).get("name") if isinstance(hit.get("venue"), dict) else None
+            address = hit.get("address") or []
+            parts = [(hit.get("date") or {}).get("when"), venue, address if isinstance(address, str) else ", ".join(address)]
+            link = hit.get("link") or f"https://www.google.com/search?q={quote_plus(str(hit['title']))}"
+        link = link if str(link).startswith(("https://", "http://")) else ""  # links become clickable: http(s) only
+        rows.append({"title": str(hit["title"]), "detail": " \u00b7 ".join(str(p) for p in parts if p)[:120], "url": link})
+    return rows
 
 
 def first(kind: str, data: dict) -> dict | None:

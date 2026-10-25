@@ -9,6 +9,8 @@ import time
 
 import numpy as np
 
+from capture import window
+
 Result = tuple[str, bool, str, str]  # (item, ok, detail, fix)
 
 
@@ -26,21 +28,23 @@ def check(item: str, fix: str, run) -> Result:
     return item, ok, detail, fix
 
 
+def permission(state: dict) -> tuple[bool, str]:
+    state["windows"] = window.windows()  # on Windows this is the EnumWindows path (untested there): it must at least run
+    if sys.platform == "win32":
+        return True, f"not needed on Windows; {len(state['windows'])} windows listed through EnumWindows"
+    return window.can_record(state["windows"]), "the window list has names, so this process may record the screen"
+
+
+def found(state: dict) -> tuple[bool, str]:
+    state["window"] = w = window.pick(state.get("windows", []), window.CALL_APPS)
+    if w is None:
+        return False, "no window of a real size on screen"
+    kind = "a call app" if w.calls else "not a call app, followed for the window event only (no faces)"
+    return True, f"{w.app} window at {w.rect}, {kind}" + (f", behind {w.behind}" if w.behind else "")
+
+
 def checks() -> list[Result]:
-    from capture import window
-
     results, state = [], {}
-
-    def permission():
-        state["windows"] = window.windows()
-        return window.can_record(state["windows"]), "the window list has names, so this process may record the screen"
-
-    def found():
-        state["window"] = w = window.pick(state.get("windows", []), window.CALL_APPS)
-        if w is None:
-            return False, "no window of a real size on screen"
-        kind = "a call app" if w.calls else "not a call app, followed for the window event only (no faces)"
-        return True, f"{w.app} window at {w.rect}, {kind}" + (f", behind {w.behind}" if w.behind else "")
 
     def grabbed():
         import cv2
@@ -98,10 +102,10 @@ def checks() -> list[Result]:
         device = sd.query_devices(None, "input")
         return True, f"{device['name']} at {int(device['default_samplerate'])} Hz"
 
-    mac = sys.platform == "darwin"
     results.append(check("Screen Recording", "System Settings > Privacy & Security > Screen & System Audio Recording: allow the app "
-                         "that launched this (Terminal, or Hello Again)", permission if mac or sys.platform == "win32" else lambda: (True, "not needed here")))
-    results.append(check("call window", "open Zoom, Teams, FaceTime or Meet in a browser, or pass --region to capture.faces", found))
+                         "that launched this (Terminal, or Hello Again)",
+                         (lambda: permission(state)) if sys.platform in ("darwin", "win32") else lambda: (True, "not needed here")))
+    results.append(check("call window", "open Zoom, Teams, FaceTime or Meet in a browser, or pass --region to capture.faces", lambda: found(state)))
     results.append(check("grab", "if blank: Screen Recording permission (above); if nothing: the window closed", grabbed))
     results.append(check("YOLO", "uv sync, and let yolo26n.pt download once", yolo))
     results.append(check("InsightFace", "uv sync (buffalo_l downloads on first use); on a Mac: xcode-select --install", insightface))

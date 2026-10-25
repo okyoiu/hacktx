@@ -556,7 +556,8 @@ def test_consent_scope_defaults_to_what_the_person_saw_adds_connector_only_when_
         db.execute(schema)  # a second start changes nothing more
         assert [scope(p) for p in (old, custom, ticked)] == [["facePrint", "notes"], ["facePrint"], base + ["connector"]]  # nothing added
         with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
-            assert http.get(f"/people/{pid}").json()["scope"] == base
+            assert http.get(f"/people/{pid}").json()["scope"] == base and http.get(f"/people/{pid}").json()["connector"] is False
+            assert http.get(f"/people/{ticked}").json()["connector"] is True
             assert [p["scope"] for p in http.get("/people").json() if p["id"] == ticked] == [base + ["connector"]]
     finally:
         db.execute("delete from people where id = %s", (ticked,))
@@ -567,3 +568,61 @@ def test_the_schema_never_gives_connector_by_default_or_adds_wording_people_neve
     scope_lines = [l for l in lines if "scope" in l]
     assert scope_lines and not any("connector" in l for l in scope_lines)  # a default or an update never includes it
     assert not any(re.search(r"update consents.*(facts|voice)", l) for l in lines)  # an update adds nothing
+
+
+def test_places_from_ai_answers_go_to_the_person_they_concern_and_into_their_file(db, enroll, tmp_path, monkeypatch):
+    monkeypatch.setattr(notes, "NOTES", tmp_path)
+    pid, token = enroll(random_print())
+    prompts = []
+
+    def muse(prompt: str, seconds=None) -> str:
+        prompts.append(prompt)
+        return json.dumps({"people": [{"personId": pid, "lastTime": "Chat.", "places": ["Ledge Climbing Gym, 1 Main St", "ledge climbing gym, 1 main st", "Zilker Park"]}]})
+
+    monkeypatch.setattr(picks, "chat", muse)
+    answered = [{"query": "Find climbing gyms", "text": "Ledge Climbing Gym · 1 Main St", "kind": "places", "sources": []},
+                {"query": "Define bouldering", "text": "Climbing without ropes.", "kind": "define", "sources": []}]
+    server.remember_encounters(server.Call(people={pid: []}, lines=["x: I want to climb"], responses=answered))
+    assert "<answers>\nFind climbing gyms: Ledge Climbing Gym · 1 Main St\n</answers>" in prompts[0]  # only places, events and searches
+    assert "Define bouldering" not in prompts[0]
+    assert [m["text"] for m in store.person(pid)["mentions"]] == ["Zilker Park", "Ledge Climbing Gym, 1 Main St"]
+    text = (tmp_path / "people" / f"{pid}.md").read_text()
+    assert "## Places and events (from AI answers)\n\n- Zilker Park\n- Ledge Climbing Gym, 1 Main St" in text
+    assert text.index("## Places and events") < text.index("## Conversations")  # sits with the other Muse-written parts
+
+    server.remember_encounters(server.Call(people={pid: []}, lines=["x: hi"]))  # no answers this call: nothing is stored, whatever Muse says
+    assert len(store.person(pid)["mentions"]) == 2 and "(none)" in prompts[1]
+    assert store.delete_person(pid, token) and db.execute("select count(*) from mentions where person_id = %s", (pid,)).fetchone()[0] == 0
+
+
+def test_facts_and_places_are_kept_only_for_people_whose_scope_includes_facts(db, enroll):
+    pid, _ = enroll(random_print())
+    old, _ = enroll(random_print())
+    db.execute("update consents set scope = '{facePrint,notes}' where person_id = %s", (old,))
+    for person in (pid, old):
+        store.add_facts(person, ["Loves F1"])
+        store.add_mentions(person, ["Zilker Park"])
+    assert [(len(store.person(p)["facts"]), len(store.person(p)["mentions"])) for p in (pid, old)] == [(1, 1), (0, 0)]
+
+
+def test_calls_are_stored_newest_first_and_drop_deleted_expired_and_unagreed_people(db, enroll):
+    marker = "Recap " + secrets.token_hex(3)
+    (a, ta), (b, _), (c, _), (d, _) = (enroll(random_print()) for _ in range(4))
+    db.execute("update consents set scope = '{facePrint,notes}' where person_id = %s", (d,))  # never ticked the connector
+    db.execute("update consents set scope = '{facePrint,connector}' where person_id = any(%s)", ([a, b, c],))  # these three did
+    who = lambda pid, name: {"id": pid, "name": name, "role": "", "lastTime": "Chat."}
+    store.add_call("zoom.us", marker + " old", ["p1"], ["Find gyms"], [who(a, "A")])
+    store.add_call(None, marker + " new", ["p2"], [], [who(a, "A"), who(b, "B"), who(c, "C"), who(d, "D")])
+    ours = lambda rows: [r for r in rows if r["topic"].startswith(marker)]
+    got = ours(store.calls(50))
+    assert [r["topic"][-3:] for r in got] == ["new", "old"] and got[1]["app"] == "zoom.us" and got[1]["actions"] == ["Find gyms"]
+    assert [p["id"] for p in got[0]["people"]] == [a, b, c, d] and "endedAt" in got[0]
+    assert [p["id"] for p in ours(store.calls(50, "connector"))[0]["people"]] == [a, b, c]  # d did not agree to the connector
+
+    db.execute("update consents set expires_at = current_date - 1 where person_id = %s", (c,))
+    assert [p["id"] for p in ours(store.calls(50, "connector"))[0]["people"]] == [a, b]  # consent ran out
+    assert store.delete_person(a, ta)
+    stored = db.execute("select people from calls where topic like %s", (marker + "%",)).fetchall()
+    assert all(a not in json.dumps(people) for (people,) in stored) and len(stored) == 2  # gone from the stored rows themselves
+    assert len(ours(store.calls(1))) <= 1
+    db.execute("delete from calls where topic like %s", (marker + "%",))

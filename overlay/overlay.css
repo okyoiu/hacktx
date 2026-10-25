@@ -58,7 +58,7 @@ body[data-view="all"].idle .island { opacity: 0.3; transition: opacity 0.8s ease
 
 /* ---------- the island ---------- */
 .island { box-sizing: border-box; width: 600px; border-radius: 28px; padding: 16px 20px 20px; animation: panel-in 0.5s var(--ease) backwards; transition: border-radius 0.3s var(--ease); }
-.island[data-stage="pill"] { width: 236px; border-radius: 999px; padding: 0; }
+.island[data-stage="pill"] { width: 272px; border-radius: 999px; padding: 0; }
 .island[data-stage="notice"] { border-radius: 24px; padding: 16px 20px; }
 body:not([data-view="all"]) .island { width: 100%; } /* the window is sized to the stage by main.js */
 
@@ -71,6 +71,15 @@ body:not([data-view="all"]) .island { width: 100%; } /* the window is sized to t
 .wave { flex: none; display: flex; align-items: center; gap: 2px; height: 16px; }
 .wave i { width: 2px; height: 100%; border-radius: 1px; background: var(--mint); transform: scaleY(0.4); }
 .head:not([data-state="live"]) .wave i { background: var(--ink-3); transition: transform 0.4s var(--ease); }
+/* the mic toggle: muted flattens and dims the waveform; it shows in every state but the Recap */
+.mic { flex: none; }
+.island[data-stage="pill"] .mic { margin-left: -6px; }
+.mic .i-mic-off, .mic[aria-pressed="true"] .i-mic { display: none; }
+.mic[aria-pressed="true"] { display: grid; color: var(--coral); background: rgba(255, 120, 110, 0.18); }
+.mic[aria-pressed="true"] .i-mic-off { display: block; }
+.head[data-muted="true"] .wave { opacity: 0.45; }
+.head[data-muted="true"] .wave i { background: var(--ink-3); }
+.island[data-stage="recap"] .mic { display: none; }
 .timer { min-width: 44px; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: 0.01em; white-space: nowrap; }
 .head:not([data-state="live"]) .timer { color: var(--ink-2); }
 .health { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--amber); }
@@ -81,8 +90,11 @@ body:not([data-view="all"]) .island { width: 100%; } /* the window is sized to t
 /* what each stage shows in the head */
 .island:not([data-stage="recap"]) .ended, .island[data-stage="recap"] :is(.wave, .timer, .health, .warn) { display: none; }
 .island:not([data-stage="pill"]) :is(.spark-btn, .badge), .island[data-stage="pill"] :is(.warn, .tools, .notice, #closeRecap) { display: none; }
-.island[data-stage="notice"] :is(.timer, .tools, #closeRecap), .island[data-stage="sheet"] :is(.notice, #closeRecap), .island[data-stage="recap"] :is(.notice, .tools) { display: none; }
+.island[data-stage="notice"] :is(.timer, .tools), .island[data-stage="sheet"] .notice, .island[data-stage="recap"] :is(.notice, .tools) { display: none; }
+.island:not([data-stage="recap"]) #closeRecap { display: none; } /* on its own: an id inside :is() would outrank the hover rule below */
 .island:not([data-stage="notice"]) .notice { display: none; }
+.island[data-stage="notice"][data-hover="true"] .tools { display: flex; } /* hovered: the tools come along */
+.island[data-stage="notice"][data-hover="true"] .chip-act { display: none; } /* and make room for them */
 
 .spark-btn { margin-left: auto; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: none; -webkit-app-region: no-drag; transition: background-color 0.15s ease; }
 .spark-btn:hover { background: var(--hover); }
@@ -97,16 +109,19 @@ body:not([data-view="all"]) .island { width: 100%; } /* the window is sized to t
 .chip-act:hover { background: var(--hover); }
 .chip-act .label { overflow: hidden; text-overflow: ellipsis; }
 
-.tools { margin-left: auto; display: flex; gap: 2px; }
-.tool { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 9px; background: none; color: var(--ink-2); -webkit-app-region: no-drag; transition: background-color 0.15s ease, color 0.15s ease; }
+/* the header's tools: 8px apart, the last one 12px from the sheet's edge (the island's 20px inset minus 8) */
+.tools { margin-left: auto; margin-right: -8px; display: flex; align-items: center; gap: 8px; }
+.tool { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 10px; background: none; color: var(--ink-2); -webkit-app-region: no-drag; transition: background-color 0.15s ease, color 0.15s ease; }
 .tool:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
 .tool:disabled { opacity: 0.35; }
 .tool[aria-pressed="true"] { background: var(--fill); color: var(--ink); }
-.tool.end { color: var(--coral); }
+/* End call is the one tool with a word on it: a red-tinted pill, never a bare icon at the edge */
+.tool.end { width: auto; display: inline-flex; gap: 7px; padding: 0 14px 0 11px; border-radius: 999px; background: rgba(255, 120, 110, 0.18); color: var(--coral); font-size: 14px; font-weight: 600; white-space: nowrap; }
+.tool.end:hover:not(:disabled) { background: rgba(255, 120, 110, 0.3); color: #FFD3CC; }
 .tool svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .tool .i-play, .head[data-state="paused"] .i-pause { display: none; }
 .head[data-state="paused"] .i-play { display: block; }
-#closeRecap { margin-left: auto; }
+#closeRecap { margin-left: auto; margin-right: -8px; background: var(--fill); border-radius: 50%; }
 
 /* the bodies: Live insights and the thread in the sheet, the Recap in its place */
 .body { display: none; }
@@ -132,7 +147,7 @@ body:not([data-view="all"]) .island { width: 100%; } /* the window is sized to t
 .sub-title { margin: 20px 0 8px; font-size: 15px; font-weight: 600; color: var(--ink-2); }
 
 /* Ask AI: the thread, then the question field */
-.thread { list-style: none; margin: 16px -8px 0 0; padding: 0 8px 0 0; display: grid; gap: 16px; max-height: 360px; overflow-y: auto; overscroll-behavior: contain; }
+.thread { list-style: none; margin: 16px -8px 0 0; padding: 0 8px 0 0; display: grid; gap: 16px; max-height: 360px; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
 .thread:empty { display: none; }
 .turn { display: grid; gap: 10px; }
 .chip {
@@ -151,6 +166,15 @@ body:not([data-view="all"]) .island { width: 100%; } /* the window is sized to t
   -webkit-mask-size: 300% 100%;
   animation: shimmer 2.2s linear infinite;
 }
+/* places, events and search results: one row each, title then a dim detail line, three then "+N more" */
+.rows { list-style: none; margin: 0 -10px; padding: 0; display: grid; gap: 2px; }
+.row { display: grid; align-content: center; gap: 1px; height: 44px; padding: 0 10px; box-sizing: border-box; border-radius: 12px; color: var(--ink); text-decoration: none; transition: background-color 0.15s ease; }
+a.row:hover { background: var(--hover); }
+.row .title { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .detail { font-size: 13.5px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .detail:empty { display: none; }
+.more-btn { height: 36px; padding: 0 10px; border: 0; border-radius: 10px; background: none; color: var(--ink-2); font-size: 14px; font-weight: 600; transition: background-color 0.15s ease, color 0.15s ease; }
+.more-btn:hover { background: var(--hover); color: var(--ink); }
 .answer { display: grid; gap: 8px; color: var(--ink); text-wrap: pretty; }
 .answer:empty { display: none; }
 .answer p { animation: rise 0.45s var(--ease) backwards; }
@@ -174,6 +198,9 @@ a.source:hover { background: var(--hover); color: var(--ink); }
 .ask input::placeholder, .ask input:disabled { color: var(--ink-3); }
 
 /* Recap */
+/* the Recap's footer when no call window was followed: the call is over, so is the app's job */
+.quit { display: block; margin-top: 20px; height: 40px; padding: 0 18px; border: 1px solid var(--rim); border-radius: 999px; background: var(--fill); color: var(--ink); font-size: 14.5px; font-weight: 600; transition: background-color 0.15s ease; }
+.quit:hover { background: var(--hover); }
 .recap-people { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
 .recap-people .who-row { display: flex; align-items: baseline; gap: 8px; }
 .recap-people .who { font-weight: 650; }

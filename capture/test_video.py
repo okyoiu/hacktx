@@ -74,7 +74,7 @@ def test_video_posts_each_face_once_with_a_print_then_face_gone(tmp_path, monkey
     assert all(len(b["facePrint"]) == 512 and len(b["screenBox"]) == 4 for b in printed)
     assert {b["trackId"] for path, b in posts if path == "/faces/gone"} == tracks
     if debug:  # developer mode: what the computer vision saw, in screen points, on every /faces
-        assert all(set(b["debug"]) == {"personBox", "faceBox", "fps"} for b in seen)
+        assert all(set(b["debug"]) == {"personBox", "faceBox", "fps", "dark"} for b in seen) and not any(b["debug"]["dark"] for b in seen)
         first = printed[0]["debug"]
         assert first["personBox"] == printed[0]["screenBox"] and len(first["faceBox"]) == 4 and first["fps"] >= 0
         assert any(b["debug"]["fps"] > 0 for b in seen)
@@ -261,5 +261,63 @@ def test_a_synthetic_call_gets_one_print_per_moving_face_none_for_the_profile_pi
     assert not any(tile[0] <= b["screenBox"][0] for b in seen)  # no card ever sat over the frozen tile
     kinds = [p for p, _ in posts]
     assert kinds[-6:] == ["/faces/gone"] * 6 and kinds.index("/faces/gone") > max(i for i, k in enumerate(kinds) if k == "/faces")
-    assert all(set(b["debug"]) == {"personBox", "faceBox", "fps"} for b in seen)  # HELLO_DEBUG=1 adds the debug field
+    assert all(set(b["debug"]) == {"personBox", "faceBox", "fps", "dark"} for b in seen)  # HELLO_DEBUG=1 adds the debug field
     print(f"synthetic call: {len(frames)} frames in {seconds:.1f} s")
+
+
+def test_pause_from_the_pill_clears_the_cards_and_resume_brings_them_back(monkeypatch, capsys):
+    t1 = get_image("t1")
+    h, w = t1.shape[:2]
+    checks = iter([True] * 11)
+    pill = []  # the listening state main hands to listen(); the test flips it like the pill would
+
+    def call_window(apps):
+        try:
+            return Window("zoom.us", (0, 0, w, h), 7, None) if next(checks) else None
+        except StopIteration:
+            raise Stop from None
+
+    camera, grabs = iter(live(t1, 11)), []
+
+    def grab(window_id):  # one grab per frame, so the pause lands on exact frames: paused for frames 5-7
+        grabs.append(1)
+        if len(grabs) in (5, 8):
+            pill[0]["on"] = len(grabs) == 8
+        return next(camera)
+
+    class Screen:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            pass
+
+    server = FakeMemory()
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setenv("MEMORY_URL", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setattr("sys.argv", ["faces", "--app", "zoom.us", "--fps", "30"])
+    monkeypatch.setattr(faces.sys, "platform", "darwin")
+    monkeypatch.setattr(faces.mss, "MSS", Screen)
+    monkeypatch.setattr(faces, "FOLLOW_EVERY", -1)
+    monkeypatch.setattr(faces, "call_window", call_window)
+    monkeypatch.setattr(faces, "grab", grab)
+    monkeypatch.setattr(faces, "listen", lambda url, captions, listening: pill.append(listening))
+    try:
+        with pytest.raises(Stop):
+            faces.main()
+    finally:
+        server.shutdown()
+    kinds = [path if "facePrint" not in body else "print" for path, body in server.posts]
+    assert [k for k in kinds if k in ("print", "/faces/gone")] == ["print"] * 6 + ["/faces/gone"] * 6 + ["print"] * 6
+    gone, back = kinds.index("/faces/gone"), len(kinds) - 1 - kinds[::-1].index("print")
+    assert "/faces" not in kinds[gone:back]  # nothing posted while paused
+    out = capsys.readouterr().out
+    assert out.count("paused from the pill") == 1 and out.count("resumed: looking for faces again") == 1
+
+
+def test_a_dark_room_still_gets_its_cards_and_the_debug_view_knows(tmp_path, monkeypatch):
+    monkeypatch.setenv("HELLO_DEBUG", "1")
+    dark = (get_image("t1") * 0.25).astype(np.uint8)
+    posts = run_video(tmp_path, monkeypatch, live(dark, 4))
+    seen = [b for p, b in posts if p == "/faces"]
+    assert sum("facePrint" in b for b in seen) == 6 and all(b["debug"]["dark"] for b in seen)

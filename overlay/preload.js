@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('overlay', {
   onPeople: (fn) => ipcRenderer.on('people-open', () => fn()),
   onLaunch: (fn) => ipcRenderer.on('launch', (_e, statuses) => fn(statuses)),
   onAsk: (fn) => ipcRenderer.on('ask', () => fn()),
+  onMute: (fn) => ipcRenderer.on('mute', () => fn()), // ⌘M
   onTranscriptShown: (fn) => ipcRenderer.on('transcript-shown', (_e, shown) => fn(shown)),
   onDebugShow: (fn) => ipcRenderer.on('debug-show', (_e, on) => fn(on)), // main only sends this in developer mode
   onIslandBounds: (fn) => ipcRenderer.on('island-bounds', (_e, bounds) => fn(bounds)),
@@ -21,4 +22,6 @@ contextBridge.exposeInMainWorld('overlay', {
   toggleDebug: () => ipcRenderer.send('debug-toggle'), // nobody listens in the normal app
   ask: () => ipcRenderer.send('ask'),
   toggleAll: () => ipcRenderer.send('toggle-all'),
+  menu: () => ipcRenderer.send('menu'), // the ⋯ menu / right-click: People, transcript, Debug (dev), Quit
+  quit: () => ipcRenderer.send('quit'),
 })

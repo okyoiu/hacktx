@@ -51,6 +51,10 @@ function handle(e) {
       setListening(e)
       setInsightsEmpty(e.on)
     }
+    if (e.type === 'mute') {
+      muted = Boolean(e.on)
+      renderBar()
+    }
     if (e.type === 'caption') {
       energy = 1
       wakePanel()
@@ -60,6 +64,7 @@ function handle(e) {
       showInsights(e)
     }
     if (e.type === 'response') showResponse(e)
+    if (e.type === 'window') followed = Boolean(e.app)
     if (e.type === 'recap') showRecap(e)
   }
   if (shows('transcript') && e.type === 'caption') addCaption(e)
@@ -99,6 +104,8 @@ function placeCard({ trackId, screenBox, person }) {
     })
     card.addEventListener('mouseleave', () => {
       delete card.dataset.hover
+      card.dataset.leftAt = Date.now() // the card backs off HOVER_GRACE.card ms after the pointer leaves
+      setTimeout(() => syncOpen(card, true), HOVER_GRACE.card + 20)
       syncMouse()
       syncOpen(card, true)
     })
@@ -210,7 +217,9 @@ const dismissed = new Set() // person ids whose card was closed with ✕
 // `hover`: the pointer opened it, so it must not move out from under the pointer.
 function syncOpen(card, hover = false) {
   const pid = card.dataset.pid
-  const open = card.dataset.pinned === 'true' || (!dismissed.has(pid) && isOpen(+card.dataset.popUntil || 0, !!card.dataset.hover, Date.now()))
+  const now = Date.now()
+  const hovering = hoverOpen({ pinned: false, over: !!card.dataset.hover, leftAt: +card.dataset.leftAt || null, now, grace: HOVER_GRACE.card })
+  const open = card.dataset.pinned === 'true' || (!dismissed.has(pid) && isOpen(+card.dataset.popUntil || 0, hovering, now))
   const was = card.classList.contains('open')
   card.classList.toggle('open', open)
   if (open !== was && !hover && card.dataset.face) position(card) // the open card and the tag have different spots
@@ -473,17 +482,7 @@ if (DEBUG && shows('cards')) {
   window.overlay?.onDebugShow((on) => (layer.hidden = !on))
 }
 
-if (DEBUG && shows('bar')) {
-  const toggle = el('button', 'tool debug-btn')
-  toggle.type = 'button'
-  toggle.title = 'Debug view ⌘⌥D: what the computer sees'
-  toggle.setAttribute('aria-label', toggle.title)
-  toggle.setAttribute('aria-pressed', 'false')
-  toggle.append(icon('eye'))
-  toggle.addEventListener('click', () => window.overlay?.toggleDebug())
-  window.overlay?.onDebugShow((on) => toggle.setAttribute('aria-pressed', String(on)))
-  $('hideBtn').before(toggle)
-}
+// (developers toggle the debug view from the ⋯ menu or ⌘⌥D; main.js owns both)
 
 // ---------- the island: pill · notice · sheet · recap ----------
 
@@ -492,9 +491,15 @@ let recapOn = false // the call ended and the Recap is showing
 let noticeUntil = 0 // a new insight widens the pill until then
 let noticeTimer
 let unseen = 0 // points that arrived while the sheet was closed, for the pill's badge
+let islandOver = false // the pointer is over the island
+let islandLeftAt = null // when it left; the pill backs off HOVER_GRACE.island ms later
+let hoverTimer
 
 function syncStage() {
-  const stage = islandStage({ recap: recapOn, open, noticeUntil, now: Date.now() })
+  const now = Date.now()
+  const hover = hoverOpen({ pinned: open, over: islandOver, leftAt: islandLeftAt, now, grace: HOVER_GRACE.island })
+  $('island').dataset.hover = hover
+  const stage = islandStage({ recap: recapOn, open, noticeUntil, now, hover })
   if ($('island').dataset.stage !== stage) {
     $('island').dataset.stage = stage
     wakePanel()
@@ -539,12 +544,26 @@ if (shows('bar')) {
     recapOn = false
     setOpen(false)
   })
-  $('island').addEventListener('mouseenter', wakePanel)
+  // hover grows the pill into the notice (with its tools); leaving lets it back off after a moment.
+  // Nothing here takes keyboard focus: the call keeps it until ⌘↵ or a click.
+  $('island').addEventListener('mouseenter', () => {
+    islandOver = true
+    wakePanel()
+    syncStage()
+  })
+  $('island').addEventListener('mouseleave', () => {
+    islandOver = false
+    islandLeftAt = Date.now()
+    clearTimeout(hoverTimer)
+    hoverTimer = setTimeout(syncStage, HOVER_GRACE.island + 20)
+    syncStage()
+  })
 }
 
 // ---------- the head: waveform, timer, tools ----------
 
 let listening = { on: false, startedAt: null }
+let muted = false // the mic toggle: no audio goes to Muse while muted; faces keep working
 let connected = !window.overlay || !!q.get('mock') // a browser preview has no connection to lose
 let energy = 0 // jumps to 1 on each caption, then settles: the waveform breathes with the conversation
 
@@ -577,14 +596,26 @@ window.overlay?.onLaunch((statuses) => {
 })
 
 function renderBar() {
-  const live = connected && listening.on
+  const mic = micState({ connected, on: listening.on, muted })
   $('bar').dataset.state = barState(connected, listening.on)
+  $('bar').dataset.muted = mic.dim
   $('pause').disabled = !connected
   $('endBtn').disabled = !connected
+  $('micBtn').disabled = !connected
+  $('micBtn').setAttribute('aria-pressed', String(muted))
+  $('micBtn').setAttribute('aria-label', mic.label + ' ⌘M')
   $('pause').setAttribute('aria-label', listening.on ? 'Pause listening' : 'Resume listening')
   tick()
-  if (live && !calm.matches) requestAnimationFrame(wave)
-  else drawWave(live ? 'icon' : 'flat')
+  if (mic.wave === 'live' && !calm.matches) requestAnimationFrame(wave)
+  else drawWave(mic.wave === 'live' ? 'icon' : 'flat')
+}
+
+async function toggleMute() {
+  $('micBtn').disabled = true
+  const { error } = await api('/mute', { on: !muted }) // the `mute` event answers
+  $('micBtn').disabled = !connected
+  if (error) flash = { text: 'Not sent', until: Date.now() + 3000 }
+  tick()
 }
 
 let flash = { text: '', until: 0 } // "Not sent" or "Saved" takes the timer's place for a few seconds
@@ -605,7 +636,7 @@ function wave(t) {
   if (waving) return
   waving = true
   const frame = (now) => {
-    if ($('bar').dataset.state !== 'live' || calm.matches) {
+    if ($('bar').dataset.state !== 'live' || muted || calm.matches) {
       waving = false
       return renderBar()
     }
@@ -643,23 +674,23 @@ if (shows('bar')) {
     $('timer').title = error || ''
     tick()
   })
-  $('peopleBtn').addEventListener('click', () => window.overlay?.togglePeople())
   $('hideBtn').addEventListener('click', () => window.overlay?.toggleAll())
-  $('transcriptBtn').addEventListener('click', () => {
-    if (window.overlay && view !== 'all') window.overlay.toggleTranscript()
-    else setTranscriptShown($('transcriptBtn').getAttribute('aria-pressed') !== 'true')
+  $('micBtn').addEventListener('click', toggleMute)
+  window.overlay?.onMute(toggleMute) // ⌘M
+  // People, the transcript, Debug (developer mode) and Quit live behind ⋯ and the pill's right-click
+  $('moreBtn').addEventListener('click', () => window.overlay?.menu())
+  $('island').addEventListener('contextmenu', (e) => {
+    e.preventDefault()
+    window.overlay?.menu()
   })
   window.overlay?.onTranscriptShown(setTranscriptShown)
 }
 
-// "Show transcript" opens the strip along the bottom (its own window; the preview shows it in place).
+// The transcript strip is its own window; the preview shows it in place.
 function setTranscriptShown(shown) {
-  $('transcriptBtn').setAttribute('aria-pressed', shown)
-  $('transcriptBtn').setAttribute('aria-label', transcriptToggle(shown).label)
-  if (view === 'all') {
-    $('transcript').hidden = !shown
-    $('captions').scrollTop = $('captions').scrollHeight // lines added while it was hidden couldn't scroll
-  }
+  if (view !== 'all') return
+  $('transcript').hidden = !shown
+  $('captions').scrollTop = $('captions').scrollHeight // lines added while it was hidden couldn't scroll
 }
 
 // ---------- Live insights (in the sheet; a new one shows as the notice while the pill is closed) ----------
@@ -700,6 +731,11 @@ function showInsights(next) {
 
 function setInsightsEmpty(on) {
   $('insightsEmpty').textContent = insightsEmptyText(on)
+  if (!insights) {
+    // the pill hovered before any insight: the notice says what it's doing and how to open
+    $('noticePoint').textContent = insightsEmptyText(on)
+    $('noticeMeta').textContent = 'Click to open · ⌘↵ to ask'
+  }
 }
 setInsightsEmpty()
 
@@ -763,9 +799,40 @@ function showResponse(e) {
     turn = { id: e.id }
     turns.push(turn)
   }
-  Object.assign(turn, { query: e.query, status: e.status, text: e.text || '', sources: e.sources || [] })
+  Object.assign(turn, { query: e.query, status: e.status, text: e.text || '', sources: e.sources || [], items: e.items || [] })
   renderThread(turn)
   if (e.id !== closed) setOpen(true)
+}
+
+// Places, events and search results as rows that open in the browser; three, then "+N more".
+function itemList(turn) {
+  const { shown, more } = itemRows(turn.items, turn.expanded)
+  const list = el('ul', 'rows')
+  for (const item of shown) {
+    const li = el('li')
+    const safe = webUrl(item.url || '')
+    const row = el(safe ? 'a' : 'div', 'row')
+    if (safe) {
+      row.href = item.url
+      row.target = '_blank'
+      row.rel = 'noreferrer'
+    }
+    row.append(el('span', 'title', item.title), el('span', 'detail', item.detail || ''))
+    li.append(row)
+    list.append(li)
+  }
+  if (more) {
+    const li = el('li')
+    const button = el('button', 'more-btn', `+${more} more`)
+    button.type = 'button'
+    button.addEventListener('click', () => {
+      turn.expanded = true
+      renderThread(turn)
+    })
+    li.append(button)
+    list.append(li)
+  }
+  return list
 }
 
 function renderThread(changed) {
@@ -774,7 +841,8 @@ function renderThread(changed) {
   $('thread').scrollTop = $('thread').scrollHeight
 }
 
-function turnNode({ query, status, text, sources }, animate) {
+function turnNode(turn, animate) {
+  const { query, status, text, sources } = turn
   const item = el('li', 'turn')
   item.dataset.state = status
   const chip = el('span', 'chip')
@@ -786,8 +854,10 @@ function turnNode({ query, status, text, sources }, animate) {
     row.append(icon('sparkle', 'mark'), verb('Thinking,Searching,Reading,Writing'))
     item.append(row)
   }
+  const hasRows = status === 'done' && itemRows(turn.items, false).shown.length > 0
+  if (hasRows) item.append(itemList(turn))
   const answer = el('div', 'answer')
-  answer.append(...answerLines(status, text).map((line, i) => {
+  answer.append(...(hasRows ? [] : answerLines(status, text)).map((line, i) => {
     const p = el('p', null, line)
     if (animate) p.style.animationDelay = i * 70 + 'ms'
     else p.style.animation = 'none'
@@ -870,8 +940,12 @@ function showRecap(r) {
   $('recapNote').textContent = ''
   $('recapPeopleTitle').hidden = !r.people?.length
   $('recapPeople').replaceChildren(...(r.people || []).map(recapPerson))
+  $('quitBtn').hidden = followed // no call window left to follow: offer to quit
   syncStage()
 }
+
+let followed = false // whether a call window is being followed (the `window` event)
+if (shows('bar')) $('quitBtn').addEventListener('click', () => window.overlay?.quit())
 
 function recapPerson({ name, role, lastTime }) {
   const item = el('li')

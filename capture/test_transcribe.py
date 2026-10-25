@@ -102,3 +102,16 @@ def test_keeps_listening_through_no_mic_a_rejection_and_the_end_of_a_session(mon
     out = capsys.readouterr().out
     assert "no input device" in out and "bad key" in out and "network down" in out and "starting a new one" in out
     assert ("[speaker] hello" in out) == verbose  # sentences print only with --verbose
+
+
+def test_the_mic_gate_sends_silence_while_muted_and_says_so_once_each_way(capsys):
+    state = {"muted": False}
+    gate = transcribe.MicGate(state)
+    chunk = bytes(range(16))
+    assert gate(chunk) == chunk
+    state["muted"] = True
+    assert gate(chunk) == bytes(16) and gate(chunk) == bytes(16)  # same length, all zeros: Muse's clock keeps running
+    state["muted"] = False
+    assert gate(chunk) == chunk
+    assert capsys.readouterr().out.splitlines() == ["muted: Muse hears silence until unmute", "unmuted: Muse hears the mic again"]
+    assert transcribe.MicGate(None)(chunk) == chunk  # no /ws state at all: never muted

@@ -9,6 +9,7 @@ import numpy as np
 import psycopg
 from pgvector import Vector
 from pgvector.psycopg import register_vector
+from psycopg.types.json import Jsonb
 
 # Cosine similarity an ArcFace print needs to count as the same person.
 # shortcut: one fixed cutoff picked by eye; upgrade by measuring enrolled faces on real call video.
@@ -43,6 +44,7 @@ def purge_expired() -> None:
         "delete from people where id in (select person_id from consents where expires_at < current_date) returning id, name"
     ).fetchall()
     for pid, name in rows:
+        drop_from_calls(pid)
         notes.forget(pid, name)
 
 
@@ -94,6 +96,29 @@ def enroll(name: str, face_print: np.ndarray, selfie: bytes | None, role: str = 
     return pid, token
 
 
+def add_call(app: str | None, topic: str, points: list[str], actions: list[str], people: list[dict]) -> None:
+    """A finished call's recap: topic, points, action labels and the people who were there."""
+    conn().execute("insert into calls (app, topic, points, actions, people) values (%s, %s, %s, %s, %s)",
+                   (app, topic, points, actions, Jsonb(people)))
+
+
+def calls(limit: int, only_scope: str | None = None) -> list[dict]:
+    """The last calls, newest first. People whose consent ran out (or who were deleted) are left out, and so is
+    anyone whose scope lacks `only_scope` when one is given."""
+    allowed = {r[0] for r in conn().execute(
+        "select person_id from consents where expires_at >= current_date and (%s::text is null or %s = any(scope))",
+        (only_scope, only_scope)).fetchall()}
+    rows = conn().execute("select ended_at, app, topic, points, actions, people from calls order by ended_at desc, id desc limit %s", (limit,)).fetchall()
+    return [{"endedAt": at, "app": app, "topic": topic, "points": points, "actions": actions,
+             "people": [p for p in people if p["id"] in allowed]} for at, app, topic, points, actions, people in rows]
+
+
+def drop_from_calls(pid: str) -> None:
+    conn().execute(
+        "update calls set people = (select coalesce(jsonb_agg(p), '[]'::jsonb) from jsonb_array_elements(people) p where p->>'id' <> %s)"
+        " where people @> %s", (pid, Jsonb([{"id": pid}])))
+
+
 def delete_person(pid: str, token: str | None) -> bool:
     """Delete with their token; token=None skips the check and is only for callers that know the request came
     from this laptop."""
@@ -103,6 +128,7 @@ def delete_person(pid: str, token: str | None) -> bool:
     from memory import notes  # lazy: notes imports store
 
     conn().execute("delete from people where id = %s", (pid,))
+    drop_from_calls(pid)
     notes.forget(pid, row[1])  # every way of deleting someone also clears them from notes/
     return True
 
@@ -178,17 +204,22 @@ def person(pid: str) -> dict | None:
     facts = conn().execute(
         "select text, created_at from facts where person_id = %s order by created_at desc, id desc", (pid,)
     ).fetchall()
+    mentions = conn().execute(
+        "select text, created_at from mentions where person_id = %s order by created_at desc, id desc", (pid,)
+    ).fetchall()
     return {
         "id": pid,
         "name": row[0],
         "role": row[2],
         "howMet": row[3],
         "scope": row[4],
+        "connector": "connector" in row[4],
         "firstMet": row[1],
         **seen_fields([(at, spoke, topic, ctx) for at, _, _, spoke, topic, ctx in encounters]),
         "encounters": [{"metAt": at, "about": about, "lastTime": last} for at, about, last, *_ in encounters],
         "notes": [{"text": t, "createdAt": at} for t, at in notes],
         "facts": [{"text": t, "createdAt": at} for t, at in facts],
+        "mentions": [{"text": t, "createdAt": at} for t, at in mentions],
     }
 
 
@@ -236,10 +267,20 @@ def set_how_met(pid: str, line: str) -> None:
     conn().execute("update people set how_met = %s where id = %s and how_met = ''", (line, pid))
 
 
+# only for people whose consent covers Muse's facts: an older row (scope without `facts`) never saw that wording
+AGREED = "where exists (select 1 from consents where person_id = %s and 'facts' = any(scope))"
+
+
+def add_mentions(pid: str, texts: list[str]) -> None:
+    """Places and events from the call's AI answers that concern this person; a repeat is skipped."""
+    for text in texts:
+        conn().execute(f"insert into mentions (person_id, text) select %s, %s {AGREED} on conflict do nothing", (pid, text, pid))
+
+
 def add_facts(pid: str, texts: list[str]) -> None:
     """Muse's facts about a person; one it already has (any capitalisation) is skipped."""
     for text in texts:
-        conn().execute("insert into facts (person_id, text) values (%s, %s) on conflict do nothing", (pid, text))
+        conn().execute(f"insert into facts (person_id, text) select %s, %s {AGREED} on conflict do nothing", (pid, text, pid))
 
 
 def add_note(pid: str, text: str) -> None:

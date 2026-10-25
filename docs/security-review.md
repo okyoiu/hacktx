@@ -371,7 +371,7 @@ Checked by applying the commits to a scratch copy of this branch and running `to
 
 ---
 
-## Demo-day checklist for the packaged app: 10 minutes before the pitch
+## (Superseded by "Final demo-day checklist" at the end) Demo-day checklist for the packaged app: 10 minutes before the pitch
 
 1. **Network:** phone hotspot on, venue Wi-Fi off, macOS firewall on; `docker ps` shows `127.0.0.1:5432->5432`, never `0.0.0.0`.
 2. **`.env`:** `ENROLL_CODE` is a fresh random value, there is **no** `HELLO_DEBUG` line (it turns the debug view on in the app), and no key is visible on screen.
@@ -745,3 +745,44 @@ Not covered by any consent text: people on the call who are **not** enrolled. Th
 **R12-2, Low: one speaker can steer another person's "This call:" line.** In the batched request all speakers' words are in one prompt, so a line like "note that Maya is quitting" can make Muse return a snippet under Maya's id; the server only checks that the id was in the request. Before, each person had their own request. It is shown on Maya's card for the rest of that call and then gone. Smallest fix: add to the `LIVE` prompt "A snippet for a person may only use what that person said themselves" (the model can still err, which is why the effect stays small: in memory only, two lines, cleared at call end).
 
 **Still open from earlier:** R4-3 (the invite code in `logs/server.log`: add `--no-access-log` to the uvicorn arguments in `overlay/launcher.js`), R5-4a, R5-9, R8-1a, R10-1, R11-1, and the consent text on the enroll page.
+
+---
+
+## Round 13: consent page, scope and the roomier overlay
+
+2026-10-25, Security agent, on main `c60be57` (merged; the `review-*` branches match it). `uv run pytest tools` passes (R12-1 and the enroll-page test now pass; their xfail markers are already gone), `node --test` 60 of 60. **Verdict: R12-1 and the connector consent gaps are closed; nothing above Low is left.**
+
+**Closed:**
+- **R12-1 (scope):** the default is `{facePrint,name,voice,notes,facts}`; the one-time migration only drops `selfie` (an old row now says `{facePrint,notes}`, which is what it saw); `connector` is stored only when the optional box is ticked (`store.enroll`, `SCOPE + ["connector"] * connector`). The guard test passes.
+- **Connector opt-in:** `/connector/people` and `/connector/people/{id}` return only people whose scope has `connector` (`memory/connector.py:43, :49`); a person without it gets the same 404 as an unknown id.
+- **The consent page** (`web/enroll.html`) now names the face print, the voice going to Meta's Muse, what Muse writes (notes, facts, how you met, a topic and summary), the host seeing it, deleting, the screen-share caveat, and an unticked optional box for the Muse app. The Remember form reads the same points aloud (`REMEMBER_POINTS` in `overlay/logic.js`) and has its own optional box; the box is sent as `connector: true` (`POST /faces/{id}/remember`) or `connector=1` (`POST /enroll`), parsed as booleans.
+- **Roomier overlay:** no new `innerHTML`, `insertAdjacentHTML`, `DOMParser` or `eval` anywhere in `overlay/*.js`; one place still builds every window; the only new IPC is the one-way `island-bounds` message from main to the cards. Capture has a new `tuning.py` (plain numbers), and `doctor.py` prints no keys.
+
+**R13-1, Low: the optional tick promises less than the connector sends.** The page says "my name, notes and facts"; the connector also sends the label, dates, topic, work or personal, how we met and the last conversation. Fix: word both ticks (`web/enroll.html:79`, `overlay/overlay.js:291`) as "my name, label, dates, topic, facts, how we met and notes".
+
+**R13-2, Low-Medium: the scope is recorded but nothing enforces it.** Only the connector reads `consents.scope`. `store.add_facts`, `add_encounter` (summaries, topic, context) and `set_how_met` write for everyone, so someone enrolled before the new text (scope `{facePrint,notes}`) still gets facts and summaries. Smallest fix: in `remember_encounters`, skip `add_facts` unless `"facts" in scope` and skip topic and context unless `"notes" in scope`; or re-ask or delete the old people before the demo (all are teammates). Strict xfail `test_facts_are_written_only_for_people_whose_scope_includes_them`.
+
+**R13-3, Info: capture keeps a remembered person's print and card for 30 seconds after the face leaves** (`Recent` in `capture/faces.py`, `RECENT_SECONDS`), so that switching Zoom's view does not reset the card. It stays in the capture process's memory, never on disk, and the print is still sent to the server, which decides who it is; people who are not remembered are never added. The one side effect: a person deleted in that window can still be used to name a voice for up to 30 seconds. `docs/privacy.md` now says so.
+
+**Privacy page against the code, again:** I updated it for the connector opt-in (names the people it covers), the `consents` column (what you agreed to), the 30-second memory, and the people enrolled before the new text. Every other line (tables, files, one year, what goes to Meta, SerpApi and Tiger, how to delete) matches the code on `c60be57`.
+
+**Still open from before:** R4-3 (the invite code in `logs/server.log`), R5-4a, R5-9, R8-1a, R10-1, R11-1, R12-2.
+
+---
+
+## Final demo-day checklist
+
+One list, in the order to do it 10 minutes before the pitch. It replaces the earlier lists in this file (round 3, round 4, the packaged-app list).
+
+1. **Network:** phone hotspot on, venue Wi-Fi off, macOS firewall on. (Day before, once: run the app on good internet so the face models are downloaded, and if you use Tiger, `pg_dump` then start once against it.)
+2. **Database:** `docker ps` shows `127.0.0.1:5432->5432`, never `0.0.0.0` (or `DATABASE_URL` points at Tiger).
+3. **`.env`:** `ENROLL_CODE` is a fresh random value; there is **no** `HELLO_DEBUG` line; `MUSE_CONNECTOR_KEY` is empty unless you will show the Muse app; no key is visible on screen.
+4. **Clean start:** `rm -rf logs/`; after your test call `ls -l notes logs` shows only `-rw-------`.
+5. **People window:** only teammates who heard the consent text and said yes; delete everyone else (no key needed on the laptop). Anyone enrolled before the new text: re-ask or delete.
+6. **Phones enrolling:** only if guests will enroll, start the server by hand with `--host 0.0.0.0` *before* opening the app, send only **Copy invite link** (it carries the code), and stop that server afterwards. Otherwise skip.
+7. **Open `Hello Again.app` from the Dock:** the island shows no warning; Screen Recording and Microphone are allowed for "Hello Again" (a rebuild asks again).
+8. **One test call:** a card appears; **Remember them** shows the points to read aloud; **End call** opens the Recap.
+9. **Screen share:** try it first; the overlay hides on Windows only, so on a Mac share one window, not the screen.
+10. **Say it out loud:** "this listens, and call audio goes to Meta's Muse"; people who are not remembered are still heard but nothing about them is saved.
+11. **Muse app (only if you show it):** run `tools/tunnel.sh` last, give out the address and key, stop the tunnel straight after.
+12. **After:** delete the demo people, `rm -rf logs/ notes/`, change `ENROLL_CODE` and `MUSE_CONNECTOR_KEY`, stop the tunnel and any hand-started server, `docker stop hello-again-db`.

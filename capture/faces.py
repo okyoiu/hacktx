@@ -24,8 +24,8 @@ from ultralytics import YOLO
 
 from capture.embed import add_print, find_faces, mouths_in, warm_up
 from capture.speakers import Namer, listen
-from capture.tuning import (FOLLOW_EVERY, QUIET_AFTER, RECENT_SECONDS, REPORT_EVERY, RETRY, SAME_FACE, STILL_DIFF, STILL_SECONDS,
-                            YOLO_LONG_SIDE)
+from capture.tuning import (DARK_LUMA, FOLLOW_EVERY, QUIET_AFTER, RECENT_SECONDS, REPORT_EVERY, RETRY, SAME_FACE, STILL_DIFF,
+                            STILL_SECONDS, YOLO_LONG_SIDE)
 from capture.window import CALL_APPS, NoScreenRecording, call_window, grab
 
 PERSON = 0  # COCO class id YOLO uses for people
@@ -115,6 +115,24 @@ class Recent:
 def is_me(person: dict) -> bool:
     """Memory's reply names the user themself (their own tile is a person in every call)."""
     return bool(person.get("self")) or str(person.get("role") or "").strip().lower() in ME
+
+
+GAMMA_LUT = (np.linspace(0, 1, 256) ** 0.5 * 255).astype(np.uint8)
+CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
+
+def is_dark(img: np.ndarray) -> bool:
+    return img.size > 0 and float(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).mean()) < DARK_LUMA
+
+
+def brighten(frame: np.ndarray) -> np.ndarray:
+    """What InsightFace sees of a dark frame: gamma 0.5, then CLAHE on L. Measured on the sample photo: at 25 % brightness the
+    prints move from 0.076 to 0.054 cosine distance from the bright ones (6/6 faces either way), at 10 % from 0.20 to 0.11.
+    YOLO gets the frame as it is: it finds all six people down to 10 % anyway, and the lift made it unstable (a spurious box,
+    a lost track). Only InsightFace's input changes; the print path is otherwise the same."""
+    lab = cv2.cvtColor(cv2.LUT(frame, GAMMA_LUT), cv2.COLOR_BGR2LAB)
+    lab[:, :, 0] = CLAHE.apply(lab[:, :, 0])
+    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
 
 def shrink(frame: np.ndarray) -> tuple[np.ndarray, float]:
@@ -216,7 +234,9 @@ def main() -> None:
     people: dict[int, dict] = {}  # track id -> the recognized person memory replied with
     tried: dict[int, float] = {}  # track id -> when InsightFace last looked for its face
     namer, captions = Namer(), deque()
-    threading.Thread(target=listen, args=(memory_url.replace("http", "ws", 1) + "/ws", captions), daemon=True).start()
+    listening = {"on": True}  # the pill's pause state, kept by listen(): paused means no faces either
+    threading.Thread(target=listen, args=(memory_url.replace("http", "ws", 1) + "/ws", captions, listening), daemon=True).start()
+    paused = False
 
     def send(path: str, body: dict) -> dict:
         try:
@@ -235,6 +255,7 @@ def main() -> None:
     last_person = quiet_told = time.monotonic()  # when a person was last in the frame, and when the log last said nobody is
     last_frame = result = None  # the last grab and YOLO's answer for it: a grab with the same bytes (a still window) reuses it
     k = 1.0  # how much bigger the frame is than what YOLO saw (shrink)
+    dark = False  # whether this frame (or a person in it) was dark, so InsightFace saw it lifted (brighten); in the debug payload
     report_at, frames_done, yolo_ms, insight_ms, cpu0 = time.monotonic(), 0, 0.0, 0.0, cpu_seconds()
     for frame, (x, y, w, app, calls) in frames:
         started = time.time()
@@ -245,7 +266,10 @@ def main() -> None:
                 window = {"app": app, "rect": rect}  # on change only; if memory was down it is told again next frame
             if frame is not None:
                 stamps.append(time.monotonic())
-            if frame is None or not calls:
+            if paused != (not listening["on"]):
+                paused = not paused
+                print("paused from the pill: cards cleared, no faces until resume" if paused else "resumed: looking for faces again")
+            if frame is None or not calls or paused:
                 result = last_frame = None
             elif last_frame is None or not np.array_equal(frame, last_frame):
                 t0 = time.perf_counter()
@@ -261,18 +285,20 @@ def main() -> None:
                     print(f"person {tid} on screen, looking for a face")
                     seen.add(tid)
                 now = time.monotonic()
+                dark = is_dark(frame) or any(is_dark(frame[int(y1):int(y2), int(x1):int(x2)]) for x1, y1, x2, y2 in boxes.values())
+                view = brighten(frame) if dark else frame  # a dark room or a dark person: lift what InsightFace sees
                 still = pictures.update(frame, boxes, now)
                 mine &= boxes.keys()
                 boxes = {t: b for t, b in boxes.items() if t not in still and t not in mine}  # pictures and you: no card, no print
                 wanting = {t for t in boxes.keys() - printed if now - tried.get(t, -RETRY) >= RETRY}
                 t0 = time.perf_counter()
                 if wanting:
-                    found = assign(find_faces(frame), boxes)  # one InsightFace pass gives every face's lips
+                    found = assign(find_faces(view), boxes)  # one InsightFace pass gives every face's lips
                     for tid in wanting & found.keys():
-                        add_print(frame, found[tid])  # prints only for people who need one
+                        add_print(view, found[tid])  # prints only for people who need one
                     tried.update(dict.fromkeys(wanting, now))
                 elif namer.wants_lips([p["id"] for p in people.values()], now):
-                    found = assign(mouths_in(frame), boxes)
+                    found = assign(mouths_in(view), boxes)
                 else:
                     found = {}
                 insight_ms += (time.perf_counter() - t0) * 1000
@@ -286,7 +312,7 @@ def main() -> None:
                         fx1, fy1, fx2, fy2 = map(float, found[tid].bbox)
                         face_boxes[tid] = [x + fx1 / scale, y + fy1 / scale, (fx2 - fx1) / scale, (fy2 - fy1) / scale]
                     if debug:
-                        body["debug"] = {"personBox": body["screenBox"], "faceBox": face_in(face_boxes.get(tid), body["screenBox"]),
+                        body["debug"] = {"personBox": body["screenBox"], "faceBox": face_in(face_boxes.get(tid), body["screenBox"]), "dark": dark,
                                          "fps": round((len(stamps) - 1) / max(stamps[-1] - stamps[0], 1e-6), 1) if len(stamps) > 1 else 0}
                     if tid not in printed:
                         if tid not in wanting or tid not in found:
@@ -334,7 +360,7 @@ def main() -> None:
                 print(f"capture: {frames_done / wall:.1f} fps, YOLO {yolo_ms / n:.0f} ms, InsightFace {insight_ms / n:.0f} ms, "
                       f"cpu {(cpu_seconds() - cpu0) / wall * 100:.0f}%")  # per frame; cpu over all threads, so it can pass 100
                 report_at, frames_done, yolo_ms, insight_ms, cpu0 = now, 0, 0.0, 0.0, cpu_seconds()
-            if frame is None or not calls or live:
+            if frame is None or not calls or paused or live:
                 last_person = quiet_told = now
             elif now - quiet_told >= QUIET_AFTER:
                 print(f"following {app or 'the region'}, no person seen for {int(now - last_person)} s")

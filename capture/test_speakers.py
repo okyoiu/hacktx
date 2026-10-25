@@ -1,10 +1,15 @@
 """Speaker naming on scripted data, like memory/replay.py: fake people, fake lip readings, Muse-like caption timings."""
+import json
+from collections import deque
 from types import SimpleNamespace
+
+import pytest
 
 import numpy as np
 from insightface.data import get_image
 
 from capture.embed import mouths_in
+from capture import speakers
 from capture.speakers import UNLABELED, Namer, lip_gap
 
 MAYA, JORDAN = {"id": "p_maya", "name": "Maya Chen"}, {"id": "p_jordan", "name": "Jordan Lee"}
@@ -86,3 +91,27 @@ def test_only_lips_inside_the_lines_window_and_on_big_enough_faces_count():
             tiny.saw(MAYA, small, 10 * i + k / 5)
         assert tiny.caption(10 * i + 3, "B", True) is None
     assert not tiny.gaps
+
+
+def test_listen_keeps_captions_and_the_pause_state_from_the_socket(monkeypatch):
+    events = [{"type": "listening", "on": True, "startedAt": "2026-10-24T21:40:00Z"},
+              {"type": "caption", "speaker": "A", "text": "hi", "final": False},
+              {"type": "listening", "on": False}, {"type": "insights", "topic": "ignored"}, {"type": "mute", "on": True},
+              {"type": "caption", "speaker": "A", "text": "hi there", "final": True}]
+
+    class Socket:  # what memory pushes on /ws
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            pass
+
+        def __iter__(self):
+            yield from (json.dumps(e) for e in events)
+            raise RuntimeError("test over")  # listen() only retries on socket errors
+
+    monkeypatch.setattr(speakers, "connect", lambda url: Socket())
+    captions, listening = deque(), {"on": True}
+    with pytest.raises(RuntimeError):
+        speakers.listen("ws://memory/ws", captions, listening)
+    assert [(s, f) for _, s, f in captions] == [("A", False), ("A", True)] and listening == {"on": False, "muted": True}

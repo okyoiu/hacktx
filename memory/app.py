@@ -38,6 +38,7 @@ THREAD_TURNS = 6  # question/answer turns of an Ask AI chat that follow-ups can 
 LIVE_BULLET_SECONDS = 60  # check what people have said at most this often, all of them in one request
 LIVE_MIN_WORDS = 8  # fewer words than this since the last check is not worth a Muse call
 MAX_BULLETS = 3  # the card shows role, last seen, last spoke, topic and context itself
+ANSWER_CHARS = 300  # how much of each AI answer the end-of-call summary reads
 TOPIC_CHARS = 60  # the topic shown on a card is kept short
 NOTE_POINTS = 10  # Muse rephrases points every refresh, so the call note keeps only the latest few
 
@@ -53,6 +54,7 @@ speakers: dict[str, str] = {}  # Muse speaker label -> display name
 history: list[str] = []  # lines Muse Spark has already seen, context for the next refresh
 fresh: list[str] = []  # final lines since the last insights refresh
 listening: dict = {"type": "listening", "on": True, "startedAt": utc_now()}  # latest listening event
+muted: dict = {"type": "mute", "on": False}  # latest mute event: the mic only, faces keep working
 latest_insights: dict | None = None  # latest insights event
 live: dict[str, dict] = {}  # person id -> {name, lines}: what they said since the last live-bullets check
 live_since: float | None = None  # when the current live-bullets window began (monotonic)
@@ -196,8 +198,14 @@ async def send_recap(ended: Call, insights: dict | None) -> None:
               for p in map(store.person, ended.people) if p]
     recap = {"type": "recap", "topic": (insights or {}).get("topic", ""), "points": (insights or {}).get("points", []),
              "actions": (insights or {}).get("actions", []), "people": people}
-    if call is not None or not (recap["topic"] or recap["points"] or recap["actions"] or people):
-        return  # a new call already started, or there was no call to recap
+    if not (recap["topic"] or recap["points"] or recap["actions"] or people):
+        return  # there was no call to recap
+    try:  # kept for the Muse connector, even if the next call has already begun
+        await asyncio.to_thread(store.add_call, ended.app, recap["topic"], recap["points"], [a["label"] for a in recap["actions"]], people)
+    except Exception as e:
+        print(f"recap not stored: {type(e).__name__}")
+    if call is not None:
+        return  # a new call already started: this recap is not shown
     latest_recap = recap
     await push(recap)
 
@@ -223,7 +231,8 @@ def remember_encounters(ended: Call) -> dict[str, str]:
         first_call = {p["id"]: not p["encounters"] for p in map(store.person, ended.people) if p}
         if not people or not ended.lines:
             return  # the finally below still refreshes their files
-        for s in picks.summarise(people, ended.lines):
+        answers = [f"{r['query']}: {r['text'][:ANSWER_CHARS]}" for r in ended.responses if r.get("kind") in ("places", "events", "search")]
+        for s in picks.summarise(people, ended.lines, answers):
             spoke = any(l.startswith(f"{people[s['personId']]['name']}: ") for l in ended.lines)  # a caption under their name
             store.add_encounter(s["personId"], ended.started.astimezone(), s["about"], s["lastTime"],
                                 ended.topic[:TOPIC_CHARS], spoke, s["context"])
@@ -231,6 +240,7 @@ def remember_encounters(ended: Call) -> dict[str, str]:
             if s["role"]:
                 store.set_role(s["personId"], s["role"], "muse")  # never replaces a role the user typed
             store.add_facts(s["personId"], s["facts"])
+            store.add_mentions(s["personId"], s["places"] if answers else [])
             if first_call.get(s["personId"]):
                 store.set_how_met(s["personId"], how_met(ended))
     except Exception as e:  # e.g. no MODEL_API_KEY: the call still ends and its note is still written
@@ -271,7 +281,7 @@ async def overlay_socket(ws: WebSocket):
     if not from_this_laptop(ws):  # the http middleware doesn't see WebSockets
         return await ws.close(code=1008)
     await ws.accept()
-    for event in (listening, latest_insights, latest_window, latest_recap):  # catch up an overlay that starts mid-call
+    for event in (listening, muted if muted["on"] else None, latest_insights, latest_window, latest_recap):  # mute only while on  # catch up an overlay that starts mid-call
         if event:
             await ws.send_json(event)
     clients.add(ws)
@@ -461,7 +471,18 @@ async def health():
         db = "error"
     return {"db": db, "muse": bool(os.getenv("MODEL_API_KEY")) and picks.status.error is None, "museError": picks.status.error,
             "serpapi": bool(os.getenv("SERPAPI_KEY")) and serp_status() is None, "serpapiError": serp_status(),
-            "listening": listening["on"], "lastTranscriptAt": last_transcript_at}
+            "listening": listening["on"], "muted": muted["on"], "lastTranscriptAt": last_transcript_at}
+
+
+class Mute(BaseModel):
+    on: bool
+
+
+@app.post("/mute")
+async def set_mute(body: Mute):
+    muted["on"] = body.on
+    await push(muted)
+    return muted
 
 
 @app.post("/listening")
@@ -476,6 +497,8 @@ async def set_listening(body: Listening):
 @app.post("/transcript")
 async def transcript(line: Line):
     global last_transcript_at
+    if muted["on"]:
+        return {"ok": True, "ignored": True}  # muted: a client that still sends gets nothing shown, kept or sent to Muse
     if not listening["on"]:
         return {"ok": True, "ignored": True}  # paused: nothing is shown, kept or sent to Muse
     last_transcript_at = utc_now()
@@ -641,13 +664,15 @@ def clear_thread() -> None:
 async def finish(event: dict, kind: str, arg: str | None, present: dict[str, str], lines: list[str],
                  earlier: list[tuple[str, str]], epoch: int) -> None:
     try:
-        text, sources = await asyncio.wait_for(asyncio.to_thread(answer, kind, arg, present, lines, earlier), OUTBOUND_SECONDS)
+        text, sources, items = await asyncio.wait_for(asyncio.to_thread(answer, kind, arg, present, lines, earlier), OUTBOUND_SECONDS)
         event = event | {"status": "done", "text": text, "sources": sources}
+        if kind in ("places", "events", "search"):
+            event["items"] = items  # rows for the overlay beside the prose
         if kind == "ask" and epoch == thread_epoch:
             thread.append((event["query"], text))
             del thread[:-THREAD_TURNS]
-        if call and kind != "recall":  # recall only repeats the database, about someone who may delete themselves
-            call.responses.append(event)
+        if call:  # a recall is tagged with its person, so deleting them removes it from the note
+            call.responses.append(event | {"kind": kind, "personId": arg if kind == "recall" else None})  # for the call note only
     except (NoAnswer, picks.MuseError, pipeline.SerpApiError) as e:
         event = event | {"status": "error", "text": str(e)}
     except TimeoutError:
@@ -659,17 +684,17 @@ async def finish(event: dict, kind: str, arg: str | None, present: dict[str, str
 
 
 def answer(kind: str, arg: str | None, present: dict[str, str], lines: list[str],
-           earlier: list[tuple[str, str]] | None = None) -> tuple[str, list[dict]]:
-    """Runs in a thread: the text and sources for one question or action."""
+           earlier: list[tuple[str, str]] | None = None) -> tuple[str, list[dict], list[dict]]:
+    """Runs in a thread: the text, sources and result rows (places, events, search only) for one question or action."""
     if kind == "recall":
-        return recall(arg), []
+        return recall(arg), [], []
     if kind in ("places", "events"):
         return pipeline.lookup(kind, arg)  # SerpApi only through pipeline, for a query Muse wrote
     known = store.notes_for(list(present))
     people = {pid: {"name": name, "notes": known.get(pid, [])} for pid, name in present.items()}
     if kind == "search":
         return pipeline.search(arg, people, lines)
-    return picks.answer(kind, arg or "", people, lines, thread=earlier if kind == "ask" else None), []
+    return picks.answer(kind, arg or "", people, lines, thread=earlier if kind == "ask" else None), [], []
 
 
 def recall(pid: str) -> str:
