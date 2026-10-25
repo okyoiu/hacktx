@@ -362,14 +362,14 @@ class Window(BaseModel):
 
 def good_rect(rect: list | None) -> bool:
     nums = isinstance(rect, list) and len(rect) == 4 and all(type(n) in (int, float) and math.isfinite(n) for n in rect)
-    return rect is None or (nums and rect[2] > 0 and rect[3] > 0)
+    return rect is None or (nums and rect[2] > 0 and rect[3] > 0 and all(abs(n) <= 20000 for n in rect))  # screen points, with room to spare
 
 
 @app.post("/window")
 async def set_window(w: Window):
     global latest_window
     if not good_rect(w.rect):
-        raise HTTPException(422, "rect must be null or [x, y, w, h] as finite numbers with w and h above 0")
+        raise HTTPException(422, "rect must be null or [x, y, w, h] as finite numbers up to 20000 in size, with w and h above 0")
     if (w.app is None) != (w.rect is None) or (w.app is not None and not 0 < len(w.app.strip()) <= 100):
         raise HTTPException(422, "app and rect must both be null, or an app name (up to 100 characters) with its rect")
     latest_window = {"type": "window", "app": w.app and w.app.strip(), "rect": w.rect}

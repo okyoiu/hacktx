@@ -837,3 +837,9 @@ def test_startup_lines_say_ok_when_everything_is_there(monkeypatch, tmp_path):
     lines = asyncio.run(server.startup_checks())
     assert lines == ["database: reachable", "Muse key: set", "SerpApi key: set", "notes folder: writable"]
     assert not (tmp_path / "notes" / ".write-test").exists()
+
+
+def test_window_numbers_are_bounded(http):
+    assert http.post("/window", json={"app": "zoom.us", "rect": [-20000, 0, 20000, 20000]}).status_code == 200
+    for bad in ([0, 0, 20001, 10], [20001, 0, 10, 10], [0, -20001, 10, 10]):
+        assert http.post("/window", json={"app": "zoom.us", "rect": bad}).status_code == 422, bad
