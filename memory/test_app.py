@@ -48,7 +48,7 @@ def fake_serpapi(url, params, timeout):
 def http(monkeypatch, tmp_path):
     """A fresh server: no call, transcript, insights or faces, and listening."""
     state = {"call": None, "history": [], "fresh": [], "actions": {}, "latest_insights": None, "tracks": {}, "unknown": {},
-             "speakers": {}, "clients": set(), "last_transcript_at": None, "last_refresh": None, "latest_window": None, "latest_recap": None, "thread": [], "thread_epoch": 0, "live": {}, "live_since": None, "snippets": {}, "boxes": {}, "debug_scores": {}, "listening": {"type": "listening", "on": True, "startedAt": "2026-10-24T20:00:00Z"}}
+             "speakers": {}, "clients": set(), "last_transcript_at": None, "last_refresh": None, "latest_window": None, "latest_recap": None, "thread": [], "thread_epoch": 0, "live": {}, "live_since": None, "snippets": {}, "boxes": {}, "debug_scores": {}, "muted": {"type": "mute", "on": False}, "listening": {"type": "listening", "on": True, "startedAt": "2026-10-24T20:00:00Z"}}
     for name, value in state.items():
         monkeypatch.setattr(server, name, value)
     monkeypatch.setattr(server, "INSIGHTS_SECONDS", 0.3)
@@ -501,7 +501,7 @@ def test_health_reports_database_keys_pause_and_last_line_for_this_laptop_only(h
     monkeypatch.setenv("MODEL_API_KEY", "secret-muse")
     monkeypatch.delenv("SERPAPI_KEY", raising=False)
     body = http.get("/health").json()
-    assert body == {"db": "ok", "muse": True, "museError": None, "serpapi": False, "serpapiError": None, "listening": True,
+    assert body == {"db": "ok", "muse": True, "museError": None, "serpapi": False, "serpapiError": None, "listening": True, "muted": False,
                     "lastTranscriptAt": None}
     assert "secret-muse" not in http.get("/health").text  # key presence only, never the key
 
@@ -943,3 +943,23 @@ def test_deleting_someone_clears_the_ask_ai_thread_that_may_name_them(http, even
     rid = http.post("/ask", json={"question": "And their job?"}).json()["id"]
     wait_for(lambda: any(e.get("id") == rid and e["status"] == "done" for e in events))
     assert "Jordan Lee" not in prompts[-1] and "Earlier in this chat" not in prompts[-1]
+
+
+def test_mute_is_broadcast_kept_for_a_late_overlay_shown_in_health_and_drops_transcript_lines(http, events):
+    assert http.post("/mute", json={"on": True}).json() == {"type": "mute", "on": True}
+    assert events == [{"type": "mute", "on": True}]
+    http.post("/transcript", json=line("speaker_0", "Spoken while muted, many words here."))
+    assert [e for e in events if e["type"] == "caption"] == [] and server.fresh == [] and server.call is None  # dropped, not stored
+    assert server.last_transcript_at is None
+    with http.websocket_connect("/ws") as ws:
+        assert [ws.receive_json() for _ in range(2)] == [server.listening, {"type": "mute", "on": True}]
+    health = http.get("/health")
+    assert health.json()["muted"] is True and health.json()["listening"] is True  # muting is not pausing
+
+    http.post("/mute", json={"on": False})
+    http.post("/transcript", json=line("speaker_0", "Spoken after unmuting."))
+    assert [e["text"] for e in events if e["type"] == "caption"] == ["Spoken after unmuting."]
+    with http.websocket_connect("/ws") as ws:
+        assert ws.receive_json()["type"] == "listening"  # nothing to replay once unmuted
+    assert http.post("/mute", json={}).status_code == 422
+    assert TestClient(server.app, client=WIFI).post("/mute", json={"on": True}).status_code == 403

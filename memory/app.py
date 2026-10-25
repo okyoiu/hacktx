@@ -54,6 +54,7 @@ speakers: dict[str, str] = {}  # Muse speaker label -> display name
 history: list[str] = []  # lines Muse Spark has already seen, context for the next refresh
 fresh: list[str] = []  # final lines since the last insights refresh
 listening: dict = {"type": "listening", "on": True, "startedAt": utc_now()}  # latest listening event
+muted: dict = {"type": "mute", "on": False}  # latest mute event: the mic only, faces keep working
 latest_insights: dict | None = None  # latest insights event
 live: dict[str, dict] = {}  # person id -> {name, lines}: what they said since the last live-bullets check
 live_since: float | None = None  # when the current live-bullets window began (monotonic)
@@ -274,7 +275,7 @@ async def overlay_socket(ws: WebSocket):
     if not from_this_laptop(ws):  # the http middleware doesn't see WebSockets
         return await ws.close(code=1008)
     await ws.accept()
-    for event in (listening, latest_insights, latest_window, latest_recap):  # catch up an overlay that starts mid-call
+    for event in (listening, muted if muted["on"] else None, latest_insights, latest_window, latest_recap):  # mute only while on  # catch up an overlay that starts mid-call
         if event:
             await ws.send_json(event)
     clients.add(ws)
@@ -464,7 +465,18 @@ async def health():
         db = "error"
     return {"db": db, "muse": bool(os.getenv("MODEL_API_KEY")) and picks.status.error is None, "museError": picks.status.error,
             "serpapi": bool(os.getenv("SERPAPI_KEY")) and serp_status() is None, "serpapiError": serp_status(),
-            "listening": listening["on"], "lastTranscriptAt": last_transcript_at}
+            "listening": listening["on"], "muted": muted["on"], "lastTranscriptAt": last_transcript_at}
+
+
+class Mute(BaseModel):
+    on: bool
+
+
+@app.post("/mute")
+async def set_mute(body: Mute):
+    muted["on"] = body.on
+    await push(muted)
+    return muted
 
 
 @app.post("/listening")
@@ -479,6 +491,8 @@ async def set_listening(body: Listening):
 @app.post("/transcript")
 async def transcript(line: Line):
     global last_transcript_at
+    if muted["on"]:
+        return {"ok": True, "ignored": True}  # muted: a client that still sends gets nothing shown, kept or sent to Muse
     if not listening["on"]:
         return {"ok": True, "ignored": True}  # paused: nothing is shown, kept or sent to Muse
     last_transcript_at = utc_now()
