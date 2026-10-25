@@ -215,7 +215,7 @@ def test_call_end_summarises_only_recognized_people(db, enroll, tmp_path, monkey
             time.sleep(0.05)
 
         summary = next(p for p in prompts if "A video call just ended" in p)
-        roster = summary.split("existing notes):\n")[1].split("\n\nTranscript:")[0]
+        roster = summary.split("<people>\n")[1].split("\n</people>")[0]
         assert roster.splitlines() == [f"{pid}: {name} (nothing yet)", f"{quiet}: {quiet_name} (nothing yet)"]  # no stranger
         assert f"{name}: My race is in March." in summary
         got = http.get(f"/people/{pid}").json()["encounters"]

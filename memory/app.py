@@ -306,6 +306,8 @@ async def refresh_insights() -> None:
             del history[:-20]
 
     for note in out["notes"]:
+        if len(owner.people.get(note["personId"], [])) >= picks.MAX_NOTES_PER_CALL:
+            continue
         try:
             await asyncio.to_thread(store.add_note, note["personId"], note["text"])
         except psycopg.errors.ForeignKeyViolation:
