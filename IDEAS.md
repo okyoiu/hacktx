@@ -9,6 +9,11 @@ What we've decided, so nobody re-argues it at 3 a.m. Move a line between section
 - **Top picks dock** shows only what Muse hears: latest line + up to 3 picks
 - **Glass UI**; cards are click-through unless they have an action
 - **Tracks:** Meta (main), SerpApi, Tiger Data · plus Best Overall, Best Pitch, .Tech
+- **Memory pop-up**: opens beside a known face with 3 bullets for ~10 s, then shrinks; hover reopens
+- **"Who they are to you" label** ("Your team lead"): typed by you, suggested by Muse, never overwritten
+- **People dashboard** window in the app, works without a call
+- **One launch**: opening the app starts everything; one port (8000), laptop-only
+- **Per-person text file** in `notes/people/`, rewritten after each call
 - **Pitch opener:** "Sorry, who are you again?" Lead with memory, not recognition
 
 ## Cut
