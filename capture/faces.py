@@ -114,6 +114,7 @@ def main() -> None:
     model(np.zeros((64, 64, 3), np.uint8), verbose=False)
     memory_url = os.getenv("MEMORY_URL", "http://localhost:8000")
     http = httpx.Client(base_url=memory_url, timeout=10)
+    seen: set[int] = set()  # track ids logged once, so the log shows what the camera side is doing
     printed: set[int] = set()  # track ids whose face print the memory service already has
     people: dict[int, dict] = {}  # track id -> the recognized person memory replied with
     tried: dict[int, float] = {}  # track id -> when InsightFace last looked for its face
@@ -135,6 +136,9 @@ def main() -> None:
         live: set[int] = set()  # empty while the call window is gone, so every card clears
         if result is not None and result.boxes is not None and result.boxes.is_track:
             boxes = dict(zip(result.boxes.id.int().tolist(), result.boxes.xyxy.tolist()))
+            for tid in boxes.keys() - seen:
+                print(f"person {tid} on screen, looking for a face")
+                seen.add(tid)
             now = time.monotonic()
             wanting = {t for t in boxes.keys() - printed if now - tried.get(t, -RETRY) >= RETRY}
             if wanting:
@@ -158,6 +162,9 @@ def main() -> None:
                     body["facePrint"] = found[tid].normed_embedding.tolist()
                     printed.add(tid)
                 reply = send("/faces", body)
+                if "facePrint" in body:
+                    who = reply.get("person")
+                    print(f"person {tid}: face print sent, memory says {who['name'] if who else 'nobody yet (Recalling… card)'}")
                 if reply.get("needPrint"):
                     printed.discard(tid)
                 if reply.get("person"):

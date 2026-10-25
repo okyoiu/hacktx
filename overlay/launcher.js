@@ -12,8 +12,8 @@ const uv = (...args) => ({ cmd: 'uv', args: ['run', '--env-file', '.env', ...arg
 // Each runs from the repo root, in this order; the capture parts need the server.
 const PROCESSES = [
   { name: 'server', ...uv('uvicorn', 'memory.app:app', '--host', '127.0.0.1', '--port', '8000') },
-  { name: 'faces', ...uv('python', '-m', 'capture.faces') },
-  { name: 'transcribe', ...uv('python', '-m', 'capture.transcribe') },
+  { name: 'faces', ...uv('python', '-u', '-m', 'capture.faces') }, // -u: lines reach the log as they happen
+  { name: 'transcribe', ...uv('python', '-u', '-m', 'capture.transcribe') },
 ]
 
 // shortcut: pgrep and docker are looked up on PATH and pgrep is Unix-only, upgrade if Windows ever matters.
