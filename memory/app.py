@@ -160,7 +160,8 @@ def remember_encounters(ended: Call) -> dict[str, str]:
     lasts: dict[str, str] = {}
     try:
         # store.person drops anyone who deleted themselves or whose consent ran out; unenrolled faces never got here
-        people = {p["id"]: {"name": p["name"], "role": p["role"], "notes": [n["text"] for n in p["notes"][:5]]}
+        people = {p["id"]: {"name": p["name"], "role": p["role"], "notes": [n["text"] for n in p["notes"][:5]],
+                            "facts": [f["text"] for f in p.get("facts", [])]}
                   for p in map(store.person, ended.people) if p}
         if not people or not ended.lines:
             return  # the finally below still refreshes their files
@@ -169,6 +170,7 @@ def remember_encounters(ended: Call) -> dict[str, str]:
             lasts[s["personId"]] = s["lastTime"]
             if s["role"]:
                 store.set_role(s["personId"], s["role"], "muse")  # never replaces a role the user typed
+            store.add_facts(s["personId"], s["facts"])
     except Exception as e:  # e.g. no MODEL_API_KEY: the call still ends and its note is still written
         print(f"encounter summaries skipped: {e}")
     finally:

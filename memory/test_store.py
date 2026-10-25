@@ -382,3 +382,33 @@ def test_person_file_is_private_complete_named_by_id_and_goes_with_the_person(db
 
     notes.forget(pid, "Renamed")  # what the delete route does after store.delete_person
     assert list((tmp_path / "people").iterdir()) == []
+
+
+def test_muses_facts_are_kept_apart_from_notes_never_repeat_and_go_with_the_person(db, enroll, tmp_path, monkeypatch):
+    monkeypatch.setattr(notes, "NOTES", tmp_path)
+    pid, token = enroll(random_print())
+    store.add_note(pid, "My own note")
+    store.add_facts(pid, ["Loves F1", "Has two kids"])
+    store.add_facts(pid, ["loves f1", "Moving to Austin in May"])  # a repeat in other capitalisation is skipped
+    got = store.person(pid)
+    assert [f["text"] for f in got["facts"]] == ["Moving to Austin in May", "Has two kids", "Loves F1"]  # newest first
+    assert [n["text"] for n in got["notes"]] == ["My own note"] and "createdAt" in got["facts"][0]
+    with TestClient(server.app, client=("127.0.0.1", 50000)) as http:
+        assert [f["text"] for f in http.get(f"/people/{pid}").json()["facts"]] == ["Moving to Austin in May", "Has two kids", "Loves F1"]
+    text = notes.write_person(pid).read_text()
+    assert "## Facts (Muse)\n\n- Moving to Austin in May" in text and text.index("Facts (Muse)") < text.index("## Notes")
+    assert "My own note" not in text.split("## Notes")[0]
+
+    prompts = []
+
+    def muse(prompt: str, seconds=None) -> str:
+        prompts.append(prompt)
+        return json.dumps({"people": [{"personId": pid, "about": "", "lastTime": "Chat.", "facts": ["Loves F1", "Plays chess"]}]})
+
+    monkeypatch.setattr(picks, "chat", muse)
+    server.remember_encounters(server.Call(people={pid: []}, lines=["Someone: I love F1 and chess"]))
+    assert "[known facts: Moving to Austin in May; Has two kids; Loves F1]" in prompts[0]  # Muse is told what is known
+    assert [f["text"] for f in store.person(pid)["facts"]][0] == "Plays chess" and len(store.person(pid)["facts"]) == 4
+
+    assert store.delete_person(pid, token)
+    assert db.execute("select count(*) from facts where person_id = %s", (pid,)).fetchone()[0] == 0

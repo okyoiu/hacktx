@@ -143,6 +143,9 @@ def person(pid: str) -> dict | None:
     notes = conn().execute(
         "select text, created_at from notes where person_id = %s order by created_at desc, id desc", (pid,)
     ).fetchall()
+    facts = conn().execute(
+        "select text, created_at from facts where person_id = %s order by created_at desc, id desc", (pid,)
+    ).fetchall()
     return {
         "id": pid,
         "name": row[0],
@@ -150,6 +153,7 @@ def person(pid: str) -> dict | None:
         "firstMet": row[1],
         "encounters": [{"metAt": at, "about": about, "lastTime": last} for at, about, last in encounters],
         "notes": [{"text": t, "createdAt": at} for t, at in notes],
+        "facts": [{"text": t, "createdAt": at} for t, at in facts],
     }
 
 
@@ -174,6 +178,12 @@ def key_fact(pid: str) -> str | None:
         "select about from encounters where person_id = %s and about <> '' order by met_at desc, id desc limit 1", (pid,)
     ).fetchone()
     return row[0] if row else latest_note(pid)
+
+
+def add_facts(pid: str, texts: list[str]) -> None:
+    """Muse's facts about a person; one it already has (any capitalisation) is skipped."""
+    for text in texts:
+        conn().execute("insert into facts (person_id, text) values (%s, %s) on conflict do nothing", (pid, text))
 
 
 def add_note(pid: str, text: str) -> None:
