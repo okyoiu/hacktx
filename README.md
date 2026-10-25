@@ -39,22 +39,15 @@ Pick one:
 
 The app creates its tables on first start.
 
-### 5. Start the four parts, one terminal each
+### 5. Open the app
 
-Run these from the `hacktx` folder:
+**Double-click `Hello Again.command`** in the `hacktx` folder (or run `cd overlay && npm start`). The overlay app opens and starts everything else: the local database, the memory server, face capture and transcription. The first run also installs anything missing, so it takes a few minutes.
 
-| # | Command | You should see |
-|---|---|---|
-| 1 | `uv run --env-file .env uvicorn memory.app:app --host 127.0.0.1 --port 8000` | `Application startup complete` |
-| 2 | `cd overlay && npm start` | A small glass control bar at the top right of your screen |
-| 3 | `uv run --env-file .env python -m capture.faces --app zoom.us` | It finds your Zoom window (use `FaceTime`, `"Microsoft Teams"` or `"Google Chrome"` for other apps) |
-| 4 | `uv run --env-file .env python -m capture.transcribe` | `Listening at … Hz`, then a line for each sentence you say |
+You should see a small glass **control bar** at the top right. If one part isn't running, it shows a warning naming it; each part's log is in `logs/<name>.log`.
 
-Start terminal 1 first. If it says **"address already in use"**, the server is already running somewhere, so leave that one and skip to terminal 2.
+The first run asks for **Screen Recording** and **Microphone** permission (System Settings → Privacy & Security). Allow both, then quit the app (⌘Q) and open it again.
 
-The first run asks for **Screen Recording** (terminal 3) and **Microphone** (terminal 4) permission for your terminal app: System Settings → Privacy & Security. Allow both, then restart that terminal's command.
-
-To stop everything, press `Ctrl+C` in each terminal.
+To stop everything, **quit the app (⌘Q)** or close the Terminal window it opened.
 
 ## Try it on a real call: call, leave, rejoin
 
@@ -73,7 +66,7 @@ Other controls: **pause** in the control bar stops listening (nothing is sent to
 
 1. **From the call, no photo:** the **Remember them** action on their "Recalling…" pill (step 3 above).
 2. **On this laptop:** open http://localhost:8000/enroll, type their name, add a selfie they sent you, tick consent.
-3. **From their own phone:** start terminal 1 with `--host 0.0.0.0` instead of `--host 127.0.0.1`, connect both devices to the same network (your hotspot), and have them open `http://<your laptop's IP>:8000/enroll` (find the IP with `ipconfig getifaddr en0`). With `--host 0.0.0.0`, only the enroll and delete-my-data routes answer to other devices; everything else stays on this laptop.
+3. **From their own phone:** set an invite word as `ENROLL_CODE` in `.env`. Before opening the app, start the server by hand so phones can reach it: `uv run --env-file .env uvicorn memory.app:app --host 0.0.0.0 --port 8000` (the app reuses it). Put both devices on the same network (your hotspot) and send them the app's **Copy invite link** (it carries the code). With `--host 0.0.0.0`, only the enroll and delete-my-data routes answer to other devices; everything else stays on this laptop.
 
 Anyone can delete themselves from the link they get after enrolling.
 
@@ -81,10 +74,10 @@ Anyone can delete themselves from the link they get after enrolling.
 
 | Problem | Fix |
 |---|---|
-| `address already in use` | The server's already running. Skip terminal 1, or stop the other one first. |
-| No card appears next to a face | Make the call window bigger; check terminal 3 is running and found the right app with `--app`. |
+| `address already in use` | A server is already running on port 8000. The app reuses it; if you started one by hand, that's fine too. |
+| No card appears next to a face | Make the call window bigger and the person's face clearly visible; check `logs/faces.log`. |
 | Captions show `speaker_0` instead of names | Names come from whose lips move; give it a moment, or name them yourself: `curl -X POST localhost:8000/speakers -H 'content-type: application/json' -d '{"label":"speaker_0","name":"Their Name"}'` |
-| No captions at all | Microphone permission for your terminal; check the input with `uv run python -m capture.transcribe --list-devices`, then pass `--device <number>`. |
+| No captions at all | Microphone permission (System Settings → Privacy & Security); check `logs/transcribe.log`. To pick another input: `uv run python -m capture.transcribe --list-devices`. |
 | Live insights stays empty | Say a few full sentences, then wait about 10 seconds; check `MODEL_API_KEY` in `.env`. |
 | Database connection times out | That network blocks database ports; use the local Docker database, or Tiger Cloud on a phone hotspot. |
 | "Last time" doesn't show on rejoin | Wait about 70 seconds after leaving (or run the `curl … /calls/end` above) before rejoining. |
@@ -116,10 +109,27 @@ guest's phone ─ web/enroll.html ───────────────�
 | C · Consent and experience | `overlay/`, `web/` | Glass overlay app, enrollment page, demo and pitch |
 
 
+### Running the parts by hand (developers)
+
+The app runs these for you. To run one by hand (to read its output, say), use the same commands from the `hacktx` folder:
+
+| # | Command | You should see |
+|---|---|---|
+| 1 | `uv run --env-file .env uvicorn memory.app:app --host 127.0.0.1 --port 8000` | `Application startup complete` |
+| 2 | `cd overlay && npm start` | A small glass control bar at the top right of your screen |
+| 3 | `uv run --env-file .env python -m capture.faces --app zoom.us` | It finds your Zoom window (use `FaceTime`, `"Microsoft Teams"` or `"Google Chrome"` for other apps) |
+| 4 | `uv run --env-file .env python -m capture.transcribe` | `Listening at … Hz`, then a line for each sentence you say |
+
+Start the server first. If it says **"address already in use"**, a server is already running (maybe the app's), so use that one.
+
+Run by hand, face capture needs **Screen Recording** and transcription needs **Microphone** permission for your terminal app (System Settings → Privacy & Security).
+
+To stop everything, press `Ctrl+C` in each terminal.
+
 ## Work without the others (developers)
 
 - **Overlay only:** `cd overlay && npm run mock` replays `shared/mocks/overlay-demo.jsonl` over your desktop. No Python needed.
-- **Server without a camera or mic:** start terminal 1 and the overlay, then `uv run --env-file .env python -m memory.replay`. It adds two **sample** people (Jordan Lee and Maya Chen) and sends `shared/mocks/transcript.jsonl` through Muse Spark. Use it on the local database only, and delete those people afterwards.
+- **Server without a camera or mic:** start the server and the overlay, then `uv run --env-file .env python -m memory.replay`. It adds two **sample** people (Jordan Lee and Maya Chen) and sends `shared/mocks/transcript.jsonl` through Muse Spark. Use it on the local database only, and delete those people afterwards.
 - **Capture without a call:** `python -m capture.faces --video <your own recording>`.
 - **See what the computer vision sees (debugging only):** `uv run --env-file .env python -m tools.cv_check`. Users never see this.
 - **Tests:** `uv run pytest` (database tests use the local database)
